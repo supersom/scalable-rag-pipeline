@@ -28,8 +28,9 @@ async def retrieve_node(state: AgentState) -> Dict:
     # Task A: Vector Search (Semantic Similarity)
     async def run_vector_search():
         results = await qdrant_client.search(vector=query_vector, limit=5)
-        # Format: "Content [Source: Page 1]"
-        return [f"{r.payload['text']} [Source: {r.payload['metadata']['filename']}]" for r in results]
+        def get_filename(p):
+            return p.get('metadata', {}).get('filename') or p.get('filename', 'unknown')
+        return [f"{r.payload['text']} [Source: {get_filename(r.payload)}]" for r in results]
 
     # Task B: Graph Search (Structural Relationships)
     # We use a keyword match or a pre-defined Cypher template here.

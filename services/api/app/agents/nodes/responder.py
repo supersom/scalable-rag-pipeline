@@ -1,6 +1,9 @@
 # services/api/app/agents/nodes/responder.py
+import logging
 from services.api.app.agents.state import AgentState
 from services.api.app.clients.ray_llm import llm_client
+
+logger = logging.getLogger(__name__)
 
 async def generate_node(state: AgentState) -> dict:
     """
@@ -27,13 +30,13 @@ async def generate_node(state: AgentState) -> dict:
     3. Be concise and professional.
     """
     
-    # Call LLM
+    logger.info(f"Responder Node: generating answer for query: {query!r} with {len(documents)} docs")
     answer = await llm_client.chat_completion(
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.3 # Low creativity, high fidelity
+        temperature=0.3
     )
-    
-    # Return dictionary to update state (add the AI message)
+    logger.info("Responder Node: answer generated")
+
     return {
         "messages": [{"role": "assistant", "content": answer}]
     }

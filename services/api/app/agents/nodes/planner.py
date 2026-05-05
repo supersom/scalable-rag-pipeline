@@ -3,25 +3,33 @@ import json
 import logging
 from services.api.app.agents.state import AgentState
 from services.api.app.clients.ray_llm import llm_client
+from services.api.app.tools.registry import TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """
-You are a RAG Planning Agent.
-Analyze the User Query and Conversation History.
+def _build_system_prompt() -> str:
+    tool_lines = "\n".join(
+        f'   - "{name}": {info["description"]}'
+        for name, info in TOOL_REGISTRY.items()
+    )
+    return f"""You are a RAG Planning Agent.
+Analyze the User Query and decide the next step.
 
-Decide the next step:
-1. If the user greets (Hello/Hi), output "direct_answer".
-2. If the user asks a specific question requiring data, output "retrieve".
-3. If the user asks for math/code, output "tool_use".
+Rules:
+1. Output "direct_answer" if the user is greeting, making small talk, or asking something answerable without any external data (e.g. "Hello", "Thanks").
+2. Output "tool_use" ONLY when the query strictly matches one of the tools below — read each description carefully to avoid false matches:
+{tool_lines}
+3. Output "retrieve" for everything else — factual questions, how-to questions, explanations, conceptual questions, historical information. When in doubt, choose "retrieve".
 
-Output JSON format ONLY:
-{
+Output JSON format ONLY — no extra text:
+{{
     "action": "retrieve" | "direct_answer" | "tool_use",
-    "refined_query": "The standalone search query",
-    "reasoning": "Why you chose this action"
-}
-"""
+    "tool_name": {json.dumps(list(TOOL_REGISTRY.keys()) + [None])},
+    "refined_query": "The standalone search query or expression to evaluate",
+    "reasoning": "Why you chose this action and tool"
+}}"""
+
+SYSTEM_PROMPT = _build_system_prompt()
 
 async def planner_node(state: AgentState) -> dict:
     """
@@ -47,18 +55,27 @@ async def planner_node(state: AgentState) -> dict:
         # Parse JSON
         plan = json.loads(response_text)
         
-        logger.info(f"Plan derived: {plan['action']}")
-        
-        # Update State
+        action = plan.get("action", "retrieve")
+        tool_name = plan.get("tool_name") or ""
+        if isinstance(tool_name, list):
+            tool_name = tool_name[0] if tool_name else ""
+        refined_query = plan.get("refined_query") or user_query
+        logger.info(f"Plan derived: {action}" + (f" / tool: {tool_name}" if tool_name else ""))
+
         return {
-            "current_query": plan.get("refined_query", user_query),
-            "plan": [plan["reasoning"]]
+            "action": action,
+            "tool_name": tool_name,
+            "current_query": refined_query,
+            "tool_input": refined_query if action == "tool_use" else "",
+            "plan": [plan["reasoning"]],
         }
-        
+
     except Exception as e:
         logger.error(f"Planning failed: {e}")
-        # Fallback: Assume we need to search
         return {
+            "action": "retrieve",
+            "tool_name": "",
             "current_query": user_query,
-            "plan": ["Error in planning, defaulting to retrieval."]
+            "tool_input": "",
+            "plan": ["Error in planning, defaulting to retrieval."],
         }
