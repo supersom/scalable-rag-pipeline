@@ -31,9 +31,12 @@ class Settings(BaseSettings):
     AWS_REGION: str = "us-east-1"
     S3_BUCKET_NAME: str
     
-    # Ray Serve (Internal LLM/Embeddings)
+    # Ray Serve / Ollama (Internal LLM/Embeddings)
     RAY_LLM_ENDPOINT: str = "http://llm-service:8000/llm"
     RAY_EMBED_ENDPOINT: str = "http://embed-service:8000/embed"
+    LLM_MODEL_NAME: str = "llama3.2:3b"
+    EMBED_MODEL_NAME: str = "nomic-embed-text"
+    EMBED_DIM: int = 768  # nomic-embed-text output dimension
     
     # Security
     JWT_SECRET_KEY: str
@@ -41,6 +44,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 # Instantiate singleton
 settings = Settings()

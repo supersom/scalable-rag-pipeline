@@ -37,6 +37,7 @@ class RayLLMClient:
             raise RuntimeError("Client not initialized. Call start() first.")
 
         payload = {
+            "model": settings.LLM_MODEL_NAME,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": 1024

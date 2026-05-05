@@ -10,8 +10,7 @@ class VectorDBClient:
         self.client = AsyncQdrantClient(
             host=settings.QDRANT_HOST,
             port=settings.QDRANT_PORT,
-            # In prod, we might enable gRPC for slightly faster performance
-            prefer_grpc=True 
+            prefer_grpc=False  # gRPC port 6334 not exposed in docker-compose; use REST
         )
 
     async def search(self, vector: list[float], limit: int = 5):

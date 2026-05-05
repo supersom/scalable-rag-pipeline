@@ -7,23 +7,32 @@ class RayEmbedClient:
     Client for the Ray Serve Embedding Service.
     Uses HTTPX for async non-blocking HTTP calls.
     """
+    async def start(self):
+        pass
+
+    async def close(self):
+        pass
+
     async def embed_query(self, text: str) -> list[float]:
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 settings.RAY_EMBED_ENDPOINT,
-                json={"text": text, "task_type": "query"} # "query" instructs model to optimize for retrieval
+                json={"model": settings.EMBED_MODEL_NAME, "prompt": text}
             )
             response.raise_for_status()
             return response.json()["embedding"]
 
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """Used during ingestion"""
+        """Used during ingestion — batches via sequential Ollama calls"""
         async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                settings.RAY_EMBED_ENDPOINT,
-                json={"text": texts, "task_type": "document"}
-            )
-            response.raise_for_status()
-            return response.json()["embeddings"]
+            embeddings = []
+            for text in texts:
+                response = await client.post(
+                    settings.RAY_EMBED_ENDPOINT,
+                    json={"model": settings.EMBED_MODEL_NAME, "prompt": text}
+                )
+                response.raise_for_status()
+                embeddings.append(response.json()["embedding"])
+            return embeddings
 
 embed_client = RayEmbedClient()
