@@ -24,7 +24,7 @@ class QdrantIndexer:
         
         for row in batch:
             # Skip if embedding failed
-            if "vector" not in row or not row["vector"]:
+            if "vector" not in row or len(row["vector"]) == 0:
                 continue
                 
             # Construct Payload (Metadata)
