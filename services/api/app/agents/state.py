@@ -14,7 +14,16 @@ class AgentState(TypedDict):
     documents: List[str] 
     
     # The current question being processed
-    current_query: str 
-    
+    current_query: str
+
+    # Planner's routing decision: "retrieve" | "direct_answer" | "tool_use"
+    action: str
+
+    # Which tool to invoke when action == "tool_use"
+    tool_name: str
+
+    # Input to pass to the tool
+    tool_input: str
+
     # Internal scratchpad for the planner
     plan: List[str]
