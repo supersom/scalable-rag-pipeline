@@ -5,6 +5,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Claude Code internal directory
+.claude/
+
 # Local data / eval datasets (large binary files, not source)
 data/
 noisy_data/
