@@ -36,7 +36,7 @@ def parse_pdf_bytes(file_bytes: bytes, filename: str) -> Tuple[str, Dict[str, An
             # 'filename' arg allows unstructured to lazy-load chunks from disk.
             elements = partition_pdf(
                 filename=tmp_file.name,
-                strategy="hi_res", 
+                strategy="fast",
                 include_page_breaks=True,
                 infer_table_structure=True
             )

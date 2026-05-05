@@ -1,89 +1,169 @@
 # pipelines/ingestion/main.py
-import ray
-import boto3
+import argparse
 import logging
-from typing import Dict, Any
+import os
+import sys
+
+import ray
+
 from pipelines.ingestion.loaders.pdf import parse_pdf_bytes
+from pipelines.ingestion.loaders.html import parse_html_bytes
+from pipelines.ingestion.loaders.docx import parse_docx_bytes
+from pipelines.ingestion.loaders.pptx import parse_pptx_bytes
 from pipelines.ingestion.chunking.splitter import split_text
 from pipelines.ingestion.embedding.compute import BatchEmbedder
 from pipelines.ingestion.graph.extractor import GraphExtractor
 from pipelines.ingestion.indexing.qdrant import QdrantIndexer
 from pipelines.ingestion.indexing.neo4j import Neo4jIndexer
 
-# Initialize Ray (Connect to the existing cluster)
-ray.init(address="auto")
-
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-def process_batch(batch: Dict[str, Any]) -> Dict[str, Any]:
+
+def process_batch(batch):
     """
     Ray Data transformation function.
-    Receives a batch of file contents (S3 bytes).
+    Receives a batch of file contents (binary bytes + path).
+    Returns chunked text rows ready for embedding/graph stages.
     """
     results = []
-    
+
     for i, content in enumerate(batch["bytes"]):
-        filename = batch["filename"][i]
-        
-        # 1. Parsing (CPU Intensive)
-        # We use a helper function to handle PDF/DOCX/HTML logic
-        raw_text, metadata = parse_pdf_bytes(content, filename)
-        
-        # 2. Chunking (CPU)
+        filename = batch["path"][i]
+        # Keep only the basename for cleaner metadata
+        short_name = filename.split("/")[-1]
+
+        ext = short_name.rsplit(".", 1)[-1].lower()
+        try:
+            if ext == "pdf":
+                raw_text, metadata = parse_pdf_bytes(content, short_name)
+            elif ext in ("html", "htm"):
+                raw_text, metadata = parse_html_bytes(content, short_name)
+            elif ext == "docx":
+                raw_text, metadata = parse_docx_bytes(content, short_name)
+            elif ext == "txt":
+                raw_text = content.decode("utf-8", errors="replace")
+                metadata = {"filename": short_name, "type": "txt"}
+            elif ext in ("pptx", "ppt"):
+                raw_text, metadata = parse_pptx_bytes(content, short_name)
+            else:
+                logger.warning(f"Skipping unsupported file type: {short_name}")
+                continue
+        except Exception as e:
+            logger.error(f"Failed to parse {short_name}: {e}")
+            continue
+
         chunks = split_text(raw_text, chunk_size=512, overlap=50)
-        
-        # Add metadata to each chunk
+
         for chunk in chunks:
             chunk["metadata"].update(metadata)
             results.append(chunk)
-            
-    return {"text": [r["text"] for r in results], "metadata": [r["metadata"] for r in results]}
 
-def main(bucket_name: str, prefix: str):
-    """
-    Main Orchestration Flow.
-    """
-    # 1. Read from S3 using Ray Data (Lazy Loading)
-    # This automatically distributes reading across workers
-    ds = ray.data.read_binary_files(
-        paths=f"s3://{bucket_name}/{prefix}",
-        include_paths=True
-    )
+    return {
+        "text":     [r["text"]     for r in results],
+        "metadata": [r["metadata"] for r in results],
+    }
 
-    # 2. Parse & Chunk (Map Phase)
-    # num_cpus=1 tells Ray to reserve 1 CPU core per parsing task
+
+def main(source: str, extract_graph: bool = True, init_ray: bool = True):
+    """
+    Main orchestration flow.
+
+    Args:
+        source:        Local directory path or s3://bucket/prefix
+        extract_graph: Whether to run graph extraction into Neo4j
+    """
+    # ── Ray init ──────────────────────────────────────────────────────────────
+    # address="auto"  → connects to an existing cluster (prod / K8s)
+    # no address      → starts an in-process local cluster (local dev)
+    # Forward pipeline-relevant env vars to Ray worker processes.
+    # Workers are subprocesses and don't inherit the parent shell's environment.
+    worker_env = {k: os.environ[k] for k in (
+        "QDRANT_HOST", "QDRANT_PORT", "QDRANT_COLLECTION",
+        "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD",
+        "RAY_EMBED_ENDPOINT", "EMBED_MODEL_NAME",
+        "RAY_LLM_ENDPOINT", "LLM_MODEL_NAME",
+    ) if k in os.environ}
+
+    if ray.is_initialized():
+        logger.info("Using already-initialised Ray cluster.")
+    else:
+        address = os.environ.get("RAY_ADDRESS", "auto") if not init_ray else "auto"
+        try:
+            ray.init(address=address, runtime_env={"env_vars": worker_env})
+            logger.info(f"Connected to Ray cluster at {address}.")
+        except Exception:
+            ray.init(runtime_env={"env_vars": worker_env})
+            logger.info("Started local Ray cluster.")
+
+    logger.info(f"Reading files from: {source}")
+
+    # ── 1. Read files ─────────────────────────────────────────────────────────
+    ds = ray.data.read_binary_files(source, include_paths=True)
+
+    # ── 2. Parse & chunk (CPU) ────────────────────────────────────────────────
     chunked_ds = ds.map_batches(
         process_batch,
-        batch_size=10, # Process 10 files at a time per worker
-        num_cpus=1
+        batch_size=10,
+        num_cpus=1,
     )
 
-    # 3. FORK: Branch A - Vector Embeddings (GPU Intensive)
-    # We use a Class Actor (BatchEmbedder) to maintain connection to Ray Serve
+    # ── 3a. Embed (calls Ollama locally, Ray Serve in prod) ───────────────────
     vector_ds = chunked_ds.map_batches(
-        BatchEmbedder, 
-        concurrency=5, # Run 5 concurrent embedders
-        num_gpus=0.2, # Each embedder needs minimal GPU access (Ray Serve handles heavy lift)
-        batch_size=100 # Batch 100 chunks for vectorization
-    )
-    
-    # 4. FORK: Branch B - Graph Extraction (LLM Intensive)
-    # This is slower, so we might set higher concurrency or dedicate nodes
-    graph_ds = chunked_ds.map_batches(
-        GraphExtractor,
-        concurrency=10,
-        num_gpus=0.5, # Needs significant LLM inference power
-        batch_size=5 
+        BatchEmbedder,
+        concurrency=2,
+        batch_size=20,
     )
 
-    # 5. Indexing (Write to DBs)
-    # Trigger execution
-    vector_ds.write_datasource(QdrantIndexer())
-    graph_ds.write_datasource(Neo4jIndexer())
+    # ── 4a. Index vectors into Qdrant ─────────────────────────────────────────
+    logger.info("Writing vectors to Qdrant...")
+    vector_ds.map_batches(
+        lambda batch: (QdrantIndexer().write(
+            [{"text": t, "metadata": m, "vector": v}
+             for t, m, v in zip(batch["text"], batch["metadata"], batch["vector"])]
+        ) or batch),
+        batch_size=100,
+    ).count()   # .count() triggers execution
 
-    print("Ingestion Job Completed Successfully.")
+    if extract_graph:
+        # ── 3b. Graph extraction (calls Ollama locally, Ray Serve in prod) ────
+        graph_ds = chunked_ds.map_batches(
+            GraphExtractor,
+            concurrency=2,
+            batch_size=5,
+        )
+
+        # ── 4b. Index graph into Neo4j ────────────────────────────────────────
+        logger.info("Writing graph to Neo4j...")
+        graph_ds.map_batches(
+            lambda batch: (Neo4jIndexer().write(
+                [{"graph_nodes": n, "graph_edges": e}
+                 for n, e in zip(batch["graph_nodes"], batch["graph_edges"])]
+            ) or batch),
+            batch_size=50,
+        ).count()
+
+    logger.info("Ingestion complete.")
+    if init_ray:
+        ray.shutdown()
+
 
 if __name__ == "__main__":
-    # In a real run, these args come from the job submission
-    import sys
-    main(sys.argv[1], sys.argv[2])
+    parser = argparse.ArgumentParser(description="RAG ingestion pipeline (Ray Data)")
+    parser.add_argument(
+        "source",
+        help="Local directory path (e.g. data/docs/) or S3 URI (e.g. s3://my-bucket/prefix/)",
+    )
+    parser.add_argument(
+        "--no-graph",
+        action="store_true",
+        help="Skip Neo4j graph extraction",
+    )
+    parser.add_argument(
+        "--no-init-ray",
+        action="store_true",
+        help="Connect to an existing Ray cluster (RAY_ADDRESS env var) instead of starting one",
+    )
+    args = parser.parse_args()
+
+    main(args.source, extract_graph=not args.no_graph, init_ray=not args.no_init_ray)
