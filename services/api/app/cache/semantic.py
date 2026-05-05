@@ -2,6 +2,7 @@
 import json
 import logging
 from typing import Optional
+from qdrant_client.http import models as qdrant_models
 from services.api.app.clients.ray_embed import embed_client
 from services.api.app.clients.qdrant import qdrant_client
 from services.api.app.config import settings
@@ -13,12 +14,27 @@ class SemanticCache:
     Implements Semantic Caching using Vector Search.
     Instead of exact string matching, we match by meaning.
     """
-    
+
+    async def ensure_collection(self):
+        """Create the semantic_cache collection in Qdrant if it doesn't exist."""
+        collections = await qdrant_client.client.get_collections()
+        names = {c.name for c in collections.collections}
+        if "semantic_cache" not in names:
+            await qdrant_client.client.create_collection(
+                collection_name="semantic_cache",
+                vectors_config=qdrant_models.VectorParams(
+                    size=settings.EMBED_DIM,
+                    distance=qdrant_models.Distance.COSINE,
+                ),
+            )
+            logger.info("Created semantic_cache collection in Qdrant")
+
     async def get_cached_response(self, query: str, threshold: float = 0.95) -> Optional[str]:
         """
         Check if a similar query exists in the cache.
         """
         try:
+            await self.ensure_collection()
             # 1. Embed the incoming query (Fast CPU/GPU call)
             vector = await embed_client.embed_query(query)
             

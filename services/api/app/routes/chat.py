@@ -15,9 +15,14 @@ from services.api.app.memory.postgres import PostgresMemory, postgres_memory as 
 from services.api.app.clients.ray_llm import RayLLMClient, llm_client as global_llm
 from services.api.app.agents.graph import agent_app
 from services.api.app.agents.state import AgentState
+from services.api.app.tools.registry import TOOL_REGISTRY, NO_ANSWER_PHRASES
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+def _is_successful_answer(text: str) -> bool:
+    lower = text.lower()
+    return not any(phrase in lower for phrase in NO_ANSWER_PHRASES)
 
 # --- Dependency Providers (DI) ---
 # These wrappers allow us to override dependencies easily in pytest
@@ -93,6 +98,9 @@ async def chat_stream(
     initial_state = AgentState(
         messages=history_dicts,
         current_query=req.message,
+        action="retrieve",
+        tool_name="",
+        tool_input="",
         documents=[],
         plan=[]
     )
@@ -100,25 +108,35 @@ async def chat_stream(
     # 5. Define Generator for Streaming Response
     async def event_generator() -> AsyncGenerator[str, None]:
         final_answer = ""
-        
+        is_cacheable = True  # default; overridden by planner output
+
         try:
             # Run the LangGraph
-            # We pass 'llm' and 'user_id' in the 'configurable' dict. 
-            # This allows the Agent Nodes to access the injected client and user context 
+            # We pass 'llm' and 'user_id' in the 'configurable' dict.
+            # This allows the Agent Nodes to access the injected client and user context
             # via `config.get("configurable", {}).get("llm")` if refactored to support it.
             async for event in agent_app.astream(
-                initial_state, 
+                initial_state,
                 config={"configurable": {"llm": llm, "user_id": user_id}}
             ):
-                
+
                 # event is a dict like {'retriever': {...state updates...}}
                 node_name = list(event.keys())[0]
                 node_data = event[node_name]
-                
+
+                # Capture planner decision to decide cacheability
+                if node_name == "planner":
+                    action = node_data.get("action", "retrieve")
+                    tool_name = node_data.get("tool_name", "")
+                    if action == "tool_use" and tool_name:
+                        tool_entry = TOOL_REGISTRY.get(tool_name, {})
+                        is_cacheable = tool_entry.get("cacheable", True)
+                    # retrieve and direct_answer are always cacheable
+
                 # Emit Status Update
                 yield json.dumps({
-                    "type": "status", 
-                    "node": node_name, 
+                    "type": "status",
+                    "node": node_name,
                     "session_id": session_id,
                     "info": f"Completed step: {node_name}"
                 }) + "\n"
@@ -129,10 +147,10 @@ async def chat_stream(
                     if "messages" in node_data and node_data["messages"]:
                         ai_msg = node_data["messages"][-1]
                         final_answer = ai_msg.get("content", "")
-                        
+
                         # Stream the chunk
                         yield json.dumps({
-                            "type": "answer", 
+                            "type": "answer",
                             "content": final_answer,
                             "session_id": session_id
                         }) + "\n"
@@ -142,9 +160,12 @@ async def chat_stream(
                 # We await these to ensure data consistency before closing the stream
                 await memory.add_message(session_id, "user", req.message, user_id)
                 await memory.add_message(session_id, "assistant", final_answer, user_id)
-                
-                # Update Cache
-                await cache.set_cached_response(req.message, final_answer)
+
+                # Only cache stable, successful responses
+                if is_cacheable and _is_successful_answer(final_answer):
+                    await cache.set_cached_response(req.message, final_answer)
+                else:
+                    logger.info(f"Skipping cache: non-cacheable tool or unsuccessful answer (session {session_id})")
                 
         except Exception as e:
             logger.error(f"Error in chat stream: {e}", exc_info=True)

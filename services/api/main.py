@@ -1,11 +1,13 @@
 # services/api/main.py
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+import services.api.app.logging  # noqa: F401 — activates JSON log handler
 from services.api.app.clients.neo4j import neo4j_client
 from services.api.app.clients.ray_llm import llm_client
 from services.api.app.clients.ray_embed import embed_client
 from services.api.app.cache.redis import redis_client
 from services.api.app.routes import chat, upload, health
+from services.api.app.cache.semantic import semantic_cache
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -19,6 +21,7 @@ async def lifespan(app: FastAPI):
     await redis_client.connect()
     await llm_client.start()
     await embed_client.start()
+    await semantic_cache.ensure_collection()
     
     yield
     
