@@ -1,0 +1,14 @@
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Local data / eval datasets (large binary files, not source)
+data/
+noisy_data/
+eval/datasets/noisy_data/
+eval/datasets/ingested/
+eval/datasets/digested/
+eval/datasets/failed/

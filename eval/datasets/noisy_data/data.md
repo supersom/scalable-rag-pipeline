@@ -1,1 +1,0 @@
-Noisy data (1000+) random documents can be found [here](https://github.com/tpn/pdfs) for testing the RAG pipeline's robustness.
