@@ -32,7 +32,7 @@ class RayLLMClient:
             await self.client.aclose()
 
     @backoff.on_exception(backoff.expo, httpx.HTTPError, max_tries=3)
-    async def chat_completion(self, messages: List[Dict], temperature: float = 0.7, json_mode: bool = False) -> str:
+    async def chat_completion(self, messages: List[Dict], temperature: float = 0.7, json_mode: bool = False, max_tokens: int = 1024) -> str:
         if not self.client:
             raise RuntimeError("Client not initialized. Call start() first.")
 
@@ -40,7 +40,7 @@ class RayLLMClient:
             "model": settings.LLM_MODEL_NAME,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": 1024
+            "max_tokens": max_tokens
         }
         
         response = await self.client.post(self.endpoint, json=payload)

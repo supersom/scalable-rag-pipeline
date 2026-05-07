@@ -64,7 +64,8 @@ async def planner_node(state: AgentState) -> dict:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_query}
             ],
-            temperature=0.0 # Deterministic planning
+            temperature=0.0,
+            max_tokens=300,
         )
         
         # _extract_json strips markdown fences and returns the first JSON object
@@ -77,6 +78,14 @@ async def planner_node(state: AgentState) -> dict:
         # Safeguard: model sometimes outputs a valid tool_name but wrong action
         if tool_name and tool_name in TOOL_REGISTRY and action != "tool_use":
             action = "tool_use"
+        # Safeguard: model hallucinated a tool name that doesn't exist → fall back to retrieve
+        if action == "tool_use" and tool_name not in TOOL_REGISTRY:
+            action = "retrieve"
+            tool_name = ""
+        # Safeguard: model set a non-empty invalid tool_name with direct_answer → confused, retrieve
+        if action == "direct_answer" and tool_name and tool_name not in TOOL_REGISTRY:
+            action = "retrieve"
+            tool_name = ""
         refined_query = plan.get("refined_query") or plan.get("query") or user_query
         logger.info(f"Plan derived: {action}" + (f" / tool: {tool_name}" if tool_name else ""))
 
