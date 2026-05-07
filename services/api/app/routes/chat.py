@@ -132,6 +132,12 @@ async def chat_stream(
                         tool_entry = TOOL_REGISTRY.get(tool_name, {})
                         is_cacheable = tool_entry.get("cacheable", True)
                     # retrieve and direct_answer are always cacheable
+                    yield json.dumps({
+                        "type": "routing",
+                        "action": action,
+                        "tool": tool_name or None,
+                        "session_id": session_id,
+                    }) + "\n"
 
                 # Emit Status Update
                 yield json.dumps({
