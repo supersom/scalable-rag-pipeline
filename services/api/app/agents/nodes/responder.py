@@ -15,7 +15,11 @@ async def generate_node(state: AgentState) -> dict:
 
     context_str = "\n\n".join(documents)
 
-    if action == "tool_use":
+    if action == "direct_answer":
+        prompt = f"""You are a friendly assistant. Respond naturally and briefly to the user's message.
+
+User: {query}"""
+    elif action == "tool_use":
         prompt = f"""You are a helpful assistant. A tool was called to answer the user's query and returned the result below.
 
 Tool result: {context_str}
