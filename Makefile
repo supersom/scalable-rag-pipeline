@@ -1,6 +1,6 @@
 # Makefile
 
-.PHONY: help install dev up down deploy test
+.PHONY: help install dev serve-models up down deploy test
 
 help:
 	@echo "RAG Platform Commands:"
@@ -25,6 +25,13 @@ down:
 # Run the API locally (Hot Reload)
 dev:
 	uvicorn services.api.main:app --reload --host 0.0.0.0 --port 8000 --env-file .env
+
+# Serve LLM + Embedding models via Ray Serve (alternative to Ollama)
+# Endpoints: http://localhost:8001/v1/chat/completions
+#            http://localhost:8001/api/embeddings
+# Use PROFILE=cloud for cloud deployment: make serve-models PROFILE=cloud
+serve-models:
+	python -m services.models.serve --profile $(or $(PROFILE),local)
 
 # Infrastructure
 infra:
