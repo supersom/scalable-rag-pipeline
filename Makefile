@@ -1,6 +1,6 @@
 # Makefile
 
-.PHONY: help install dev serve-models up down deploy test
+.PHONY: help install dev ray-serve ray-stop up down deploy test
 
 help:
 	@echo "RAG Platform Commands:"
@@ -29,9 +29,12 @@ dev:
 # Serve LLM + Embedding models via Ray Serve (alternative to Ollama)
 # Endpoints: http://localhost:8001/v1/chat/completions
 #            http://localhost:8001/api/embeddings
-# Use PROFILE=cloud for cloud deployment: make serve-models PROFILE=cloud
-serve-models:
+# Use PROFILE=cloud for cloud deployment: make ray-serve PROFILE=cloud
+ray-serve:
 	python -m services.models.serve --profile $(or $(PROFILE),local)
+
+ray-stop:
+	ray stop --force
 
 # Infrastructure
 infra:
