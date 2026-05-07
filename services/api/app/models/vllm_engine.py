@@ -1,52 +1,71 @@
 # services/api/app/models/vllm_engine.py
-from ray import serve
-from vllm import AsyncLLMEngine, EngineArgs, SamplingParams
-from transformers import AutoTokenizer # For tokenizer with chat templates
 import os
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from ray import serve
 
-@serve.deployment(autoscaling_config={"min_replicas": 1, "max_replicas": 10}, ray_actor_options={"num_gpus": 1})
-class VLLMDeployment:
-    def __init__(self):
-        model_id = os.getenv("MODEL_ID", "meta-llama/Meta-Llama-3-70B-Instruct")
-        
-        # 1. Load Tokenizer for correct chat formatting
+_DEFAULT_MODEL_ID = "meta-llama/Meta-Llama-3-70B-Instruct"
+
+_app = FastAPI()
+
+
+@serve.deployment(
+    autoscaling_config={"min_replicas": 1, "max_replicas": 4},
+    ray_actor_options={"num_gpus": 1},
+)
+@serve.ingress(_app)
+class LLMDeployment:
+    def __init__(
+        self,
+        model_id: str = _DEFAULT_MODEL_ID,
+        quantization: str | None = None,
+        gpu_memory_utilization: float = 0.90,
+        max_model_len: int = 8192,
+        cpu_offload_gb: float = 0.0,
+        enforce_eager: bool = False,
+    ):
+        from vllm import AsyncLLMEngine, EngineArgs
+        from transformers import AutoTokenizer
+
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        
-        args = EngineArgs(
+        engine_args = EngineArgs(
             model=model_id,
-            quantization="awq",
-            gpu_memory_utilization=0.90,
-            max_model_len=8192
+            quantization=quantization,
+            gpu_memory_utilization=gpu_memory_utilization,
+            max_model_len=max_model_len,
+            cpu_offload_gb=cpu_offload_gb,
+            enforce_eager=enforce_eager,
         )
-        self.engine = AsyncLLMEngine.from_engine_args(args)
+        # vLLM 0.20.1 bug: v1 engine accesses enable_log_requests which is missing from EngineArgs
+        if not hasattr(engine_args, "enable_log_requests"):
+            engine_args.enable_log_requests = False
+        self.engine = AsyncLLMEngine.from_engine_args(engine_args)
 
-    async def __call__(self, request):
+    @_app.post("/chat/completions")
+    async def chat_completions(self, request: Request) -> JSONResponse:
+        from vllm import SamplingParams
+
         body = await request.json()
-        messages = body.get("messages", [])
-        
-        # 2. Use Standard Template Application
-        # This handles system prompts, special tokens, and roles correctly for the specific model
         prompt = self.tokenizer.apply_chat_template(
-            messages, 
-            tokenize=False, 
-            add_generation_prompt=True
+            body.get("messages", []),
+            tokenize=False,
+            add_generation_prompt=True,
         )
-        
-        sampling_params = SamplingParams(
-            temperature=body.get("temperature", 0.7),
-            max_tokens=body.get("max_tokens", 1024),
-            # Stop tokens are often handled by the tokenizer config, but safe to keep
-            stop_token_ids=[self.tokenizer.eos_token_id, self.tokenizer.convert_tokens_to_ids("<|eot_id|>")]
+        params = SamplingParams(
+            temperature=float(body.get("temperature", 0.7)),
+            max_tokens=int(body.get("max_tokens", 1024)),
+            stop_token_ids=[
+                self.tokenizer.eos_token_id,
+                self.tokenizer.convert_tokens_to_ids("<|eot_id|>"),
+            ],
         )
-        
-        request_id = str(os.urandom(8).hex())
-        results_generator = self.engine.generate(prompt, sampling_params, request_id)
-        
-        final_output = None
-        async for request_output in results_generator:
-            final_output = request_output
-            
-        text_output = final_output.outputs[0].text
-        return {"choices": [{"message": {"content": text_output, "role": "assistant"}}]}
+        final = None
+        async for out in self.engine.generate(prompt, params, os.urandom(8).hex()):
+            final = out
 
-app = VLLMDeployment.bind()
+        return JSONResponse({
+            "choices": [{"message": {"role": "assistant", "content": final.outputs[0].text}}]
+        })
+
+
+llm_app = LLMDeployment.bind()  # default args; override in serve.py for cloud
