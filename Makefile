@@ -23,8 +23,11 @@ down:
 	docker-compose down
 
 # Run the API locally (Hot Reload)
+# Exclude scripts/ (not imported by FastAPI) and services/models/ (Ray Serve files —
+# edited separately; Ray Serve process touching them caused a continuous reload loop)
 dev:
-	uvicorn services.api.main:app --reload --host 0.0.0.0 --port 8000 --env-file .env
+	uvicorn services.api.main:app --reload --host 0.0.0.0 --port 8000 --env-file .env \
+		--reload-exclude 'scripts/*' --reload-exclude 'services/models/*'
 
 # Serve LLM + Embedding models via Ray Serve (alternative to Ollama)
 # Endpoints: http://localhost:8001/v1/chat/completions
