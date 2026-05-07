@@ -15,34 +15,63 @@ def _build_system_prompt() -> str:
     )
     return (
         'Classify the user query and respond with ONLY a JSON object. No prose, no markdown.\n\n'
-        'Schema: {"action": "...", "tool_name": "...", "reasoning": "...", "refined_query": "..."}\n\n'
+        'Schema (adhere to this format exactly):\n'
+        ' {"action": "...", "tool_name": "...", "reasoning": "...", "refined_query": "..."}\n\n'
+        
         'action must be exactly one of:\n'
-        '  "direct_answer" — greeting or small talk only ("hi", "hello", "thanks", "bye")\n'
+        '  "direct_answer" — no external data needed; covers ALL social exchanges with no information\n'
+        '                    need: single-word inputs (hi, thanks, ok, sure, bye, yes, no, great),\n'
+        '                    greetings, pleasantries, acknowledgements, farewells, small talk\n'
         '  "tool_use"      — query matches one of the tools below; put the tool key in tool_name\n'
-        '  "retrieve"      — all other questions (factual, how-to, explanatory)\n\n'
+        '  "retrieve"      — all other questions (factual, how-to, explanatory, domain-specific)\n\n'
+        
         f'Tools:\n{tool_list}\n\n'
+        
+        '<Rules>\n'        
         'Rules:\n'
+        '- strictly assign action as direct_answer if no external info is needed; otherwise, prefer tool_use if a relevant tool exists, even if retrieve might also work\n'
         '- tool_name must be null when action != "tool_use"\n'
         '- refined_query is the standalone search string or expression\n'
         '- reasoning is a brief explanation of why you chose this action\n\n'
-        'Examples (follow exactly):\n'
-        'User: "hi" → {"action": "direct_answer", "tool_name": null, "reasoning": "greeting", "refined_query": "hi"}\n'
-        'User: "thanks" → {"action": "direct_answer", "tool_name": null, "reasoning": "small talk", "refined_query": "thanks"}\n'
+        '</Rules>\n'
+        
+        '<Examples>\n'
+        'Examples (applicable to tool_use and retrieve actions, but shows the general format):\n'
+        'User: "hi" → {"action": "direct_answer", "tool_name": null, "reasoning": "greeting, no data needed", "refined_query": "hi"}\n'
+        'User: "appreciate it" → {"action": "direct_answer", "tool_name": null, "reasoning": "acknowledgement, no data needed", "refined_query": "thanks"}\n'
+        'User: "good day to you" → {"action": "direct_answer", "tool_name": null, "reasoning": "pleasantry, no data needed", "refined_query": "good day to you"}\n'
+        'User: "that\'s all for now" → {"action": "direct_answer", "tool_name": null, "reasoning": "farewell, no data needed", "refined_query": "that\'s all for now"}\n'
         'User: "2+6" → {"action": "tool_use", "tool_name": "calculator", "reasoning": "arithmetic expression", "refined_query": "2+6"}\n'
         'User: "sqrt(144)" → {"action": "tool_use", "tool_name": "calculator", "reasoning": "math function", "refined_query": "sqrt(144)"}\n'
         'User: "what is todays weather" → {"action": "tool_use", "tool_name": "web_search", "reasoning": "real-time info needed", "refined_query": "todays weather"}\n'
         'User: "what is machine learning" → {"action": "retrieve", "tool_name": null, "reasoning": "factual question", "refined_query": "what is machine learning"}\n'
         'User: "how does RAG work" → {"action": "retrieve", "tool_name": null, "reasoning": "explanatory question", "refined_query": "how does RAG work"}\n'
+        '</Examples>\n'
     )
 
 def _extract_json(text: str) -> dict:
-    """Strip markdown fences and decode the first JSON object, ignoring trailing content."""
+    """Strip markdown fences and decode the last valid JSON object in the output.
+
+    The model sometimes echoes prompt examples before its own answer; taking the
+    last object ensures we get the model's actual classification, not an example.
+    """
     text = re.sub(r"```(?:json)?\s*", "", text).strip().rstrip("`").strip()
-    idx = text.find("{")
-    if idx == -1:
+    decoder = json.JSONDecoder()
+    last_obj = None
+    idx = 0
+    while idx < len(text):
+        start = text.find("{", idx)
+        if start == -1:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, start)
+            last_obj = obj
+            idx = start + end
+        except json.JSONDecodeError:
+            idx = start + 1
+    if last_obj is None:
         raise ValueError(f"No JSON object found in: {text!r}")
-    obj, _ = json.JSONDecoder().raw_decode(text, idx)
-    return obj
+    return last_obj
 
 SYSTEM_PROMPT = _build_system_prompt()
 
@@ -75,6 +104,11 @@ async def planner_node(state: AgentState) -> dict:
         tool_name = plan.get("tool_name") or ""
         if isinstance(tool_name, list):
             tool_name = tool_name[0] if tool_name else ""
+        # Safeguard: action is not one of the three valid values (e.g. model echoed query text)
+        if action not in {"direct_answer", "tool_use", "retrieve"}:
+            logger.warning(f"Planner returned invalid action {action!r}, falling back to retrieve")
+            action = "retrieve"
+            tool_name = ""
         # Safeguard: model sometimes outputs a valid tool_name but wrong action
         if tool_name and tool_name in TOOL_REGISTRY and action != "tool_use":
             action = "tool_use"
