@@ -1,0 +1,14 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+parameters:
+  type: gp3
+  fsType: ext4
+  encrypted: "true"
+  # gp3 baseline: 3000 IOPS / 125 MB/s throughput at no extra charge vs gp2.
+  # Raise iops/throughput here per-volume if needed (not per-StorageClass).

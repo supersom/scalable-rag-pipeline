@@ -1,0 +1,57 @@
+# deploy/k8s/nvidia-device-plugin.yaml
+# Advertises GPUs on Karpenter-provisioned GPU nodes as the schedulable
+# `nvidia.com/gpu` resource. Without this DaemonSet, GPU pods stay Pending
+# even after a GPU node joins.
+#
+# Apply: kubectl apply -f deploy/k8s/nvidia-device-plugin.yaml
+#
+# The AL2023 NVIDIA EKS AMI (resolved by the EC2NodeClass al2023@latest alias for
+# GPU instances) ships the NVIDIA driver + container runtime; this plugin exposes it.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvidia-device-plugin-daemonset
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      name: nvidia-device-plugin-ds
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        name: nvidia-device-plugin-ds
+    spec:
+      priorityClassName: system-node-critical
+      # Tolerate the GPU NodePool taint so the plugin can land on GPU nodes.
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      # Only schedule on GPU nodes (Karpenter labels nodes with instance-category).
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: karpenter.k8s.aws/instance-category
+                operator: In
+                values: ["g", "p"]
+      containers:
+      - name: nvidia-device-plugin-ctr
+        image: nvcr.io/nvidia/k8s-device-plugin:v0.15.0
+        env:
+        - name: FAIL_ON_INIT_ERROR
+          value: "false"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: device-plugin
+          mountPath: /var/lib/kubelet/device-plugins
+      volumes:
+      - name: device-plugin
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
