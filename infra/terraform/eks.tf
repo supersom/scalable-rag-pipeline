@@ -42,6 +42,15 @@ module "eks" {
     "karpenter.sh/discovery" = var.cluster_name
   }
 
+  # Manage the aws-auth ConfigMap so Karpenter-launched nodes can join
+  manage_aws_auth_configmap = true
+  aws_auth_roles = [
+    {
+      rolearn  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/KarpenterNodeRole-${var.cluster_name}"
+      username = "system:node:{{EC2PrivateDNSName}}"
+      groups   = ["system:bootstrappers", "system:nodes"]
+    }
+  ]
 }
 
 # Export the Cluster Endpoint
