@@ -1,0 +1,7 @@
+API service installed.
+
+Service name: {{ .Values.service.name }}
+Health check: /health/liveness
+
+The API image is configurable with:
+  --set image.repository=<repository> --set image.tag=<tag>

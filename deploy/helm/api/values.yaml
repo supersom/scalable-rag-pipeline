@@ -1,0 +1,87 @@
+replicaCount: 2
+
+image:
+  repository: ""
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: "api"
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+  name: api-service
+
+env:
+  - name: ENV
+    value: prod
+  - name: LOG_LEVEL
+    value: INFO
+  - name: QDRANT_HOST
+    value: qdrant
+  - name: QDRANT_PORT
+    value: "6333"
+  - name: QDRANT_COLLECTION
+    value: rag_collection
+  - name: NEO4J_URI
+    value: bolt://neo4j-cluster:7687
+  - name: NEO4J_USER
+    value: neo4j
+  - name: AWS_REGION
+    value: us-east-1
+  - name: RAY_LLM_ENDPOINT
+    value: http://llm-service:8000/llm
+  - name: RAY_EMBED_ENDPOINT
+    value: http://embed-service:8000/embed
+  - name: JWT_ALGORITHM
+    value: HS256
+
+secretName: app-env-secret
+secretEnvKeys:
+  - DATABASE_URL
+  - REDIS_URL
+  - NEO4J_PASSWORD
+  - S3_BUCKET_NAME
+  - JWT_SECRET_KEY
+  - LLM_API_KEY
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+livenessProbe:
+  httpGet:
+    path: /health/liveness
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /health/readiness
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  failureThreshold: 6
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

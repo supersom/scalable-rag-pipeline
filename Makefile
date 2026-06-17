@@ -1,6 +1,6 @@
 # Makefile
 
-.PHONY: help install dev ray-serve ray-stop up down deploy test
+.PHONY: help install dev ray-serve ray-stop up down deploy test infra
 
 help:
 	@echo "RAG Platform Commands:"
