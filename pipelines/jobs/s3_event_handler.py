@@ -40,7 +40,21 @@ def submit_ingestion_job(bucket: str, file_key: str):
         # Working dir contains our pipeline code
         runtime_env={
             "working_dir": "./", 
-            "pip": ["boto3", "qdrant-client", "neo4j", "langchain", "unstructured"]
+            "pip": [
+                "numpy==1.26.2",
+                "boto3",
+                "qdrant-client",
+                "neo4j",
+                "langchain",
+                "unstructured==0.11.0",
+                "pdfminer.six",
+                "pdf2image",
+                "pypdf",
+                "pypdfium2",
+                "pi-heif",
+                "python-docx",
+                "python-pptx",
+            ]
         }
     )
     
