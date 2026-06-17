@@ -4,11 +4,66 @@ kind: RayService
 metadata:
   name: embed-service
 spec:
+  rayClusterConfig:
+    rayVersion: "2.9.0"
+    headGroupSpec:
+      serviceType: ClusterIP
+      rayStartParams:
+        dashboard-host: "0.0.0.0"
+        num-cpus: "0"
+      template:
+        spec:
+          containers:
+          - name: ray-head
+            image: 764988411032.dkr.ecr.us-east-1.amazonaws.com/services/ray-serve:f25f720
+            resources:
+              limits:
+                cpu: "2"
+                memory: 8Gi
+              requests:
+                cpu: "2"
+                memory: 8Gi
+            ports:
+            - containerPort: 6379
+            - containerPort: 8265
+    workerGroupSpecs:
+    - groupName: gpu-workers
+      replicas: 0
+      minReplicas: 0
+      maxReplicas: 20
+      rayStartParams: {}
+      template:
+        spec:
+          containers:
+          - name: ray-worker
+            image: 764988411032.dkr.ecr.us-east-1.amazonaws.com/services/ray-serve:f25f720
+            resources:
+              limits:
+                cpu: "4"
+                memory: 32Gi
+                nvidia.com/gpu: 1
+              requests:
+                cpu: "4"
+                memory: 32Gi
+                nvidia.com/gpu: 1
+          nodeSelector:
+            karpenter.k8s.aws/instance-category: "g"
+          tolerations:
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
+
   serveConfigV2: |
     applications:
       - name: bge-m3
         import_path: services.api.app.models.embedding_engine:app
         route_prefix: /embed
+        # Model code + sentence-transformers are baked into the custom image.
+        # Config is read from these env vars by embedding_engine.build_app().
+        runtime_env:
+          env_vars:
+            EMBED_MODEL_ID: "BAAI/bge-m3"
+            EMBED_COMPILE: "true"
         deployments:
           - name: EmbedDeployment
             autoscaling_config:
@@ -17,4 +72,4 @@ spec:
               target_num_ongoing_requests_per_replica: 50
             ray_actor_options:
               num_cpus: 2
-              num_gpus: 0.5 # Share GPU (2 models per GPU) to save money
+              num_gpus: 0.5

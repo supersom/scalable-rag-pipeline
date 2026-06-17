@@ -4,7 +4,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from ray import serve
 
-_DEFAULT_MODEL_ID = "meta-llama/Meta-Llama-3-70B-Instruct"
+# Default to an ungated 8B mirror so the service runs without a HuggingFace token.
+# Override with MODEL_ID env var (e.g. meta-llama/Meta-Llama-3-8B-Instruct + HF_TOKEN,
+# or the 70B model once GPU quota allows tensor parallelism).
+_DEFAULT_MODEL_ID = "NousResearch/Meta-Llama-3-8B-Instruct"
 
 _app = FastAPI()
 
@@ -68,4 +71,25 @@ class LLMDeployment:
         })
 
 
-llm_app = LLMDeployment.bind()  # default args; override in serve.py for cloud
+def build_app(overrides: dict | None = None):
+    """Build the LLM Serve application.
+
+    KubeRay RayService imports this module's `app` symbol (import_path: ...vllm_engine:app);
+    config comes from env vars set in the RayService manifest. The local serve.py path calls
+    LLMDeployment.options(...).bind(...) directly instead.
+    """
+    cfg = {
+        "model_id": os.getenv("MODEL_ID", _DEFAULT_MODEL_ID),
+        "quantization": os.getenv("LLM_QUANTIZATION") or None,
+        "gpu_memory_utilization": float(os.getenv("LLM_GPU_MEMORY_UTILIZATION", "0.90")),
+        "max_model_len": int(os.getenv("LLM_MAX_MODEL_LEN", "8192")),
+        "enforce_eager": os.getenv("LLM_ENFORCE_EAGER", "false").lower() == "true",
+    }
+    if overrides:
+        cfg.update(overrides)
+    num_gpus = float(os.getenv("LLM_NUM_GPUS", "1"))
+    return LLMDeployment.options(ray_actor_options={"num_gpus": num_gpus}).bind(**cfg)
+
+
+# Entrypoint for KubeRay RayService.
+app = build_app()

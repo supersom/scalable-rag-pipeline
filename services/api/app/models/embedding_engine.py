@@ -1,4 +1,5 @@
 # services/api/app/models/embedding_engine.py
+import os
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from ray import serve
@@ -40,4 +41,22 @@ class EmbedDeployment:
         return JSONResponse({"embedding": embedding})
 
 
-embed_app = EmbedDeployment.bind()  # default args; override in serve.py for cloud
+def build_app(overrides: dict | None = None):
+    """Build the embedding Serve application.
+
+    KubeRay RayService imports this module's `app` symbol (import_path: ...embedding_engine:app);
+    config comes from env vars set in the RayService manifest. The local serve.py path calls
+    EmbedDeployment.options(...).bind(...) directly instead.
+    """
+    cfg = {
+        "model_id": os.getenv("EMBED_MODEL_ID", _DEFAULT_MODEL_ID),
+        "compile": os.getenv("EMBED_COMPILE", "true").lower() == "true",
+    }
+    if overrides:
+        cfg.update(overrides)
+    num_gpus = float(os.getenv("EMBED_NUM_GPUS", "0.5"))
+    return EmbedDeployment.options(ray_actor_options={"num_gpus": num_gpus}).bind(**cfg)
+
+
+# Entrypoint for KubeRay RayService.
+app = build_app()
