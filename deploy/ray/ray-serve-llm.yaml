@@ -28,7 +28,7 @@ spec:
         spec:
           containers:
           - name: ray-head
-            image: 764988411032.dkr.ecr.us-east-1.amazonaws.com/services/ray-serve:b538354-v3
+            image: 764988411032.dkr.ecr.us-east-1.amazonaws.com/services/ray-serve:d038300
             resources:
               limits:
                 cpu: '2'
@@ -49,7 +49,7 @@ spec:
         spec:
           containers:
           - name: ray-worker
-            image: 764988411032.dkr.ecr.us-east-1.amazonaws.com/services/ray-serve:b538354-v3
+            image: 764988411032.dkr.ecr.us-east-1.amazonaws.com/services/ray-serve:d038300
             resources:
               limits:
                 cpu: '4'
