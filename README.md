@@ -202,8 +202,8 @@ kubectl create secret generic app-env-secret \
   --from-literal=NEO4J_PASSWORD="password" \
   --from-literal=JWT_SECRET_KEY="$(openssl rand -hex 32)" \
   --from-literal=QDRANT_HOST="qdrant" \
-  --from-literal=RAY_LLM_ENDPOINT="http://llm-service:8000/llm" \
-  --from-literal=RAY_EMBED_ENDPOINT="http://embed-service:8000/embed"
+  --from-literal=RAY_LLM_ENDPOINT="http://llm-service:8000/llm/chat/completions" \
+  --from-literal=RAY_EMBED_ENDPOINT="http://embed-service:8000/embed/embeddings"
 ```
 
 ### 7.2. Deploy the API

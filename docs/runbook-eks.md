@@ -13,8 +13,8 @@ Internet → (ALB/Ingress) → FastAPI (EKS, ECR image)
                          → Aurora PostgreSQL (Serverless v2, Secrets Manager password)
                          → ElastiCache Redis (TLS, rediss://)
                          → Ray Serve on g6/g5 GPU nodes (Karpenter spot/on-demand)
-                              ├── llm-service  (vLLM + Llama-3-8B, port 8000 /llm)
-                              └── embed-service (bge-m3,           port 8000 /embed)
+                              ├── llm-service  (vLLM + Llama-3-8B, port 8000 /llm/chat/completions)
+                              └── embed-service (BGE-M3,           port 8000 /embed/embeddings)
 ```
 
 Node pools:
@@ -64,7 +64,7 @@ docker build -t ${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/services/ray-serve
 docker push ${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/services/ray-serve:${GIT_SHA}
 ```
 
-The Ray Serve image uses Docker layer caching — only the `COPY services` layer changes on code edits, so rebuilds after the first are ~5 seconds.
+The Ray Serve image uses Docker layer caching — only the `COPY services` layer changes on code edits, so rebuilds after the first are usually quick. The image build also validates the Ray 2.9.0 Serve proxy patch needed for the pinned Starlette version.
 
 ### 3. Bootstrap the cluster
 
@@ -79,7 +79,7 @@ export S3_BUCKET=<from terraform output>
 bash scripts/bootstrap_cluster.sh
 ```
 
-The script runs steps 1–11 in order:
+The script runs steps 1–12 in order:
 1. kubeconfig update
 2. Karpenter NodePool/EC2NodeClass apply
 3. gp3 StorageClass
@@ -88,9 +88,12 @@ The script runs steps 1–11 in order:
 6. KubeRay operator
 7. Qdrant (3-replica StatefulSet)
 8. Neo4j (community, 100GB gp3 PVC)
-9. `app-env-secret` with all env vars
-10. API Helm chart
-11. RayService for LLM + embeddings
+9. Data-store schema: create missing Qdrant `rag_collection` + `semantic_cache` at 1024 dimensions, and Neo4j `entity_index`
+10. `app-env-secret` with all env vars
+11. API Helm chart
+12. RayService for LLM + embeddings
+
+The API also creates its `chat_history` table on startup via SQLAlchemy `Base.metadata.create_all()`, so a fresh Aurora database does not need a manual table creation step.
 
 ### 4. Wait for GPU inference
 
@@ -112,11 +115,11 @@ kubectl get rayservice
 
 ```bash
 kubectl port-forward svc/api-service 8000:80 &
-AUTH_TOKEN=$(kubectl get secret app-env-secret \
-  -o jsonpath='{.data.AUTH_TOKEN}' | base64 -d)
-curl -s -H "Authorization: Bearer $AUTH_TOKEN" \
+TOKEN=$(kubectl exec deploy/api -- python3 -c "from jose import jwt; import time; print(jwt.encode({'sub':'test','role':'admin','exp':int(time.time())+3600}, 'i_need_to_change_this', algorithm='HS256'))")
+curl -s -N -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
   http://localhost:8000/api/v1/chat/stream \
-  -d '{"message":"hello"}' | jq .
+  -d '{"message":"hello","session_id":"runbook-smoke"}'
 ```
 
 ---
@@ -137,6 +140,10 @@ sed -i "s|ray-serve:[^ ]*|ray-serve:${GIT_SHA}|g" \
 # Apply (do NOT delete — use apply only to avoid FailedToUpdateService)
 kubectl apply -f deploy/ray/ray-serve-llm.yaml
 kubectl apply -f deploy/ray/ray-serve-embed.yaml
+
+# If GPU quota prevents a surge rollout, the new workers can remain Pending while
+# old workers occupy the only GPUs. Delete old active worker pods only after the
+# new heads and proxies are healthy; this causes brief inference downtime.
 ```
 
 > **Important:** always `kubectl apply`, never `kubectl delete && kubectl apply` for RayService. Deleting the live service during update causes the KubeRay FSM to enter `FailedToUpdateService` because the old cluster it tries to clean up is already gone.
@@ -148,8 +155,15 @@ If `kubectl get rayservice` shows `FailedToUpdateService`:
 ```bash
 # Nudge the controller — it retries immediately
 kubectl annotate rayservice llm-service force-reconcile="$(date +%s)" --overwrite
-# If that doesn't clear within 2 min, delete and re-apply (accepts brief downtime):
-kubectl delete rayservice llm-service && kubectl apply -f deploy/ray/ray-serve-llm.yaml
+kubectl annotate rayservice embed-service force-reconcile="$(date +%s)" --overwrite
+
+# If the active RayService changed but the ClusterIP service selector is stale,
+# patch the selector to the active cluster name reported by kubectl get rayservice -o yaml.
+kubectl patch svc llm-service -p '{"spec":{"selector":{"ray.io/cluster":"<active-llm-raycluster>","ray.io/node-type":"head"}}}'
+kubectl patch svc embed-service -p '{"spec":{"selector":{"ray.io/cluster":"<active-embed-raycluster>","ray.io/node-type":"head"}}}'
+
+# Delete and re-apply only as a last resort; it accepts downtime and can leave
+# old pods terminating while KubeRay reconciles.
 ```
 
 ### Recover stuck Terminating pods (dead node)
@@ -210,6 +224,20 @@ kubectl rollout restart deployment/api
 ### vLLM 0.4.2 + Ray 2.9.0 compatibility
 
 `AsyncLLMEngine.from_engine_args()` expects an `AsyncEngineArgs` object (not `EngineArgs`). The code in `services/api/app/models/vllm_engine.py` already uses `AsyncEngineArgs` — do not revert this. If upgrading vLLM, also upgrade the Ray base image and `rayVersion` in both RayService manifests in lockstep, or the worker image and the head node will run different Ray protocol versions.
+
+### Ray Serve proxy + Starlette compatibility
+
+The custom Ray image patches Ray 2.9.0's Serve proxy from `middleware.options` to `middleware.kwargs`. Without this patch, Serve applications can report HEALTHY while every HTTP proxy actor crash-loops and port 8000 refuses traffic. The Dockerfile validates the patched source during image build; do not remove that build step unless Ray/Starlette versions are upgraded and the issue is verified gone.
+
+### Ray Serve API paths
+
+Ray Serve mounts the FastAPI ingress apps under route prefixes. The API must call `/llm/chat/completions` and `/embed/embeddings`; `/llm` and `/embed` are route prefixes and return 404 for POST inference requests. The API Helm values and defaults already use the full paths.
+
+### BGE-M3 embedding dimension
+
+The EKS embedding service uses BGE-M3, which returns 1024-dimensional vectors. Qdrant `rag_collection` and `semantic_cache` must be created with vector size 1024. Local Ollama development with `nomic-embed-text` can still use 768 dimensions, but set `EMBED_DIM=768` and use a separate local Qdrant collection/cache to avoid dimension conflicts.
+
+If an existing EKS collection was created with the wrong dimension, delete and recreate that collection before re-ingestion; Qdrant vector dimensions are immutable.
 
 ### GPU node gets g6 instead of g5
 

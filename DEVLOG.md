@@ -5,6 +5,37 @@ Focus: *why*, not *what* (git log has the what).
 
 ---
 
+## 2026-06-17 • Ray Job runtime dependencies & NumPy 2.0 / PyArrow conflict
+
+**Problem:** Submitting the S3 ingestion job via `ray job submit` failed with `ImportError: numpy.core.multiarray failed to import` inside the `JobSupervisor` initialization. This happened because the job's `runtime_env` pip list originally included `unstructured[pdf,docx]`, which transitively pulled in the latest NumPy 2.0 version. Since the system-wide pre-installed `pyarrow 12.0.1` on the Ray head node is compiled against NumPy 1.x, the active virtual environment's NumPy 2.0 broke `pyarrow`'s compiled C extensions.
+
+**Backtracking compilation failure:** Attempting to pin `numpy==1.26.2` alongside `unstructured[pdf,docx]` caused pip to backtrack to ancient versions of `numba` (like `0.22.0`) to satisfy constraints from `unstructured-inference` (a layout model parser dependency). This resulted in compilation failures on the cluster due to deprecated `distutils` support in newer setup tools.
+
+**Solution:** 
+1. Pinned `numpy==1.26.2` in the runtime environment to maintain binary compatibility with system `pyarrow`.
+2. Replaced the heavy `unstructured[pdf,docx]` extra with the base `unstructured==0.11.0` library, which does not pull in `unstructured-inference`, `numba`, or heavy ML models.
+3. Manually declared the lightweight libraries required for `strategy="fast"` PDF/document parsing: `pdfminer.six`, `pdf2image`, `pypdf`, `pypdfium2`, `pi-heif`, `python-docx`, `python-pptx`.
+4. Codified these changes in [pipelines/jobs/ray_job.yaml](file:///home/som/code/scalable-rag-pipeline/pipelines/jobs/ray_job.yaml) and [pipelines/jobs/s3_event_handler.py](file:///home/som/code/scalable-rag-pipeline/pipelines/jobs/s3_event_handler.py).
+5. Documented that `--runtime-env-json` should be used instead of `--runtime-env` for raw job specs containing root-level keys like `entrypoint` to avoid parsing failures.
+
+**Result:** Ingestion jobs now start and run with an extremely lightweight virtual environment, avoiding heavy compile phases, C-extensions issues, and dependency version backtracking.
+
+---
+
+## 2026-06-17 • Ray Serve proxy, route paths, and BGE-M3 schema
+
+**Proxy crash:** Ray 2.9.0's Serve HTTP proxy expects `starlette.middleware.Middleware.options`, but the Starlette version in the custom image exposes `kwargs`. This crashed every Serve proxy actor even while the LLM/embed deployments reported HEALTHY. The Ray Serve image now patches `ray/serve/_private/proxy.py` at build time (`middleware.options` → `middleware.kwargs`), deletes stale `__pycache__`, and validates the patched source during Docker build. Patched image: `services/ray-serve:4c46e7c-proxy-fix2`.
+
+**Route paths:** Ray Serve ingress mounts the FastAPI apps under route prefixes. The actual API endpoints are `/llm/chat/completions` and `/embed/embeddings`, not just `/llm` and `/embed`. Updated API defaults, Helm values, bootstrap, and README snippets accordingly.
+
+**Embedding dimension/schema:** The EKS embedding service uses BGE-M3, which emits 1024-dimensional vectors. The old semantic cache default was 768 from local `nomic-embed-text`, causing Qdrant dimension errors. Live Qdrant collections were recreated/provisioned with size 1024, and bootstrap now creates missing `rag_collection`, `semantic_cache`, and Neo4j `entity_index` before the API starts. Existing Qdrant collection dimensions are immutable; wrong-dimension collections must be deleted and recreated before re-ingestion.
+
+**API DB schema:** `chat_history` is now created during FastAPI lifespan startup via SQLAlchemy `Base.metadata.create_all()`, removing the manual Aurora table creation step that was needed during the first E2E test.
+
+**Rollout observation:** With only two available GPU slots, KubeRay could not surge both new RayService workers while old workers occupied the GPUs. The live rollout required brief inference downtime by deleting old worker pods after the new heads/proxies were healthy. KubeRay later reported both RayServices `Running` with the patched clusters active.
+
+**Validation:** End-to-end `/api/v1/chat/stream` now completes planner → retriever → responder through the API pod against the EKS RayServices.
+
 ## 2026-06-17 • vLLM engine init: EngineArgs vs AsyncEngineArgs
 
 **Problem:** `AsyncLLMEngine.from_engine_args()` in vLLM 0.4.2 accesses fields (`engine_use_ray`, `disable_log_requests`, `disable_log_stats`, `max_log_len`) that exist on `AsyncEngineArgs` but NOT on the base `EngineArgs` dataclass. Our code was passing `EngineArgs`, causing successive `AttributeError` crashes on each retry.
