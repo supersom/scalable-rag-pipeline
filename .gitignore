@@ -8,6 +8,11 @@ __pycache__/
 # Claude Code internal directory
 .claude/
 
+# Terraform plugin cache and local state (state lives in S3)
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+
 # Local data / eval datasets (large binary files, not source)
 data/
 noisy_data/
