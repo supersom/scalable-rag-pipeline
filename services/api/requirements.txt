@@ -3,8 +3,8 @@
 # Core Framework
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
-pydantic==2.6.0
-pydantic-settings==2.1.0
+pydantic==2.9.2
+pydantic-settings==2.5.2
 simpleeval==0.9.13  # Safe math evaluation
 
 # Async Database & Cache
@@ -16,16 +16,17 @@ redis==5.0.1
 openai==1.10.0   # Standard client often used for compatible endpoints
 anthropic==0.8.0 # If using Claude fallback
 tiktoken==0.5.2
-sentence-transformers==2.3.1
-transformers==4.37.0 # For tokenizer templates
+# NOTE: sentence-transformers/transformers/torch are only used by app/models/
+# (Ray Serve model-serving, runs in the rayproject/ray image). The FastAPI API
+# calls remote LLM/embed endpoints over httpx and does not import them.
 
 # Graph & Vector DBs
 neo4j==5.16.0
 qdrant-client==1.7.3
 
 # Agent Framework
-langchain==0.1.5
-langgraph==0.0.21
+langchain==0.3.7
+langgraph==0.2.56
 
 # Observability & Ops
 opentelemetry-api==1.22.0
