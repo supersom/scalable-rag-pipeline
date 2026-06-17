@@ -1,21 +1,31 @@
 # deploy/helm/neo4j/values.yaml
+# Values for neo4j/neo4j chart v2026.x
+# Install: helm install neo4j-cluster neo4j/neo4j -f deploy/helm/neo4j/values.yaml -n default
+#
+# Password must match NEO4J_PASSWORD in app-env-secret.
+# Service created as "neo4j-cluster" — matches NEO4J_URI=bolt://neo4j-cluster:7687 in config.py.
 
 neo4j:
   name: "neo4j-cluster"
   edition: "community"
-  
-  core:
-    # Community Edition does NOT support Clustering. 
-    # Must be 1. If you need HA, upgrade to Enterprise.
-    numberOfServers: 1 
-    
-    resources:
-      requests:
-        cpu: "2"
-        memory: "8Gi"
-    
-  volumes:
-    data:
-      mode: "default" # Dynamic binding
+  # Must match NEO4J_PASSWORD in app-env-secret.
+  password: "password"
+  resources:
+    cpu: "2000m"
+    memory: "8Gi"
+
+# Disable the public LoadBalancer — API connects via ClusterIP (neo4j-cluster:7687).
+# A public Neo4j endpoint with password "password" is a security risk.
+services:
+  neo4j:
+    enabled: false
+
+volumes:
+  data:
+    mode: "dynamic"
+    dynamic:
       storageClassName: "gp3"
-      size: "100Gi"
+      accessModes:
+        - ReadWriteOnce
+      requests:
+        storage: 100Gi
