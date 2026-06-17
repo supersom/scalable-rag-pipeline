@@ -27,6 +27,30 @@ RUN pip install --no-cache-dir \
       "sentence-transformers==2.7.0" \
       "transformers>=4.40,<4.45"
 
+# Ray 2.9.0 proxy.py calls middleware.options, but Starlette's Middleware class
+# exposes kwargs. Patch and validate so Serve proxies don't crash-loop.
+RUN python - <<'PY'
+from pathlib import Path
+import shutil
+
+proxy = Path("/home/ray/anaconda3/lib/python3.10/site-packages/ray/serve/_private/proxy.py")
+text = proxy.read_text()
+old = "self.wrapped_http_proxy, **middleware.options"
+new = "self.wrapped_http_proxy, **middleware.kwargs"
+if old not in text:
+    raise SystemExit(f"expected Ray proxy middleware expression not found in {proxy}")
+proxy.write_text(text.replace(old, new))
+
+cache_dir = proxy.parent / "__pycache__"
+if cache_dir.exists():
+    shutil.rmtree(cache_dir)
+
+patched = proxy.read_text()
+compile(patched, str(proxy), "exec")
+if old in patched or new not in patched:
+    raise SystemExit("Ray proxy middleware patch validation failed")
+PY
+
 WORKDIR /app
 COPY services /app/services
 ENV PYTHONPATH=/app

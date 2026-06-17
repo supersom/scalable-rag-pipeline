@@ -32,14 +32,14 @@ class Settings(BaseSettings):
     S3_BUCKET_NAME: str
     
     # Ray Serve / Ollama (Internal LLM/Embeddings) / External LLM API
-    RAY_LLM_ENDPOINT: str = "http://llm-service:8000/llm"
-    RAY_EMBED_ENDPOINT: str = "http://embed-service:8000/embed"
+    RAY_LLM_ENDPOINT: str = "http://llm-service:8000/llm/chat/completions"
+    RAY_EMBED_ENDPOINT: str = "http://embed-service:8000/embed/embeddings"
     LLM_MODEL_NAME: str = "llama3.2:3b"
     LLM_MODEL_ID: Optional[str] = None
     LLM_API_KEY: Optional[str] = None  # set for HuggingFace, Together AI, etc.
     LLM_TIMEOUT: float = 120.0
     EMBED_MODEL_NAME: str = "nomic-embed-text"
-    EMBED_DIM: int = 768  # nomic-embed-text output dimension
+    EMBED_DIM: int = 1024  # BGE-M3 output dimension; set 768 for local nomic-embed-text
     
     # Security
     JWT_SECRET_KEY: str

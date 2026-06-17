@@ -8,6 +8,7 @@ from services.api.app.clients.ray_embed import embed_client
 from services.api.app.cache.redis import redis_client
 from services.api.app.routes import chat, upload, health
 from services.api.app.cache.semantic import semantic_cache
+from services.api.app.memory.postgres import Base, engine
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -21,6 +22,8 @@ async def lifespan(app: FastAPI):
     await redis_client.connect()
     await llm_client.start()
     await embed_client.start()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     await semantic_cache.ensure_collection()
     
     yield
