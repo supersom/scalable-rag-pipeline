@@ -71,7 +71,15 @@ helm upgrade --install neo4j-cluster neo4j/neo4j \
   -f deploy/helm/neo4j/values.yaml \
   --wait --timeout 5m
 
-echo "--- 9. app-env-secret ---"
+echo "--- 9. Data store schema ---"
+# BGE-M3 emits 1024-dimensional embeddings. Create collections if missing.
+kubectl run qdrant-schema --rm -i --restart=Never --image=curlimages/curl:8.8.0 -- \
+  sh -c 'set -e; for c in rag_collection semantic_cache; do if curl -fsS "http://qdrant:6333/collections/${c}" >/dev/null; then echo "${c} exists"; else curl -fsS -X PUT "http://qdrant:6333/collections/${c}" -H "Content-Type: application/json" -d "{\"vectors\":{\"size\":1024,\"distance\":\"Cosine\"}}"; echo; fi; done'
+
+kubectl exec neo4j-cluster-0 -- cypher-shell -u neo4j -p password \
+  'CREATE FULLTEXT INDEX entity_index IF NOT EXISTS FOR (n:Entity) ON EACH [n.name]'
+
+echo "--- 10. app-env-secret ---"
 # Retrieve Aurora password from Secrets Manager (ManageMasterUserPassword — never hardcode)
 DB_PASSWORD=$(aws secretsmanager get-secret-value \
   --secret-id "$DB_SECRET_ARN" \
@@ -84,12 +92,13 @@ kubectl create secret generic app-env-secret \
   --from-literal=S3_BUCKET_NAME="${S3_BUCKET}" \
   --from-literal=NEO4J_URI="bolt://neo4j-cluster:7687" \
   --from-literal=NEO4J_PASSWORD="password" \
-  --from-literal=RAY_LLM_ENDPOINT="http://llm-service:8000/llm" \
-  --from-literal=RAY_EMBED_ENDPOINT="http://embed-service:8000/embed" \
+  --from-literal=RAY_LLM_ENDPOINT="http://llm-service:8000/llm/chat/completions" \
+  --from-literal=RAY_EMBED_ENDPOINT="http://embed-service:8000/embed/embeddings" \
+  --from-literal=EMBED_DIM="1024" \
   --from-literal=LLM_API_KEY="" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-echo "--- 10. API ---"
+echo "--- 11. API ---"
 if [ ! -f deploy/helm/api/Chart.yaml ]; then
   echo "ERROR: deploy/helm/api/Chart.yaml not found. Build the API Helm chart first." >&2
   exit 1
@@ -99,7 +108,7 @@ helm upgrade --install api deploy/helm/api \
   --set image.tag="${API_IMAGE_TAG}" \
   --wait --timeout 5m
 
-echo "--- 11. Ray Serve (LLM + Embeddings) ---"
+echo "--- 12. Ray Serve (LLM + Embeddings) ---"
 # Substitute the image tag into the manifests before applying.
 # RayService triggers GPU node provisioning via Karpenter — allow up to 15 min.
 sed "s|ray-serve:[^ ]*|ray-serve:${RAY_IMAGE_TAG}|g" deploy/ray/ray-serve-llm.yaml \
