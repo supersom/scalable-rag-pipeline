@@ -24,3 +24,13 @@ output "s3_documents_bucket_name" {
   description = "The name of the S3 bucket for document storage."
   value       = aws_s3_bucket.documents.id
 }
+
+output "karpenter_controller_role_arn" {
+  description = "IAM role ARN for the Karpenter controller service account."
+  value       = aws_iam_role.karpenter_controller.arn
+}
+
+output "karpenter_node_role_name" {
+  description = "IAM role name used by Karpenter-launched EC2 nodes."
+  value       = aws_iam_role.karpenter_node.name
+}

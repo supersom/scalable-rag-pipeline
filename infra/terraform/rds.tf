@@ -6,7 +6,7 @@ module "aurora" {
 
   name           = "${var.cluster_name}-postgres"
   engine         = "aurora-postgresql"
-  engine_version = "15.3"
+  engine_version = "15.17"
   
   # SERVERLESS V2: Scales Compute (ACU) up/down based on load
   instance_class = "db.serverless" 
