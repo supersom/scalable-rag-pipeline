@@ -22,7 +22,7 @@ spec:
       spec:
         containers:
         - name: ray-head
-          image: rayproject/ray:2.9.0-py310-gpu
+          image: rayproject/ray:2.9.0-py310
           resources:
             limits:
               cpu: "2"
@@ -58,9 +58,11 @@ spec:
             requests:
               cpu: "8"
               memory: "32Gi"
-        # Node Selector: Tells Karpenter to use CPU nodes
+        # Node Selector: Tells Karpenter to use CPU nodes.
+        # m6i (general purpose, 4GB/vCPU) fits 8 CPU / 32Gi in an m6i.2xlarge (8 vCPU);
+        # c6i (compute, 2GB/vCPU) would force a 16-vCPU c6i.4xlarge for the same 32Gi.
         nodeSelector:
-          karpenter.k8s.aws/instance-family: "c6i"
+          karpenter.k8s.aws/instance-family: "m6i"
 
   # GROUP B: GPU Workers (For Embeddings, Graph Extraction, LLM Inference)
   # Autoscales based on GPU demand.
