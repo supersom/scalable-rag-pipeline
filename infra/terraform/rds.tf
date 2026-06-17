@@ -32,6 +32,10 @@ module "aurora" {
 
   master_username = "ragadmin"
   master_password = var.db_password
-  
+
+  # Without this, Aurora defaults to the "postgres" database. The app expects "rag_db".
+  # Changing this after cluster creation forces replacement — only safe on first deploy.
+  database_name = "rag_db"
+
   skip_final_snapshot = false # Always snapshot before deleting
 }

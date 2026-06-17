@@ -24,24 +24,22 @@ class LLMDeployment:
         quantization: str | None = None,
         gpu_memory_utilization: float = 0.90,
         max_model_len: int = 8192,
-        cpu_offload_gb: float = 0.0,
         enforce_eager: bool = False,
     ):
-        from vllm import AsyncLLMEngine, EngineArgs
+        # AsyncEngineArgs extends EngineArgs with async-specific fields (engine_use_ray,
+        # disable_log_requests, etc.) that AsyncLLMEngine.from_engine_args() requires.
+        from vllm import AsyncLLMEngine
+        from vllm.engine.arg_utils import AsyncEngineArgs
         from transformers import AutoTokenizer
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        engine_args = EngineArgs(
+        engine_args = AsyncEngineArgs(
             model=model_id,
             quantization=quantization,
             gpu_memory_utilization=gpu_memory_utilization,
             max_model_len=max_model_len,
-            cpu_offload_gb=cpu_offload_gb,
             enforce_eager=enforce_eager,
         )
-        # vLLM 0.20.1 bug: v1 engine accesses enable_log_requests which is missing from EngineArgs
-        if not hasattr(engine_args, "enable_log_requests"):
-            engine_args.enable_log_requests = False
         self.engine = AsyncLLMEngine.from_engine_args(engine_args)
 
     @_app.post("/chat/completions")

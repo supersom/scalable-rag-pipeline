@@ -5,6 +5,40 @@ Focus: *why*, not *what* (git log has the what).
 
 ---
 
+## 2026-06-17 • vLLM engine init: EngineArgs vs AsyncEngineArgs
+
+**Problem:** `AsyncLLMEngine.from_engine_args()` in vLLM 0.4.2 accesses fields (`engine_use_ray`, `disable_log_requests`, `disable_log_stats`, `max_log_len`) that exist on `AsyncEngineArgs` but NOT on the base `EngineArgs` dataclass. Our code was passing `EngineArgs`, causing successive `AttributeError` crashes on each retry.
+
+**Fix:** Import and use `AsyncEngineArgs` from `vllm.engine.arg_utils` instead of `EngineArgs`. `AsyncEngineArgs` is a subclass that adds the async-specific fields `from_engine_args()` expects. Also removed the `cpu_offload_gb` parameter — it was added in vLLM ≥0.5 and our image pins 0.4.2.
+
+**Why not upgrade vLLM?** Ray 2.9.0 (our base image) pins transitive deps that conflict with vLLM ≥0.5's torch version. Upgrading requires bumping the Ray base image AND `rayVersion` in RayService manifests AND confirming KubeRay operator compatibility — a coordinated change. Pinning 0.4.2 with the correct entry point is the lower-risk fix.
+
+---
+
+## 2026-06-17 • RayService: enableInTreeAutoscaling and serveService
+
+**enableInTreeAutoscaling:** Without this field in `rayClusterConfig`, the Ray autoscaler monitor runs inside the head pod but has no way to signal KubeRay to scale the worker group. GPU worker pods were never created despite `min_replicas: 1` in the serve config. Added `enableInTreeAutoscaling: true` to both RayService manifests — now Karpenter provisions GPU nodes automatically when serve demand arrives.
+
+**serveService:** KubeRay only creates the port-8000 Kubernetes Service (the one the API points at) if a `serveService` block is present in the RayService spec. Without it there is no in-cluster endpoint for the API to reach Ray Serve. Added to both manifests with `name: llm-service` / `name: embed-service` matching the defaults in `services/api/app/config.py` so no secret patching is needed.
+
+**FailedToUpdateService:** This KubeRay state occurs when the controller's old-to-new cluster traffic cutover fails — typically because the old cluster was already deleted (manually) before the controller got to delete it. The state is not terminal; the controller retries with exponential backoff. Workaround: annotate the RayService with a dummy key (`kubectl annotate rayservice ... force-reconcile=<ts>`) to trigger immediate reconciliation. Avoid rapid `delete + apply` cycles — prefer `kubectl apply` only so the controller's internal state machine can track the rollout.
+
+---
+
+## 2026-06-17 • Session checkpoint — EKS cluster operational, GPU serving image built
+
+**What's running:** API 2/2, Qdrant 3/3, Neo4j 1/1, Ray head + CPU worker. All core services healthy on 4 EKS nodes. 10 commits landed on main covering Terraform fixes, Karpenter v1 migration, API image, GPU serving rework, device plugin, gp3 StorageClass, Neo4j Helm deploy.
+
+**In flight:** `docker push` of `services/ray-serve:f25f720` to ECR — large image (~15GB), still uploading CUDA/torch layers.
+
+**Next steps once push completes:**
+1. `kubectl apply -f deploy/ray/ray-serve-llm.yaml && kubectl apply -f deploy/ray/ray-serve-embed.yaml`
+2. Karpenter provisions g5.2xlarge (8 vCPU, 1×A10G, 100GB volume)
+3. LLM head pulls ECR image, vLLM loads Llama-3-8B
+4. End-to-end chat validation via API
+
+---
+
 ## 2026-06-17 • EKS node disk pressure — root volume sizing and Ray head image fix
 
 **Problem:** Karpenter provisioned nodes with the default AL2023 root volume (20GB). Pulling `rayproject/ray:2.9.0-py310-gpu` (~15GB uncompressed) filled the node's ephemeral storage, triggering `DiskPressure` taints and evicting all pods on the node. This caused a cascade: Qdrant evicted, API crashed, Ray head evicted, CPU worker stuck Pending.

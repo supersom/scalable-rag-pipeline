@@ -23,4 +23,4 @@ resources:
 # Persistence: Use fast SSDs (io1 or gp3)
 persistence:
   size: 50Gi
-  storageClassName: gp2
+  storageClassName: gp3
