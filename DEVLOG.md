@@ -5,6 +5,14 @@ Focus: *why*, not *what* (git log has the what).
 
 ---
 
+## 2026-06-18 • Ingestion teardown ordering and ECR cleanup
+
+**Problem:** The existing cleanup script removed the KubeRay operator before deleting the new ingestion RayCluster, did not explicitly remove the ingestion service account, and Terraform could not delete a non-empty `services/ingestion` ECR repository.
+
+**Fix:** Cleanup now stops the SQS consumer first, deletes the ingestion RayCluster while KubeRay is still running, removes the service account, then removes remaining Ray resources before uninstalling KubeRay. The ingestion ECR repository now uses `force_delete = true`; Terraform handles the S3 notification, SQS queue/DLQ, IAM resources, and repository teardown.
+
+---
+
 ## 2026-06-18 • Ingestion worker startup — restore Ray 2.9 `pkg_resources`
 
 **Symptom:** `deployment/ingestion-worker` entered `CrashLoopBackOff` immediately after starting. Importing `ray.job_submission` failed with `ModuleNotFoundError: No module named 'pkg_resources'`.
