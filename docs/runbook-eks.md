@@ -92,7 +92,7 @@ export S3_BUCKET=<from terraform output>
 bash scripts/bootstrap_cluster.sh
 ```
 
-The script runs steps 1–13 in order:
+The script runs steps 1–14 in order:
 1. kubeconfig update
 2. Karpenter controller Helm install (installs CRDs + controller; derives role ARN + cluster endpoint from terraform output)
 3. Karpenter NodePool/EC2NodeClass apply
@@ -106,10 +106,27 @@ The script runs steps 1–13 in order:
 11. `app-env-secret` with all env vars
 12. API Helm chart
 13. RayService for LLM + embeddings
+14. Queue-backed ingestion: service account, CPU RayCluster, and SQS consumer
 
 The API also creates its `chat_history` table on startup via SQLAlchemy `Base.metadata.create_all()`, so a fresh Aurora database does not need a manual table creation step.
 
 **KubeRay `serveService` port bug** — KubeRay operator v1.0.0 still creates the named serve services (`llm-service` and `embed-service`) with an empty port list, because `serveService.spec.ports` is ignored. Both RayService manifests declare `containerPort: 8000`, which correctly adds port 8000 to the stable `llm-service-head-svc` and `embed-service-head-svc` services. The API targets those head services directly. No bootstrap service patch is required.
+
+### Automatic document ingestion
+
+Terraform connects the documents bucket to an SQS queue. Uploading a supported
+file after that notification is applied causes `deployment/ingestion-worker` to
+submit a Ray Data job to the CPU-only `ingestion-ray` cluster. The job parses and
+chunks the file, calls the embedding and LLM RayServices, then writes Qdrant and
+Neo4j. Existing bucket objects are not retroactively notified; copy or re-upload
+them to enqueue ingestion.
+
+```bash
+kubectl get raycluster ingestion-ray
+kubectl logs -f deploy/ingestion-worker
+kubectl port-forward svc/ingestion-ray-head-svc 8265:8265
+ray job list --address http://localhost:8265
+```
 
 ### 4. Wait for GPU inference
 

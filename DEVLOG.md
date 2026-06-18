@@ -5,6 +5,17 @@ Focus: *why*, not *what* (git log has the what).
 
 ---
 
+## 2026-06-18 • Production S3 ingestion path — SQS consumer + CPU Ray Data cluster
+
+**Decision:** Keep Ray Data for distributed document processing, but isolate it from GPU inference. S3 object-created events now flow to SQS; a lightweight Kubernetes consumer submits jobs to a dedicated CPU-only `ingestion-ray` cluster. The jobs call the existing LLM and embedding RayServices over HTTP and write to Qdrant and Neo4j.
+
+**Reliability:** SQS messages remain invisible while their Ray job runs and are deleted only after success. Failures retry three times before entering a DLQ. Qdrant point IDs are deterministic, so retries overwrite the same chunks rather than duplicating them.
+
+**Runtime fixes:** Local ingestion now explicitly starts a local Ray cluster instead of auto-discovering stale clusters. Remote mode connects only when `--no-init-ray` is supplied. The embedding stage now distinguishes Ollama's batch API from the Ray Serve single-text schema instead of rewriting `/embed/embeddings` to the invalid `/embed/embed` path.
+
+**Deployment:** Added a CPU ingestion image, Terraform SQS/S3 notification/IRSA wiring, `ingestion-ray` RayCluster, `ingestion-worker` Deployment, image build/promotion support, and bootstrap step 14.
+
+---
 
 ## 2026-06-18 • KubeRay serveService port bug — actual YAML fix
 

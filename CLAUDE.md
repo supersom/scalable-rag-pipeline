@@ -40,6 +40,10 @@ NEO4J_URI=bolt://localhost:7687
 
 ## Ingestion
 
+Production uploads use S3 → SQS → `ingestion-worker` → CPU `ingestion-ray` jobs.
+The Ray Data jobs call the GPU embedding/LLM RayServices and index Qdrant/Neo4j.
+Only objects uploaded after Terraform applies the bucket notification are queued.
+
 Two ways to ingest locally:
 
 ```bash
