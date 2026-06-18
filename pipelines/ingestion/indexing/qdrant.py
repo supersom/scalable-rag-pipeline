@@ -31,12 +31,18 @@ class QdrantIndexer:
             payload = {
                 "text": row["text"],
                 "filename": row["metadata"]["filename"],
+                "source_path": row["metadata"].get(
+                    "source_path", row["metadata"]["filename"]
+                ),
                 "page": row["metadata"].get("page_number", 0)
             }
             
             # Create Point
+            point_key = (
+                f"{payload['source_path']}:{payload['page']}:{payload['text']}"
+            )
             points.append(models.PointStruct(
-                id=str(uuid.uuid4()), # Generate unique ID for the vector
+                id=str(uuid.uuid5(uuid.NAMESPACE_URL, point_key)),
                 vector=row["vector"],
                 payload=payload
             ))

@@ -53,6 +53,7 @@ def process_batch(batch):
             logger.error(f"Failed to parse {short_name}: {e}")
             continue
 
+        metadata["source_path"] = filename
         chunks = split_text(raw_text, chunk_size=512, overlap=50)
 
         for chunk in chunks:
