@@ -7,6 +7,7 @@
 # Usage:
 #   bash scripts/sync_s3_to_ecr.sh api <git-sha>
 #   bash scripts/sync_s3_to_ecr.sh ray <git-sha>
+#   bash scripts/sync_s3_to_ecr.sh ingestion <git-sha>
 #
 # To find available SHAs in S3:
 #   aws s3 ls s3://rag-platform-models-prod-7649/images/services/api/
@@ -14,8 +15,8 @@
 
 set -euo pipefail
 
-SERVICE="${1:?Usage: sync_s3_to_ecr.sh <api|ray> <git-sha>}"
-GIT_SHA="${2:?Usage: sync_s3_to_ecr.sh <api|ray> <git-sha>}"
+SERVICE="${1:?Usage: sync_s3_to_ecr.sh <api|ray|ingestion> <git-sha>}"
+GIT_SHA="${2:?Usage: sync_s3_to_ecr.sh <api|ray|ingestion> <git-sha>}"
 
 REGION="us-east-1"
 MODELS_BUCKET="rag-platform-models-prod-7649"
@@ -25,8 +26,9 @@ ECR_BASE="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 case "$SERVICE" in
   api)  ECR_REPO="services/api" ;;
   ray)  ECR_REPO="services/ray-serve" ;;
+  ingestion) ECR_REPO="services/ingestion" ;;
   *)
-    echo "ERROR: unknown service '${SERVICE}'. Must be 'api' or 'ray'." >&2
+    echo "ERROR: unknown service '${SERVICE}'. Must be 'api', 'ray', or 'ingestion'." >&2
     exit 1
     ;;
 esac

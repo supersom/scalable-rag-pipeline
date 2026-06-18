@@ -7,10 +7,11 @@
 # Usage:
 #   bash scripts/build_push_image.sh api
 #   bash scripts/build_push_image.sh ray
+#   bash scripts/build_push_image.sh ingestion
 
 set -euo pipefail
 
-SERVICE="${1:?Usage: build_push_image.sh <api|ray>}"
+SERVICE="${1:?Usage: build_push_image.sh <api|ray|ingestion>}"
 
 REGION="us-east-1"
 MODELS_BUCKET="rag-platform-models-prod-7649"
@@ -25,8 +26,12 @@ case "$SERVICE" in
     DOCKERFILE="services/models/Dockerfile"
     ECR_REPO="services/ray-serve"
     ;;
+  ingestion)
+    DOCKERFILE="services/ingestion/Dockerfile"
+    ECR_REPO="services/ingestion"
+    ;;
   *)
-    echo "ERROR: unknown service '${SERVICE}'. Must be 'api' or 'ray'." >&2
+    echo "ERROR: unknown service '${SERVICE}'. Must be 'api', 'ray', or 'ingestion'." >&2
     exit 1
     ;;
 esac
