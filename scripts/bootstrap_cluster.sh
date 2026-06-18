@@ -11,15 +11,24 @@
 #   - ECR repos exist: services/api, services/ray-serve
 #   - API and Ray Serve images already built and pushed (see README)
 #
-# Usage:
-#   export API_IMAGE_TAG=<git-sha>
-#   export RAY_IMAGE_TAG=<git-sha>
-#   export DB_SECRET_ARN=<aurora-secret-arn>   # from terraform output
-#   export DB_ENDPOINT=<aurora-endpoint>   # from terraform output
-#   export REDIS_URL=<redis-url>               # from terraform output
-#   export S3_BUCKET=<bucket-name>             # from terraform output
-#   export JWT_SECRET_KEY=$(openssl rand -hex 32)
-#   bash scripts/bootstrap_cluster.sh
+# Usage: copy-paste the block below into your terminal, then run the script.
+: <<'USAGE'
+export API_IMAGE_TAG=$(aws ecr describe-images --repository-name services/api --region us-east-1 --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' --output text)
+export RAY_IMAGE_TAG=$(aws ecr describe-images --repository-name services/ray-serve --region us-east-1 --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' --output text)
+export DB_SECRET_ARN=$(terraform -chdir=infra/terraform output -raw db_secret_arn)
+export DB_ENDPOINT=$(terraform -chdir=infra/terraform output -raw db_endpoint)
+export REDIS_URL="rediss://$(terraform -chdir=infra/terraform output -raw redis_primary_endpoint):6379"
+export S3_BUCKET=$(terraform -chdir=infra/terraform output -raw s3_documents_bucket_name)
+export JWT_SECRET_KEY=$(openssl rand -hex 32)
+echo "API_IMAGE_TAG    = $API_IMAGE_TAG"
+echo "RAY_IMAGE_TAG    = $RAY_IMAGE_TAG"
+echo "DB_SECRET_ARN    = $DB_SECRET_ARN"
+echo "DB_ENDPOINT      = $DB_ENDPOINT"
+echo "REDIS_URL        = $REDIS_URL"
+echo "S3_BUCKET        = $S3_BUCKET"
+echo "JWT_SECRET_KEY   = $JWT_SECRET_KEY"
+bash scripts/bootstrap_cluster.sh
+USAGE
 
 set -euo pipefail
 
@@ -127,29 +136,6 @@ sed "s|ray-serve:[^ ]*|ray-serve:${RAY_IMAGE_TAG}|g" deploy/ray/ray-serve-llm.ya
   | kubectl apply -f -
 sed "s|ray-serve:[^ ]*|ray-serve:${RAY_IMAGE_TAG}|g" deploy/ray/ray-serve-embed.yaml \
   | kubectl apply -f -
-
-echo "--- 14. Patch Ray serve head services to expose port 8000 ---"
-# KubeRay creates llm-service-head-svc and embed-service-head-svc for each RayService,
-# but this operator version (1.0.0) has a bug where serveService.spec.ports is ignored,
-# so the named serve services (llm-service, embed-service) are never created.
-# Workaround: patch port 8000 into the head services directly so the API can reach
-# Ray Serve's HTTP proxy. Wait up to 3 min for the head services to appear first.
-for svc in llm-service-head-svc embed-service-head-svc; do
-  echo "  Waiting for ${svc}..."
-  for i in $(seq 1 18); do
-    kubectl get svc "$svc" -n default >/dev/null 2>&1 && break
-    sleep 10
-  done
-  kubectl patch svc "$svc" -n default -p '{
-    "spec": {"ports": [
-      {"name":"6379-port","port":6379,"protocol":"TCP"},
-      {"name":"8265-port","port":8265,"protocol":"TCP"},
-      {"name":"dashboard-agent","port":52365,"protocol":"TCP"},
-      {"name":"metrics","port":8080,"protocol":"TCP"},
-      {"name":"serve","port":8000,"targetPort":8000,"protocol":"TCP"}
-    ]}
-  }' && echo "  ${svc} patched" || echo "  WARNING: could not patch ${svc}"
-done
 
 echo ""
 echo "✅ Bootstrap complete."

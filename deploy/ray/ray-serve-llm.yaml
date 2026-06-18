@@ -12,9 +12,6 @@ spec:
       name: llm-service
     spec:
       type: ClusterIP
-      ports:
-      - port: 8000
-        targetPort: 8000
 
   rayClusterConfig:
     rayVersion: '2.9.0'
@@ -39,6 +36,7 @@ spec:
             ports:
             - containerPort: 6379
             - containerPort: 8265
+            - containerPort: 8000
     workerGroupSpecs:
     - groupName: gpu-workers
       replicas: 0

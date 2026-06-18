@@ -92,7 +92,7 @@ export S3_BUCKET=<from terraform output>
 bash scripts/bootstrap_cluster.sh
 ```
 
-The script runs steps 1–14 in order:
+The script runs steps 1–13 in order:
 1. kubeconfig update
 2. Karpenter controller Helm install (installs CRDs + controller; derives role ARN + cluster endpoint from terraform output)
 3. Karpenter NodePool/EC2NodeClass apply
@@ -106,11 +106,10 @@ The script runs steps 1–14 in order:
 11. `app-env-secret` with all env vars
 12. API Helm chart
 13. RayService for LLM + embeddings
-14. Patch Ray head services to expose port 8000 (KubeRay v1.0.0 workaround — see below)
 
 The API also creates its `chat_history` table on startup via SQLAlchemy `Base.metadata.create_all()`, so a fresh Aurora database does not need a manual table creation step.
 
-**KubeRay `serveService` port bug** — KubeRay operator v1.0.0 ignores `serveService.spec.ports` when creating the serve ClusterIP service, producing `spec.ports: Required value` on every reconcile. The named services (`llm-service`, `embed-service`) are never created. Workaround: bootstrap step 14 patches port 8000 onto the stable `llm-service-head-svc` and `embed-service-head-svc` services, which the API targets directly. The API env vars (`RAY_LLM_ENDPOINT`, `RAY_EMBED_ENDPOINT`) point to `*-head-svc:8000` accordingly.
+**KubeRay `serveService` port bug** — KubeRay operator v1.0.0 still creates the named serve services (`llm-service` and `embed-service`) with an empty port list, because `serveService.spec.ports` is ignored. Both RayService manifests declare `containerPort: 8000`, which correctly adds port 8000 to the stable `llm-service-head-svc` and `embed-service-head-svc` services. The API targets those head services directly. No bootstrap service patch is required.
 
 ### 4. Wait for GPU inference
 
@@ -254,6 +253,46 @@ kubectl patch secret app-env-secret -p \
   "{\"data\":{\"DATABASE_URL\":\"$(echo -n "postgresql://ragadmin:${DB_PASSWORD}@${DB_ENDPOINT}/rag_db" | base64 -w0)\"}}"
 kubectl rollout restart deployment/api
 ```
+
+### Retrieve JWT secret key
+
+```bash
+kubectl get secret app-env-secret -o jsonpath='{.data.JWT_SECRET_KEY}' | base64 -d
+```
+
+### Generate a JWT token
+
+Retrieve the key first (see above), then:
+
+```bash
+JWT_SECRET_KEY=$(kubectl get secret app-env-secret -o jsonpath='{.data.JWT_SECRET_KEY}' | base64 -d)
+python3 - <<EOF
+import jwt, time
+token = jwt.encode(
+    {"sub": "dev", "exp": int(time.time()) + 86400},
+    "$JWT_SECRET_KEY",
+    algorithm="HS256",
+)
+print(token)
+EOF
+```
+
+Set for curl:
+
+```bash
+TOKEN=$(python3 - <<EOF
+import jwt, time
+token = jwt.encode(
+    {"sub": "dev", "exp": int(time.time()) + 86400},
+    "$JWT_SECRET_KEY",
+    algorithm="HS256",
+)
+print(token)
+EOF
+)
+```
+
+Note: tokens expire. If you see `{"detail":"Could not validate credentials"}` on a token that previously worked, it has likely expired — regenerate it.
 
 ---
 
