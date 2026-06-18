@@ -36,13 +36,15 @@ terraform apply   # supply db_password when prompted
 
 Key outputs needed for bootstrap:
 ```bash
-terraform output -raw aurora_db_endpoint         # AURORA_ENDPOINT
+terraform output -raw db_endpoint                # DB_ENDPOINT (Aurora or RDS depending on db_tier)
 terraform output -raw redis_primary_endpoint     # REDIS_URL (prepend rediss://)
 terraform output -raw s3_documents_bucket_name   # S3_BUCKET
 terraform output -raw s3_models_bucket_name      # MODEL_CACHE_BUCKET (for scripts/cache_models_s3.py)
 ```
 
-> **Note on Aurora password:** Aurora uses `master_password = var.db_password` (supplied at `terraform apply`). Store it in a secrets manager or tfvars file — never hardcode it.
+> **Database tier:** controlled by `db_tier` in `terraform.tfvars`. Default is `"rds"` (db.t3.micro, ~$15/month). Set `db_tier = "aurora"` for production (Serverless v2, ~$86/month minimum, multi-AZ HA). Switching tiers on a live cluster destroys and recreates the instance — migrate chat history first if it matters.
+
+> **Note on database password:** supplied as `db_password` at `terraform apply`. Store it in `terraform.tfvars` (gitignored) — never hardcode it.
 
 ### 2. Build and push images
 
@@ -83,7 +85,7 @@ Re-running is safe — `aws s3 sync` skips files already present. If the bucket 
 export API_IMAGE_TAG=${GIT_SHA}
 export RAY_IMAGE_TAG=${GIT_SHA}
 export DB_SECRET_ARN=<from terraform output>
-export AURORA_ENDPOINT=<from terraform output>
+export DB_ENDPOINT=<from terraform output db_endpoint>
 export REDIS_URL=rediss://<from terraform output>
 export S3_BUCKET=<from terraform output>
 
@@ -224,7 +226,7 @@ DB_PASSWORD=$(aws secretsmanager get-secret-value \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])")
 
 kubectl patch secret app-env-secret -p \
-  "{\"data\":{\"DATABASE_URL\":\"$(echo -n "postgresql://ragadmin:${DB_PASSWORD}@${AURORA_ENDPOINT}/rag_db" | base64 -w0)\"}}"
+  "{\"data\":{\"DATABASE_URL\":\"$(echo -n "postgresql://ragadmin:${DB_PASSWORD}@${DB_ENDPOINT}/rag_db" | base64 -w0)\"}}"
 kubectl rollout restart deployment/api
 ```
 

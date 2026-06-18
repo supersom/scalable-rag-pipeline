@@ -20,3 +20,5 @@ eval/datasets/noisy_data/
 eval/datasets/ingested/
 eval/datasets/digested/
 eval/datasets/failed/
+infra/terraform/terraform.tfvars
+infra/terraform/*.tfvars

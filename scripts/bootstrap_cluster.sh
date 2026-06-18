@@ -15,7 +15,7 @@
 #   export API_IMAGE_TAG=<git-sha>
 #   export RAY_IMAGE_TAG=<git-sha>
 #   export DB_SECRET_ARN=<aurora-secret-arn>   # from terraform output
-#   export AURORA_ENDPOINT=<aurora-endpoint>   # from terraform output
+#   export DB_ENDPOINT=<aurora-endpoint>   # from terraform output
 #   export REDIS_URL=<redis-url>               # from terraform output
 #   export S3_BUCKET=<bucket-name>             # from terraform output
 #   bash scripts/bootstrap_cluster.sh
@@ -30,7 +30,7 @@ ECR_BASE="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 : "${API_IMAGE_TAG:?API_IMAGE_TAG is required}"
 : "${RAY_IMAGE_TAG:?RAY_IMAGE_TAG is required}"
 : "${DB_SECRET_ARN:?DB_SECRET_ARN is required}"
-: "${AURORA_ENDPOINT:?AURORA_ENDPOINT is required}"
+: "${DB_ENDPOINT:?DB_ENDPOINT is required}"
 : "${REDIS_URL:?REDIS_URL is required}"
 : "${S3_BUCKET:?S3_BUCKET is required}"
 
@@ -87,7 +87,7 @@ DB_PASSWORD=$(aws secretsmanager get-secret-value \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])")
 
 kubectl create secret generic app-env-secret \
-  --from-literal=DATABASE_URL="postgresql://ragadmin:${DB_PASSWORD}@${AURORA_ENDPOINT}/rag_db" \
+  --from-literal=DATABASE_URL="postgresql://ragadmin:${DB_PASSWORD}@${DB_ENDPOINT}/rag_db" \
   --from-literal=REDIS_URL="${REDIS_URL}" \
   --from-literal=S3_BUCKET_NAME="${S3_BUCKET}" \
   --from-literal=NEO4J_URI="bolt://neo4j-cluster:7687" \

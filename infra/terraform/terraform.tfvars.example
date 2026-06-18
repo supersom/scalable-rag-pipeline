@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars and fill in values.
+# terraform.tfvars is gitignored — never commit real passwords.
+
+# ── Required ──────────────────────────────────────────────────────────────────
+
+db_password = "change-me"
+
+# ── Database tier ─────────────────────────────────────────────────────────────
+# "rds"    — db.t3.micro RDS PostgreSQL, ~$15/month, no HA  (default, dev/test)
+# "aurora" — Serverless v2 Aurora, ~$86/month minimum, multi-AZ HA (production)
+
+db_tier = "rds"
+
+# ── Optional overrides ────────────────────────────────────────────────────────
+
+# aws_region   = "us-east-1"
+# cluster_name = "rag-platform-cluster"
+# environment  = "prod"
+# vpc_cidr     = "10.0.0.0/16"

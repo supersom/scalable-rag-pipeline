@@ -10,9 +10,9 @@ output "eks_cluster_endpoint" {
   value       = module.eks.cluster_endpoint
 }
 
-output "aurora_db_endpoint" {
-  description = "The writer endpoint for the Aurora PostgreSQL cluster."
-  value       = module.aurora.cluster_endpoint
+output "db_endpoint" {
+  description = "Writer endpoint for the active database tier (Aurora or RDS, set by var.db_tier)."
+  value       = local.db_endpoint
 }
 
 output "redis_primary_endpoint" {
