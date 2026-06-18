@@ -3,7 +3,7 @@
 set -euo pipefail
 
 echo "⚠️  WARNING: THIS WILL DESTROY ALL CLOUD RESOURCES ⚠️"
-echo "Includes: EKS Cluster, Databases (RDS/Neo4j/Redis), S3 Buckets, Load Balancers."
+echo "Includes: EKS Cluster, Databases (RDS/Aurora/Neo4j/Redis), S3 Buckets, Load Balancers."
 echo "Cost-saving measure for Dev/Test environments."
 echo ""
 read -p "Are you sure? Type 'DESTROY': " confirm
@@ -13,38 +13,69 @@ if [ "$confirm" != "DESTROY" ]; then
     exit 1
 fi
 
-# RayServices must go first — Karpenter won't terminate GPU nodes until Ray
-# pods are gone, and GPU nodes must be gone before VPC deletion can succeed.
-echo "🔹 1. Deleting RayServices (drains GPU nodes)..."
-kubectl delete rayservice --all -n default --ignore-not-found
+CLUSTER_NAME="rag-platform-cluster"
+REGION="us-east-1"
+DOCS_BUCKET=$(terraform -chdir="$(dirname "$0")/../infra/terraform" output -raw s3_documents_bucket_name 2>/dev/null || echo "")
 
-echo "🔹 2. Deleting dead nodeclaims..."
-kubectl delete nodeclaim cpu-q2z2n --ignore-not-found || true
+# ── 1. RayServices first — triggers GPU node drain via Karpenter ──────────────
+echo "🔹 1. Deleting RayServices (triggers GPU node drain)..."
+kubectl delete rayservice --all -n default --ignore-not-found || true
 
-echo "🔹 3. Waiting for GPU nodeclaims to terminate (up to 10 min)..."
+# ── 2. Helm uninstall all app workloads ───────────────────────────────────────
+# Do this BEFORE waiting for nodeclaims — CPU nodes won't drain until CPU pods are gone.
+echo "🔹 2. Helm uninstall (api, qdrant, neo4j-cluster, kuberay-operator)..."
+helm uninstall api              --ignore-not-found 2>/dev/null || true
+helm uninstall qdrant           --ignore-not-found 2>/dev/null || true
+helm uninstall neo4j-cluster    --ignore-not-found 2>/dev/null || true
+helm uninstall kuberay-operator --ignore-not-found 2>/dev/null || true
+
+# ── 3. Delete Karpenter NodePools — stops Karpenter refilling drained nodes ───
+echo "🔹 3. Deleting Karpenter NodePools and EC2NodeClass..."
+kubectl delete nodepool --all --ignore-not-found || true
+kubectl delete ec2nodeclass --all --ignore-not-found || true
+
+# ── 4. Force-delete all remaining NodeClaims ──────────────────────────────────
+echo "🔹 4. Deleting all NodeClaims (forces node termination)..."
+kubectl delete nodeclaim --all --ignore-not-found || true
+
+# ── 5. Wait for all nodes provisioned by Karpenter to terminate ───────────────
+echo "🔹 5. Waiting for NodeClaims to clear (up to 10 min)..."
 for i in $(seq 1 60); do
     remaining=$(kubectl get nodeclaim -o name 2>/dev/null | wc -l)
-    [ "$remaining" -eq 0 ] && break
-    echo "  ${remaining} nodeclaim(s) still present, waiting..."
+    [ "$remaining" -eq 0 ] && { echo "  All NodeClaims gone."; break; }
+    echo "  ${remaining} nodeclaim(s) still present, waiting 10s..."
     sleep 10
 done
 
-echo "🔹 4. Helm uninstall (API, Qdrant, Neo4j, KubeRay operator)..."
-helm uninstall api            --ignore-not-found || true
-helm uninstall qdrant         --ignore-not-found || true
-helm uninstall neo4j-cluster  --ignore-not-found || true
-helm uninstall kuberay-operator --ignore-not-found || true
+# ── 6. Uninstall Karpenter controller ─────────────────────────────────────────
+# Must be done before terraform destroy removes Karpenter's IAM roles.
+echo "🔹 6. Uninstalling Karpenter Helm release..."
+helm uninstall karpenter -n kube-system --ignore-not-found 2>/dev/null || true
 
-echo "🔹 5. Deleting remaining kubectl resources..."
-kubectl delete -f deploy/ray/ --ignore-not-found || true
-
-echo "🔹 6. Deleting PVCs (prevents orphaned EBS volumes)..."
+# ── 7. Delete PVCs — prevents orphaned EBS volumes ────────────────────────────
+echo "🔹 7. Deleting PVCs..."
 kubectl delete pvc --all -n default --ignore-not-found || true
 
-echo "🔹 7. Waiting for LoadBalancers to deregister (60s)..."
+# ── 8. Delete remaining manifests and secrets ─────────────────────────────────
+echo "🔹 8. Deleting remaining k8s resources..."
+kubectl delete -f deploy/ray/  --ignore-not-found 2>/dev/null || true
+kubectl delete -f deploy/k8s/  --ignore-not-found 2>/dev/null || true
+kubectl delete secret app-env-secret --ignore-not-found || true
+
+# ── 9. Empty documents S3 bucket (force_destroy=false — must be empty for destroy) ──
+echo "🔹 9. Emptying documents S3 bucket..."
+if [ -n "$DOCS_BUCKET" ]; then
+    aws s3 rm "s3://${DOCS_BUCKET}" --recursive --region "$REGION" || true
+else
+    echo "  Could not determine documents bucket name — skipping (terraform destroy may fail if non-empty)"
+fi
+
+# ── 10. Wait for Load Balancers to deregister ─────────────────────────────────
+echo "🔹 10. Waiting 60s for Load Balancers to deregister..."
 sleep 60
 
-echo "🔹 8. Running Terraform Destroy..."
+# ── 11. Terraform destroy ─────────────────────────────────────────────────────
+echo "🔹 11. Running Terraform destroy..."
 cd "$(dirname "$0")/../infra/terraform"
 terraform destroy -auto-approve
 
