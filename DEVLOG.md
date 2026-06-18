@@ -5,6 +5,32 @@ Focus: *why*, not *what* (git log has the what).
 
 ---
 
+## 2026-06-18 • KubeRay serveService port bug and head-svc workaround
+
+**Problem:** The API returned `An internal error occurred` at the retriever step. Both the planner's LLM call and the retriever's embed call failed with `[Errno -2] Name or service not known`. The DNS names `llm-service` and `embed-service` — specified in the `serveService.metadata.name` field of the RayService manifests — never resolved.
+
+**Root cause:** KubeRay operator v1.0.0 has a bug in `rayservice_controller.go:218`: when reconciling the serve ClusterIP service it builds the `ServiceSpec` with an empty `Ports` array, even when `serveService.spec.ports` is provided. Kubernetes rejects the resulting object with `spec.ports: Required value`. This reconcile error repeats every cycle; the named serve services are never created.
+
+**Workaround:** KubeRay *does* correctly create a stable `<name>-head-svc` ClusterIP service for each RayService (e.g. `llm-service-head-svc`). Ray Serve's HTTP proxy runs on port 8000 of the head pod, which carries `ray.io/serve=true`. We patch port 8000 onto the head services and point the API at `llm-service-head-svc:8000` and `embed-service-head-svc:8000` instead.
+
+**Why not fix the serveService YAML?** The operator ignores the port spec entirely — the newSvc log shows `Ports:[]ServicePort{}` regardless of what the YAML contains. The only structural fix would be upgrading KubeRay, which is a larger change.
+
+**Changes:** `deploy/helm/api/values.yaml` (endpoints), `scripts/bootstrap_cluster.sh` step 14 (patch head services on deploy), comment in RayService YAMLs.
+
+---
+
+## 2026-06-18 • GPU NodePool narrowed to g5.2xlarge on-demand; Ray worker memory resized to 24Gi
+
+**Problem (capacity):** The original GPU NodePool used `instance-category In [g,p] + instance-generation Gt [4]` with spot + on-demand. On deploy, Karpenter selected `g5.4xlarge` (16 vCPU), which consumed the entire 16-vCPU G-instance quota (L-DB2E81BA) in one shot — the second GPU worker had no capacity. Switching to two `g5.2xlarge` (8 vCPU each) fits within quota.
+
+**Problem (memory):** Workers were requesting 32Gi but `g5.2xlarge` has only ~28.3 GiB allocatable after EKS node system reservations (~3.6 GiB). Requests exceeded node capacity; workers stayed Pending.
+
+**Fix:** Pinned NodePool to `instance-family: g5` + `instance-size: 2xlarge` + `capacity-type: on-demand`. Reduced Ray worker memory from 32Gi → 24Gi (leaves ~3.6 GiB headroom above the 24.1 GiB consumed by worker + daemonsets). Both services — LLM and embedding — got separate g5.2xlarge nodes.
+
+**Trade-off:** Losing the spot fallback increases cost (~$1/hr for both nodes) but eliminates interruption risk while GPU quota is at 16 vCPU. Spot can be re-added once quota is raised to ≥32.
+
+---
+
 ## 2026-06-18 • Model weight S3 caching to eliminate HuggingFace NAT transfer cost
 
 **Problem:** Each GPU node cold start downloaded ~18 GB from HuggingFace through the NAT Gateway — ~16 GB for `NousResearch/Meta-Llama-3-8B-Instruct` and ~2.2 GB for `BAAI/bge-m3`. At $0.045/GB that's ~$0.90 per cold start, compounding with Karpenter spot churn.

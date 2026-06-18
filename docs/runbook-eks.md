@@ -12,7 +12,7 @@ Internet → (ALB/Ingress) → FastAPI (EKS, ECR image)
                          → Neo4j  (StatefulSet, gp3 PVC)
                          → Aurora PostgreSQL (Serverless v2, Secrets Manager password)
                          → ElastiCache Redis (TLS, rediss://)
-                         → Ray Serve on g6/g5 GPU nodes (Karpenter spot/on-demand)
+                         → Ray Serve on g5 GPU nodes (Karpenter on-demand)
                               ├── llm-service  (vLLM + Llama-3-8B, port 8000 /llm/chat/completions)
                               └── embed-service (BGE-M3,           port 8000 /embed/embeddings)
 ```
@@ -20,7 +20,7 @@ Internet → (ALB/Ingress) → FastAPI (EKS, ECR image)
 Node pools:
 - `system` — 2× m6i.large (managed, always on), runs CoreDNS + Karpenter + kuberay-operator
 - `cpu` (Karpenter) — m6i/c6i/r6i spot, 100GB root; runs API, Qdrant, Neo4j, Ray heads
-- `gpu` (Karpenter) — g6/g5 on-demand, 100GB root; runs Ray GPU workers
+- `gpu` (Karpenter) — g5 spot/on-demand, 100GB root; runs Ray GPU workers
 
 ---
 
@@ -92,26 +92,30 @@ export S3_BUCKET=<from terraform output>
 bash scripts/bootstrap_cluster.sh
 ```
 
-The script runs steps 1–12 in order:
+The script runs steps 1–14 in order:
 1. kubeconfig update
-2. Karpenter NodePool/EC2NodeClass apply
-3. gp3 StorageClass
-4. NVIDIA device plugin DaemonSet
-5. Helm repos
-6. KubeRay operator
-7. Qdrant (3-replica StatefulSet)
-8. Neo4j (community, 100GB gp3 PVC)
-9. Data-store schema: create missing Qdrant `rag_collection` + `semantic_cache` at 1024 dimensions, and Neo4j `entity_index`
-10. `app-env-secret` with all env vars
-11. API Helm chart
-12. RayService for LLM + embeddings
+2. Karpenter controller Helm install (installs CRDs + controller; derives role ARN + cluster endpoint from terraform output)
+3. Karpenter NodePool/EC2NodeClass apply
+4. gp3 StorageClass
+5. NVIDIA device plugin DaemonSet
+6. Helm repos
+7. KubeRay operator
+8. Qdrant (3-replica StatefulSet)
+9. Neo4j (community, 100GB gp3 PVC)
+10. Data-store schema: create missing Qdrant `rag_collection` + `semantic_cache` at 1024 dimensions, and Neo4j `entity_index`
+11. `app-env-secret` with all env vars
+12. API Helm chart
+13. RayService for LLM + embeddings
+14. Patch Ray head services to expose port 8000 (KubeRay v1.0.0 workaround — see below)
 
 The API also creates its `chat_history` table on startup via SQLAlchemy `Base.metadata.create_all()`, so a fresh Aurora database does not need a manual table creation step.
+
+**KubeRay `serveService` port bug** — KubeRay operator v1.0.0 ignores `serveService.spec.ports` when creating the serve ClusterIP service, producing `spec.ports: Required value` on every reconcile. The named services (`llm-service`, `embed-service`) are never created. Workaround: bootstrap step 14 patches port 8000 onto the stable `llm-service-head-svc` and `embed-service-head-svc` services, which the API targets directly. The API env vars (`RAY_LLM_ENDPOINT`, `RAY_EMBED_ENDPOINT`) point to `*-head-svc:8000` accordingly.
 
 ### 4. Wait for GPU inference
 
 ```bash
-# Watch Karpenter provision the GPU node (g6.4xlarge, ~2 min)
+# Watch Karpenter provision the GPU node (g5.2xlarge, ~2 min)
 kubectl get nodeclaims -w
 
 # Watch LLM load (~5 min after GPU node joins)
@@ -199,6 +203,27 @@ kubectl get nodeclaims   # find the claim for the dead node
 kubectl delete nodeclaim <name>
 ```
 
+### Karpenter logs
+
+```bash
+# Follow live (both controller replicas interleaved)
+kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter -f
+
+# Single pod — cleaner if you want no interleaving
+kubectl logs -n kube-system karpenter-d8756bb89-j6qrv -f
+
+# Last 100 lines without following
+kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter --tail=100
+
+# Filter to provisioning decisions only
+kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter -f \
+  | grep -E 'launched|disrupted|failed|nodeclaim|NodeClaim'
+
+# Pretty-print JSON logs
+kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter -f \
+  | jq -r '[.time, .level, .msg] | @tsv'
+```
+
 ### Check Ray cluster health
 
 ```bash
@@ -252,9 +277,9 @@ The EKS embedding service uses BGE-M3, which returns 1024-dimensional vectors. Q
 
 If an existing EKS collection was created with the wrong dimension, delete and recreate that collection before re-ingestion; Qdrant vector dimensions are immutable.
 
-### GPU node gets g6 instead of g5
+### GPU NodePool is pinned to g5.2xlarge on-demand
 
-Karpenter's `gpu` NodePool lists `g5` and `g6` families. Both have NVIDIA A10G/L4 with 24GB VRAM and fit Llama-3-8B at fp16. If Karpenter picks `g6.4xlarge` instead of `g5.2xlarge`, that's fine — the workload runs identically.
+The `gpu` NodePool is currently constrained to `instance-family: g5` + `instance-size: 2xlarge` + `capacity-type: on-demand`. This was narrowed from a broader g/p spot selector after AZ capacity issues and a 16-vCPU G-instance quota limit. If you want spot or larger instances, update `infra/karpenter/provisioner-gpu.yaml`.
 
 ### Qdrant PVCs are on gp2
 
@@ -263,7 +288,7 @@ The running Qdrant StatefulSet was provisioned before the gp3 StorageClass exist
 ### Ray Serve cold start
 
 GPU workers scale to zero when idle (Karpenter terminates the node). First request after idle takes ~5–7 min:
-- Karpenter provisions a g6/g5 node: ~2 min
+- Karpenter provisions a g5.2xlarge node: ~2 min
 - ECR image pull (~15 GB): ~30 sec via VPC endpoint (no NAT charge)
 - S3 model weight sync (~18 GB): ~2–3 min via Gateway endpoint ($0 transfer)
 - vLLM loads Llama-3-8B into GPU: ~2 min
