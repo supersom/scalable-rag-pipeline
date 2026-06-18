@@ -49,8 +49,8 @@ python scripts/ingest_local.py ./data/docs/ --no-graph       # skip Neo4j
 python scripts/ingest_local.py ./data/docs/ --graph-only     # Neo4j only (first 10 chunks)
 
 # Full Ray pipeline — all formats including PPTX, DOCX, HTML
-python pipelines/ingestion/main.py ./data/docs/
-python pipelines/ingestion/main.py ./data/docs/ --no-graph
+python -m pipelines.ingestion.main ./data/docs/
+python -m pipelines.ingestion.main ./data/docs/ --no-graph
 ```
 
 Batch eval ingestion (processes `eval/datasets/noisy_data/` in batches of 20):
