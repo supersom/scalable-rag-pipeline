@@ -74,6 +74,8 @@ spec:
           env_vars:
             EMBED_MODEL_ID: "BAAI/bge-m3"
             EMBED_COMPILE: "true"
+            # Sync weights from S3 via Gateway endpoint ($0 transfer) instead of HuggingFace via NAT.
+            MODEL_CACHE_BUCKET: "rag-platform-models-prod-7649"
         deployments:
           - name: EmbedDeployment
             autoscaling_config:

@@ -82,6 +82,9 @@ spec:
             LLM_GPU_MEMORY_UTILIZATION: "0.90"
             # vLLM v1 engine in this version mishandles EngineArgs — force the stable v0 engine.
             VLLM_USE_V1: "0"
+            # Sync weights from S3 via Gateway endpoint ($0 transfer) instead of HuggingFace via NAT.
+            # Run scripts/cache_models_s3.py once to populate this bucket before deploying.
+            MODEL_CACHE_BUCKET: "rag-platform-models-prod-7649"
         deployments:
           - name: LLMDeployment
             autoscaling_config:

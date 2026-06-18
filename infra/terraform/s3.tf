@@ -57,3 +57,22 @@ resource "aws_s3_bucket_cors_configuration" "docs_cors" {
     max_age_seconds = 3000
   }
 }
+
+# Model weights cache bucket — holds HuggingFace model snapshots so GPU node cold
+# starts pull from S3 (free via Gateway endpoint) instead of HuggingFace (NAT, ~$0.90/node).
+resource "aws_s3_bucket" "models" {
+  bucket        = "rag-platform-models-prod-7649"
+  force_destroy = true # Weights are re-uploadable from HuggingFace; no data-loss risk
+
+  tags = {
+    Name = "Model weights cache"
+  }
+}
+
+# No versioning — model weights are immutable snapshots keyed by model ID + revision.
+resource "aws_s3_bucket_versioning" "models_ver" {
+  bucket = aws_s3_bucket.models.id
+  versioning_configuration {
+    status = "Disabled"
+  }
+}

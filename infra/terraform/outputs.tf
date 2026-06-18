@@ -34,3 +34,8 @@ output "karpenter_node_role_name" {
   description = "IAM role name used by Karpenter-launched EC2 nodes."
   value       = aws_iam_role.karpenter_node.name
 }
+
+output "s3_models_bucket_name" {
+  description = "S3 bucket for HuggingFace model weights cache (used by GPU node cold starts)."
+  value       = aws_s3_bucket.models.id
+}

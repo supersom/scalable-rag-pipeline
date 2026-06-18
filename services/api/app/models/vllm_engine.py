@@ -9,6 +9,29 @@ from ray import serve
 # or the 70B model once GPU quota allows tensor parallelism).
 _DEFAULT_MODEL_ID = "NousResearch/Meta-Llama-3-8B-Instruct"
 
+
+def _resolve_model_path(model_id: str) -> str:
+    """Return a local path to model weights, syncing from S3 if MODEL_CACHE_BUCKET is set.
+
+    S3 layout: s3://<bucket>/models/<org>/<name>/  (mirrors HuggingFace model IDs).
+    Files are synced to /model-cache/<org>--<name>/ on the node's ephemeral disk.
+    The S3 Gateway VPC endpoint means this transfer costs $0 and bypasses the NAT Gateway.
+    """
+    bucket = os.getenv("MODEL_CACHE_BUCKET")
+    if not bucket:
+        return model_id
+
+    import subprocess
+    local_path = f"/model-cache/{model_id.replace('/', '--')}"
+    sentinel = os.path.join(local_path, "config.json")
+    if not os.path.exists(sentinel):
+        print(f"[model-cache] syncing s3://{bucket}/models/{model_id}/ → {local_path}")
+        subprocess.run(
+            ["aws", "s3", "sync", f"s3://{bucket}/models/{model_id}/", local_path, "--no-progress"],
+            check=True,
+        )
+    return local_path
+
 _app = FastAPI()
 
 
@@ -32,9 +55,10 @@ class LLMDeployment:
         from vllm.engine.arg_utils import AsyncEngineArgs
         from transformers import AutoTokenizer
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        model_path = _resolve_model_path(model_id)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         engine_args = AsyncEngineArgs(
-            model=model_id,
+            model=model_path,
             quantization=quantization,
             gpu_memory_utilization=gpu_memory_utilization,
             max_model_len=max_model_len,

@@ -146,3 +146,28 @@ resource "aws_iam_role_policy_attachment" "karpenter_node_ssm" {
 
 # Note: aws_eks_access_entry requires API or API_AND_CONFIG_MAP auth mode.
 # This cluster uses CONFIG_MAP mode — the KarpenterNodeRole is mapped via aws-auth ConfigMap instead.
+
+# Allow all Karpenter nodes (including GPU workers) to read model weights from S3.
+# Using the node role rather than per-pod IRSA so the download works during Ray Serve
+# __init__ without any service account annotation on the RayService worker pods.
+resource "aws_iam_policy" "karpenter_node_models" {
+  name        = "KarpenterNodeModelsCachePolicy-${var.cluster_name}"
+  description = "Read-only access to the model weights cache bucket for GPU node cold starts"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:GetObject", "s3:ListBucket"]
+      Resource = [
+        aws_s3_bucket.models.arn,
+        "${aws_s3_bucket.models.arn}/*",
+      ]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "karpenter_node_models" {
+  role       = aws_iam_role.karpenter_node.name
+  policy_arn = aws_iam_policy.karpenter_node_models.arn
+}
