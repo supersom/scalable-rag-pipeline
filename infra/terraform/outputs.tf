@@ -44,3 +44,13 @@ output "db_secret_arn" {
   description = "ARN of the DB-managed Secrets Manager secret holding the master password (Aurora or RDS)."
   value       = local.db_secret_arn
 }
+
+output "ingestion_queue_url" {
+  description = "SQS queue consumed by the document ingestion worker."
+  value       = aws_sqs_queue.ingestion.id
+}
+
+output "ingestion_irsa_role_arn" {
+  description = "IAM role used by the ingestion queue consumer and Ray workers."
+  value       = module.ingestion_irsa_role.iam_role_arn
+}

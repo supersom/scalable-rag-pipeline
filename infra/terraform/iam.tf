@@ -14,11 +14,21 @@ resource "aws_iam_policy" "ingestion_policy" {
           "s3:PutObject",
           "s3:ListBucket"
         ]
-        Effect   = "Allow"
+        Effect = "Allow"
         Resource = [
           aws_s3_bucket.documents.arn,
           "${aws_s3_bucket.documents.arn}/*"
         ]
+      },
+      {
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:ChangeMessageVisibility",
+          "sqs:GetQueueAttributes"
+        ]
+        Effect   = "Allow"
+        Resource = aws_sqs_queue.ingestion.arn
       }
     ]
   })
@@ -30,12 +40,15 @@ module "ingestion_irsa_role" {
   version = "~> 5.0"
 
   role_name = "rag-ingestion-role"
-  
+
   # Trust relationship: Only the 'ray-worker' service account in 'default' ns can use this
   oidc_providers = {
     main = {
-      provider_arn               = module.eks.oidc_provider_arn
-      namespace_service_accounts = ["default:ray-worker"]
+      provider_arn = module.eks.oidc_provider_arn
+      namespace_service_accounts = [
+        "default:ray-worker",
+        "default:ingestion-worker"
+      ]
     }
   }
 
