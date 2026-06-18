@@ -5,6 +5,16 @@ Focus: *why*, not *what* (git log has the what).
 
 ---
 
+## 2026-06-18 • Ingestion worker startup — restore Ray 2.9 `pkg_resources`
+
+**Symptom:** `deployment/ingestion-worker` entered `CrashLoopBackOff` immediately after starting. Importing `ray.job_submission` failed with `ModuleNotFoundError: No module named 'pkg_resources'`.
+
+**Root cause:** The ingestion image is based on Ray 2.9, whose Pydantic compatibility module imports `pkg_resources`. The image's dependency installation left it without a compatible setuptools package that provides that legacy module.
+
+**Fix:** Pin `setuptools<81` in `services/ingestion/Dockerfile`. The cap preserves `pkg_resources` compatibility for Ray 2.9 until Ray is upgraded.
+
+---
+
 ## 2026-06-18 • Production S3 ingestion path — SQS consumer + CPU Ray Data cluster
 
 **Decision:** Keep Ray Data for distributed document processing, but isolate it from GPU inference. S3 object-created events now flow to SQS; a lightweight Kubernetes consumer submits jobs to a dedicated CPU-only `ingestion-ray` cluster. The jobs call the existing LLM and embedding RayServices over HTTP and write to Qdrant and Neo4j.

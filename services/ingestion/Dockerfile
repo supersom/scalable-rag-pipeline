@@ -3,6 +3,7 @@ FROM rayproject/ray:2.9.0-py310
 
 USER root
 RUN pip install --no-cache-dir \
+      "setuptools<81" \
       "numpy==1.26.2" \
       "boto3==1.34.0" \
       "httpx==0.26.0" \
