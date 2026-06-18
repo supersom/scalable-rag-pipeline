@@ -89,13 +89,13 @@ def main(source: str, extract_graph: bool = True, init_ray: bool = True):
     if ray.is_initialized():
         logger.info("Using already-initialised Ray cluster.")
     else:
-        address = os.environ.get("RAY_ADDRESS", "auto") if not init_ray else "auto"
-        try:
+        if init_ray:
+            ray.init(address="local", runtime_env={"env_vars": worker_env})
+            logger.info("Started a new local Ray cluster.")
+        else:
+            address = os.environ.get("RAY_ADDRESS", "auto")
             ray.init(address=address, runtime_env={"env_vars": worker_env})
-            logger.info(f"Connected to Ray cluster at {address}.")
-        except Exception:
-            ray.init(runtime_env={"env_vars": worker_env})
-            logger.info("Started local Ray cluster.")
+            logger.info("Connected to Ray cluster at %s.", address)
 
     logger.info(f"Reading files from: {source}")
 
