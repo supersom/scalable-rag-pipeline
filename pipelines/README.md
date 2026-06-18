@@ -37,6 +37,16 @@ bash scripts/build_push_image.sh ingestion
 bash scripts/sync_s3_to_ecr.sh ingestion <git-sha>
 ```
 
+Deploy or update only the ingestion components in an existing cluster:
+
+```bash
+bash scripts/deploy_ingestion.sh
+```
+
+The script derives the latest ingestion image tag and Terraform queue/IRSA
+outputs by default. Set `INGESTION_IMAGE_TAG`, `INGESTION_QUEUE_URL`, or
+`INGESTION_ROLE_ARN` to override them explicitly.
+
 Operational checks:
 
 ```bash

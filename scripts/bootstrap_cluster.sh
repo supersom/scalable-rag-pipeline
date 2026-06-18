@@ -15,23 +15,17 @@
 : <<'USAGE'
 export API_IMAGE_TAG=$(aws ecr describe-images --repository-name services/api --region us-east-1 --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' --output text)
 export RAY_IMAGE_TAG=$(aws ecr describe-images --repository-name services/ray-serve --region us-east-1 --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' --output text)
-export INGESTION_IMAGE_TAG=$(aws ecr describe-images --repository-name services/ingestion --region us-east-1 --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' --output text)
 export DB_SECRET_ARN=$(terraform -chdir=infra/terraform output -raw db_secret_arn)
 export DB_ENDPOINT=$(terraform -chdir=infra/terraform output -raw db_endpoint)
 export REDIS_URL="rediss://$(terraform -chdir=infra/terraform output -raw redis_primary_endpoint):6379"
 export S3_BUCKET=$(terraform -chdir=infra/terraform output -raw s3_documents_bucket_name)
-export INGESTION_QUEUE_URL=$(terraform -chdir=infra/terraform output -raw ingestion_queue_url)
-export INGESTION_ROLE_ARN=$(terraform -chdir=infra/terraform output -raw ingestion_irsa_role_arn)
 export JWT_SECRET_KEY=$(openssl rand -hex 32)
 echo "API_IMAGE_TAG    = $API_IMAGE_TAG"
 echo "RAY_IMAGE_TAG    = $RAY_IMAGE_TAG"
-echo "INGESTION_IMAGE_TAG = $INGESTION_IMAGE_TAG"
 echo "DB_SECRET_ARN    = $DB_SECRET_ARN"
 echo "DB_ENDPOINT      = $DB_ENDPOINT"
 echo "REDIS_URL        = $REDIS_URL"
 echo "S3_BUCKET        = $S3_BUCKET"
-echo "INGESTION_QUEUE_URL = $INGESTION_QUEUE_URL"
-echo "INGESTION_ROLE_ARN = $INGESTION_ROLE_ARN"
 echo "JWT_SECRET_KEY   = $JWT_SECRET_KEY"
 bash scripts/bootstrap_cluster.sh
 USAGE
@@ -45,13 +39,10 @@ ECR_BASE="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 
 : "${API_IMAGE_TAG:?API_IMAGE_TAG is required}"
 : "${RAY_IMAGE_TAG:?RAY_IMAGE_TAG is required}"
-: "${INGESTION_IMAGE_TAG:?INGESTION_IMAGE_TAG is required}"
 : "${DB_SECRET_ARN:?DB_SECRET_ARN is required}"
 : "${DB_ENDPOINT:?DB_ENDPOINT is required}"
 : "${REDIS_URL:?REDIS_URL is required}"
 : "${S3_BUCKET:?S3_BUCKET is required}"
-: "${INGESTION_QUEUE_URL:?INGESTION_QUEUE_URL is required}"
-: "${INGESTION_ROLE_ARN:?INGESTION_ROLE_ARN is required}"
 : "${JWT_SECRET_KEY:?JWT_SECRET_KEY is required (generate with: openssl rand -hex 32)}"
 
 echo "--- 1. Kubeconfig ---"
@@ -147,23 +138,7 @@ sed "s|ray-serve:[^ ]*|ray-serve:${RAY_IMAGE_TAG}|g" deploy/ray/ray-serve-embed.
   | kubectl apply -f -
 
 echo "--- 14. Queue-backed ingestion ---"
-INGESTION_IMAGE="${ECR_BASE}/services/ingestion:${INGESTION_IMAGE_TAG}"
-kubectl create serviceaccount ingestion-worker --namespace default \
-  --dry-run=client -o yaml | kubectl apply -f -
-kubectl annotate serviceaccount ingestion-worker --namespace default \
-  "eks.amazonaws.com/role-arn=${INGESTION_ROLE_ARN}" --overwrite
-
-sed "s|INGESTION_IMAGE|${INGESTION_IMAGE}|g" deploy/ray/ingestion-cluster.yaml \
-  | kubectl apply -f -
-
-for i in $(seq 1 30); do
-  kubectl get svc ingestion-ray-head-svc >/dev/null 2>&1 && break
-  sleep 5
-done
-
-sed -e "s|INGESTION_IMAGE|${INGESTION_IMAGE}|g" \
-    -e "s|INGESTION_QUEUE_URL_VALUE|${INGESTION_QUEUE_URL}|g" \
-    deploy/k8s/ingestion-worker.yaml | kubectl apply -f -
+bash scripts/deploy_ingestion.sh
 
 echo ""
 echo "✅ Bootstrap complete."

@@ -121,6 +121,16 @@ chunks the file, calls the embedding and LLM RayServices, then writes Qdrant and
 Neo4j. Existing bucket objects are not retroactively notified; copy or re-upload
 them to enqueue ingestion.
 
+For day-2 deployment or updates, run the standalone idempotent deployer rather
+than rerunning the complete cluster bootstrap:
+
+```bash
+bash scripts/deploy_ingestion.sh
+```
+
+It derives the latest `services/ingestion` ECR tag and the Terraform queue and
+IRSA outputs unless those values are exported explicitly.
+
 ```bash
 kubectl get raycluster ingestion-ray
 kubectl logs -f deploy/ingestion-worker
