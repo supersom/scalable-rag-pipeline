@@ -50,11 +50,11 @@ spec:
             resources:
               limits:
                 cpu: "4"
-                memory: 32Gi
+                memory: 24Gi
                 nvidia.com/gpu: 1
               requests:
                 cpu: "4"
-                memory: 32Gi
+                memory: 24Gi
                 nvidia.com/gpu: 1
           nodeSelector:
             karpenter.k8s.aws/instance-category: "g"

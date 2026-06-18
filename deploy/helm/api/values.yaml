@@ -44,9 +44,9 @@ env:
   - name: AWS_REGION
     value: us-east-1
   - name: RAY_LLM_ENDPOINT
-    value: http://llm-service:8000/llm/chat/completions
+    value: http://llm-service-head-svc:8000/llm/chat/completions
   - name: RAY_EMBED_ENDPOINT
-    value: http://embed-service:8000/embed/embeddings
+    value: http://embed-service-head-svc:8000/embed/embeddings
   - name: EMBED_DIM
     value: "1024"
   - name: JWT_ALGORITHM
