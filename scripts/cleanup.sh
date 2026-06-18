@@ -63,9 +63,64 @@ kubectl delete -f deploy/k8s/  --ignore-not-found 2>/dev/null || true
 kubectl delete secret app-env-secret --ignore-not-found || true
 
 # ── 9. Empty documents S3 bucket (force_destroy=false — must be empty for destroy) ──
-echo "🔹 9. Emptying documents S3 bucket..."
+# The bucket has versioning enabled. aws s3 rm only creates delete markers on current
+# objects; versions and delete markers persist. Must purge all versions + markers or
+# terraform DeleteBucket returns 409 BucketNotEmpty.
+# Uses aws-cli via subprocess — no boto3 dependency required.
+echo "🔹 9. Emptying documents S3 bucket (all versions + delete markers)..."
 if [ -n "$DOCS_BUCKET" ]; then
-    aws s3 rm "s3://${DOCS_BUCKET}" --recursive --region "$REGION" || true
+    python3 -c "
+import json, os, subprocess, sys, tempfile
+
+BUCKET = '${DOCS_BUCKET}'
+REGION = '${REGION}'
+BATCH_SIZE = 1000
+
+def aws(*args):
+    r = subprocess.run(['aws'] + list(args), capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+def list_all():
+    versions, markers, token = [], [], None
+    while True:
+        cmd = ['s3api', 'list-object-versions',
+               '--bucket', BUCKET, '--region', REGION, '--output', 'json']
+        if token:
+            cmd += ['--starting-token', token]
+        out = aws(*cmd)
+        if not out or not out.strip():
+            break
+        data = json.loads(out)
+        versions.extend(data.get('Versions', []))
+        markers.extend(data.get('DeleteMarkers', []))
+        token = data.get('NextToken')
+        if not token:
+            break
+    return versions, markers
+
+def delete_batch(objects):
+    payload = json.dumps({'Objects': objects, 'Quiet': True})
+    fd, path = tempfile.mkstemp(suffix='.json')
+    try:
+        os.write(fd, payload.encode())
+        os.close(fd)
+        aws('s3api', 'delete-objects', '--bucket', BUCKET, '--region', REGION,
+            '--delete', f'file://{path}', '--output', 'json')
+    finally:
+        os.unlink(path)
+
+versions, markers = list_all()
+items = ([{'Key': v['Key'], 'VersionId': v['VersionId']} for v in versions] +
+         [{'Key': v['Key'], 'VersionId': v['VersionId']} for v in markers])
+if not items:
+    print('  Bucket already empty.')
+    sys.exit(0)
+print(f'  Purging {len(items)} versions/markers in batches of {BATCH_SIZE}...')
+for i in range(0, len(items), BATCH_SIZE):
+    delete_batch(items[i:i+BATCH_SIZE])
+    print(f'  Batch {i//BATCH_SIZE+1}: {len(items[i:i+BATCH_SIZE])} deleted')
+print('  Documents bucket emptied.')
+"
 else
     echo "  Could not determine documents bucket name — skipping (terraform destroy may fail if non-empty)"
 fi
