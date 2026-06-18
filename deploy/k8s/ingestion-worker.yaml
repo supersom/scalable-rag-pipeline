@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingestion-worker
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ingestion-worker
+  template:
+    metadata:
+      labels:
+        app: ingestion-worker
+    spec:
+      serviceAccountName: ingestion-worker
+      containers:
+        - name: worker
+          image: INGESTION_IMAGE
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: app-env-secret
+          env:
+            - name: INGESTION_QUEUE_URL
+              value: INGESTION_QUEUE_URL_VALUE
+            - name: RAY_JOBS_ADDRESS
+              value: http://ingestion-ray-head-svc:8265
+            - name: AWS_REGION
+              value: us-east-1
+            - name: QDRANT_HOST
+              value: qdrant
+            - name: QDRANT_PORT
+              value: "6333"
+            - name: QDRANT_COLLECTION
+              value: rag_collection
+            - name: NEO4J_URI
+              value: bolt://neo4j-cluster:7687
+            - name: NEO4J_USER
+              value: neo4j
+            - name: RAY_LLM_ENDPOINT
+              value: http://llm-service-head-svc:8000/llm/chat/completions
+            - name: RAY_EMBED_ENDPOINT
+              value: http://embed-service-head-svc:8000/embed/embeddings
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
