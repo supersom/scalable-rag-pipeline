@@ -5,6 +5,71 @@ Focus: *why*, not *what* (git log has the what).
 
 ---
 
+
+## 2026-06-18 • KubeRay serveService port bug — actual YAML fix
+
+**Context:** The previous workaround patched `<name>-head-svc` services and pointed the API there. This session applied the proper structural fix so KubeRay creates the named `llm-service` and `embed-service` ClusterIP services itself.
+
+**Root cause (confirmed):** KubeRay 1.0.0's serve service reconciler builds `ServiceSpec.Ports` from the head container's `containerPorts` list. Port 8000 (Ray Serve HTTP) was absent from both RayService manifests — only ports 6379 (Redis/GCS) and 8265 (Ray dashboard) were listed. The reconciler produced an empty `Ports` array, Kubernetes rejected it with `spec.ports: Required value`, and the named service was never created. The `serveService.spec.ports` stanza in the RayService YAML has no effect — the operator ignores it.
+
+**Fix:** Added `- containerPort: 8000` to the head container's `ports` list in both `deploy/ray/ray-serve-llm.yaml` and `deploy/ray/ray-serve-embed.yaml`. Removed the `spec.ports` block from both `serveService` stanzas (redundant). Applied with `kubectl apply`.
+
+**Result:** A rolling update was triggered for each RayService. New RayClusters with corrected head pod specs were created, and their stable `llm-service-head-svc` and `embed-service-head-svc` services now expose port 8000 automatically. KubeRay 1.0.0 still produces unusable named serve services with empty generated port lists, so the API continues to target the stable head services. The obsolete bootstrap step 14 service patch was removed.
+
+---
+
+## 2026-06-18 • Stale API image caused missing `chat_history` table
+
+**Symptom:** Internal server error during retriever step with an `UndefinedTableError: relation "chat_history" does not exist` (visible in API pod logs after `kubectl logs`).
+
+**BACKLOG diagnosis was wrong:** The backlog item attributed this to Aurora Serverless v2 cold-start timing racing `Base.metadata.create_all()`. That is a real risk, but it was not the cause here.
+
+**Actual root cause:** The running API deployment was using image tag `f25f720` (`Add Streamlit chat UI` commit), which predates commit `f5bae9b` that added the `Base.metadata.create_all()` call to the FastAPI lifespan. The `create_all()` call simply did not exist in the deployed code — Aurora cold-start timing was irrelevant.
+
+**How identified:** The pod was the right SHA (`f25f720`) for the "stale image" hypothesis; `git log` confirmed `f5bae9b` added the auto-create and landed after `f25f720`. There was no create-table call to race against.
+
+**Fix:** Rebuilt the API image from HEAD (commit `f5bae9b` or later), pushed to ECR, updated the deployment image tag. Table created on next startup; all subsequent requests succeeded.
+
+**Residual risk:** Aurora cold-start timing is still a real concern if the DB connection resolves before the cluster is active. The `chat_history` cold-start backlog item remains valid but is lower urgency than implied — observed once as a stale image misdiagnosis, not a confirmed timing bug.
+
+---
+
+## 2026-06-18 • Terraform Aurora `manage_master_user_password` alignment
+
+**Problem:** Terraform `infra/terraform/rds.tf` defined a manual `aws_secretsmanager_secret` + `aws_secretsmanager_secret_version` for the DB password, and a `db_password` variable. The live Aurora cluster was created with `ManageMasterUserPassword=true`, meaning Aurora auto-rotates the password in Secrets Manager under an RDS-owned secret (`rds!cluster-*`). Terraform's manually-created secret had `password = "password"` (placeholder), which was what `app-env-secret` was initially pointing at — causing `InvalidPasswordError` on every connection attempt.
+
+**Diagnosis path:** `aws rds describe-db-clusters --db-cluster-identifier rag-platform-aurora` showed `ManagedMasterUserPassword: true`. AWS rejected a `ModifyDBCluster` attempt to set a manual password with `InvalidParameterValue: You can't specify MasterUserPassword for an instance with ManageMasterUserPassword enabled`.
+
+**Fix:**
+- Added `manage_master_user_password = true` to both `module "aurora"` and `aws_db_instance.postgres` in `rds.tf`.
+- Removed `master_password = var.db_password` (Aurora) and `password = var.db_password` (RDS) from the resource configs.
+- Removed the manual `aws_secretsmanager_secret` and `aws_secretsmanager_secret_version` resources entirely.
+- Added a `locals` block with `db_secret_arn` that reads from `module.aurora[0].cluster_master_user_secret[0].secret_arn` (or the RDS equivalent).
+- Removed the `db_password` variable from `variables.tf` and the corresponding line from `terraform.tfvars`.
+- Added a `db_secret_arn` output to `outputs.tf`.
+
+**Updated `bootstrap_cluster.sh`:** Added `DB_SECRET_ARN=$(terraform ... output -raw db_secret_arn)` to the USAGE heredoc so operators can retrieve the real password with `aws secretsmanager get-secret-value --secret-id $DB_SECRET_ARN`.
+
+**Pending:** `terraform apply` needs to run to remove the manual secret resources from AWS state and register the new locals/output. Targeted apply is safe: only the manual secret resources and outputs change; the Aurora cluster itself is unaffected.
+
+---
+
+## 2026-06-18 • Image build pipeline — S3 staging + ECR sync scripts
+
+**Problem:** The previous `scripts/build_push_api.sh` pushed directly from the build machine to ECR. For large images (~15GB GPU image) this is slow, unreliable over a flaky uplink, and not restartable. Resuming a failed push means re-pushing all layers.
+
+**New approach:** Two-script pipeline:
+1. `scripts/build_push_image.sh <api|ray>` — builds the Docker image locally and streams it to S3 as a gzipped tar: `docker save ... | gzip | aws s3 cp - s3://<bucket>/images/<ecr-repo>/<git-sha>.tar.gz`. The S3 upload uses AWS multipart under the hood and is resumable. Does not touch ECR.
+2. `scripts/sync_s3_to_ecr.sh <api|ray> <git-sha>` — runs on demand (or from any machine with ECR access): `aws s3 cp <s3-uri> - | gunzip | docker load` then retags and pushes to ECR. Lists available SHAs if no SHA is given.
+
+**Routing:**
+- `api` → `services/api/Dockerfile`, ECR repo `services/api`
+- `ray` → `services/models/Dockerfile`, ECR repo `services/ray-serve`
+
+**Why S3 intermediate:** Decouples the slow build-machine upload from the ECR push. A CI/CD agent with high-bandwidth egress to AWS can run `sync_s3_to_ecr.sh` independently. Also creates a versioned image archive in S3 for rollback without re-building.
+
+---
+
 ## 2026-06-18 • KubeRay serveService port bug and head-svc workaround
 
 **Problem:** The API returned `An internal error occurred` at the retriever step. Both the planner's LLM call and the retriever's embed call failed with `[Errno -2] Name or service not known`. The DNS names `llm-service` and `embed-service` — specified in the `serveService.metadata.name` field of the RayService manifests — never resolved.
