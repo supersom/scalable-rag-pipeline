@@ -38,9 +38,9 @@ module "aurora" {
     }
   }
 
-  master_username = "ragadmin"
-  master_password = var.db_password
-  database_name   = "rag_db"
+  master_username            = "ragadmin"
+  manage_master_user_password = true
+  database_name              = "rag_db"
 
   skip_final_snapshot = true
 }
@@ -69,10 +69,10 @@ resource "aws_db_instance" "postgres" {
   engine_version = "15"
   instance_class = "db.t3.micro"
 
-  allocated_storage = 20
-  db_name           = "rag_db"
-  username          = "ragadmin"
-  password          = var.db_password
+  allocated_storage           = 20
+  db_name                     = "rag_db"
+  username                    = "ragadmin"
+  manage_master_user_password = true
 
   db_subnet_group_name   = module.vpc.database_subnet_group_name
   vpc_security_group_ids = [aws_security_group.rds_postgres[0].id]
@@ -89,5 +89,6 @@ resource "aws_db_instance" "postgres" {
 # ── Shared local ───────────────────────────────────────────────────────────────
 
 locals {
-  db_endpoint = var.db_tier == "aurora" ? module.aurora[0].cluster_endpoint : aws_db_instance.postgres[0].address
+  db_endpoint   = var.db_tier == "aurora" ? module.aurora[0].cluster_endpoint : aws_db_instance.postgres[0].address
+  db_secret_arn = var.db_tier == "aurora" ? module.aurora[0].cluster_master_user_secret[0].secret_arn : aws_db_instance.postgres[0].master_user_secret[0].secret_arn
 }

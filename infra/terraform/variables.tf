@@ -24,12 +24,6 @@ variable "vpc_cidr" {
   default     = "10.0.0.0/16" # Gives us 65,536 IPs
 }
 
-variable "db_password" {
-  description = "Master password for the database (Aurora or RDS)"
-  type        = string
-  sensitive   = true
-}
-
 variable "db_tier" {
   description = <<-EOT
     Database tier for chat history storage.

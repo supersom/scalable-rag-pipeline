@@ -39,3 +39,8 @@ output "s3_models_bucket_name" {
   description = "S3 bucket for HuggingFace model weights cache (used by GPU node cold starts)."
   value       = aws_s3_bucket.models.id
 }
+
+output "db_secret_arn" {
+  description = "ARN of the DB-managed Secrets Manager secret holding the master password (Aurora or RDS)."
+  value       = local.db_secret_arn
+}
