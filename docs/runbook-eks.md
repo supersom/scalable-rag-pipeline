@@ -36,13 +36,13 @@ terraform apply   # supply db_password when prompted
 
 Key outputs needed for bootstrap:
 ```bash
-terraform output -raw aurora_cluster_endpoint    # AURORA_ENDPOINT
-terraform output -raw aurora_master_secret_arn   # DB_SECRET_ARN
-terraform output -raw redis_endpoint             # REDIS_URL (prepend rediss://)
-terraform output -raw s3_bucket_name             # S3_BUCKET
+terraform output -raw aurora_db_endpoint         # AURORA_ENDPOINT
+terraform output -raw redis_primary_endpoint     # REDIS_URL (prepend rediss://)
+terraform output -raw s3_documents_bucket_name   # S3_BUCKET
+terraform output -raw s3_models_bucket_name      # MODEL_CACHE_BUCKET (for scripts/cache_models_s3.py)
 ```
 
-> **Note on Aurora password:** `ManageMasterUserPassword = true` means Secrets Manager holds and rotates the password. Never hardcode it. Always retrieve via `aws secretsmanager get-secret-value`.
+> **Note on Aurora password:** Aurora uses `master_password = var.db_password` (supplied at `terraform apply`). Store it in a secrets manager or tfvars file — never hardcode it.
 
 ### 2. Build and push images
 
@@ -65,6 +65,17 @@ docker push ${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/services/ray-serve:${G
 ```
 
 The Ray Serve image uses Docker layer caching — only the `COPY services` layer changes on code edits, so rebuilds after the first are usually quick. The image build also validates the Ray 2.9.0 Serve proxy patch needed for the pinned Starlette version.
+
+### 2.5 Populate S3 model weight cache (one-time per bucket)
+
+GPU node cold starts pull model weights from S3 via the free Gateway VPC endpoint rather than HuggingFace via NAT, saving ~$0.90/node in data transfer. The bucket must be populated before RayServices are applied.
+
+```bash
+pip install huggingface_hub
+python scripts/cache_models_s3.py   # downloads ~18 GB, uploads to S3 (~5 min)
+```
+
+Re-running is safe — `aws s3 sync` skips files already present. If the bucket is empty when a GPU worker starts, `_resolve_model_path()` falls back to downloading from HuggingFace automatically (slower, costs NAT transfer).
 
 ### 3. Bootstrap the cluster
 
@@ -249,7 +260,13 @@ The running Qdrant StatefulSet was provisioned before the gp3 StorageClass exist
 
 ### Ray Serve cold start
 
-GPU workers scale to zero when idle (Karpenter terminates the node). First request after idle takes ~5 min: Karpenter provisions a node (~2 min) + image pull from ECR (~30 sec, most layers cached after first pull on that node) + vLLM loads Llama-3-8B (~2 min). Set `min_replicas: 1` in `serveConfigV2` (already done) to keep one replica warm and avoid cold starts.
+GPU workers scale to zero when idle (Karpenter terminates the node). First request after idle takes ~5–7 min:
+- Karpenter provisions a g6/g5 node: ~2 min
+- ECR image pull (~15 GB): ~30 sec via VPC endpoint (no NAT charge)
+- S3 model weight sync (~18 GB): ~2–3 min via Gateway endpoint ($0 transfer)
+- vLLM loads Llama-3-8B into GPU: ~2 min
+
+Set `min_replicas: 1` in `serveConfigV2` (already done) to keep one replica warm and avoid cold starts. If the S3 model cache bucket is empty, the S3 sync step is skipped and HuggingFace is used instead — functional but slower and charged at NAT rates.
 
 ---
 

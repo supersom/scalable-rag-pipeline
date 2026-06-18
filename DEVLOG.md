@@ -5,6 +5,37 @@ Focus: *why*, not *what* (git log has the what).
 
 ---
 
+## 2026-06-18 • Model weight S3 caching to eliminate HuggingFace NAT transfer cost
+
+**Problem:** Each GPU node cold start downloaded ~18 GB from HuggingFace through the NAT Gateway — ~16 GB for `NousResearch/Meta-Llama-3-8B-Instruct` and ~2.2 GB for `BAAI/bge-m3`. At $0.045/GB that's ~$0.90 per cold start, compounding with Karpenter spot churn.
+
+**Solution:** Weights are uploaded to an S3 bucket once via `scripts/cache_models_s3.py` (uses `huggingface_hub.snapshot_download` + `aws s3 sync`). At pod startup, `_resolve_model_path()` in both `vllm_engine.py` and `embedding_engine.py` checks for `MODEL_CACHE_BUCKET` env var; if set, it syncs the model directory from S3 to `/model-cache/<org>--<name>/` on the node's ephemeral disk before loading. S3 traffic routes via the free Gateway VPC endpoint (see entry below) — $0 data transfer.
+
+**Fallback:** If `MODEL_CACHE_BUCKET` is unset (local dev), the function returns the original HuggingFace model ID unchanged — no behaviour change for local runs.
+
+**Infrastructure:** New `rag-platform-models-prod-7649` S3 bucket (`force_destroy = true`, no versioning). S3 read policy attached to the Karpenter node IAM role so all GPU workers can pull without per-pod IRSA. `MODEL_CACHE_BUCKET` wired into both RayService manifests.
+
+**Prerequisite for each new cluster deploy:** run `scripts/cache_models_s3.py` after `terraform apply` and before deploying RayServices, otherwise pods fall back to HuggingFace.
+
+---
+
+## 2026-06-18 • VPC endpoints to cut NAT Gateway data transfer and fixed costs
+
+**Problem:** Three NAT Gateways (one per AZ) cost ~$97/month fixed. ECR image pulls for the 15 GB GPU image and all AWS API calls (IRSA, Secrets Manager) went through NAT at $0.045/GB, making the NAT the dominant cost line — more than the EC2 instances.
+
+**Fix:**
+- `single_nat_gateway = true`: drops fixed NAT cost from ~$97 to ~$32/month. Single-AZ failure risk is acceptable for dev/test.
+- **S3 Gateway endpoint** (free): routes all S3 traffic — ECR layer storage, pip caches, model weight downloads — over the AWS backbone, bypassing NAT entirely.
+- **ECR interface endpoints** (`ecr.dkr` + `ecr.api`): image pulls from ECR never touch the NAT Gateway. Cost: ~$43/month for both endpoints across 3 AZs, but break-even on the first couple of 15 GB image pulls.
+- **STS interface endpoint**: IRSA token exchanges stay off NAT.
+- **Secrets Manager interface endpoint**: Aurora password fetches during bootstrap stay off NAT.
+
+**Remaining NAT traffic:** pip installs, HuggingFace downloads (addressed by S3 model cache above), any other public internet access.
+
+**All five resources share one security group** (`vpc_endpoints` SG) that allows inbound HTTPS from within the VPC CIDR only.
+
+---
+
 ## 2026-06-17 • Ray Job runtime dependencies & NumPy 2.0 / PyArrow conflict
 
 **Problem:** Submitting the S3 ingestion job via `ray job submit` failed with `ImportError: numpy.core.multiarray failed to import` inside the `JobSupervisor` initialization. This happened because the job's `runtime_env` pip list originally included `unstructured[pdf,docx]`, which transitively pulled in the latest NumPy 2.0 version. Since the system-wide pre-installed `pyarrow 12.0.1` on the Ray head node is compiled against NumPy 1.x, the active virtual environment's NumPy 2.0 broke `pyarrow`'s compiled C extensions.
