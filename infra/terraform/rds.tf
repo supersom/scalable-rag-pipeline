@@ -42,7 +42,7 @@ module "aurora" {
   master_password = var.db_password
   database_name   = "rag_db"
 
-  skip_final_snapshot = false
+  skip_final_snapshot = true
 }
 
 # ── RDS PostgreSQL (dev/test) ──────────────────────────────────────────────────

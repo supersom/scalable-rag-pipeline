@@ -24,15 +24,15 @@ spec:
         - key: kubernetes.io/os
           operator: In
           values: ["linux"]
-        - key: karpenter.k8s.aws/instance-category
+        - key: karpenter.k8s.aws/instance-family
           operator: In
-          values: ["g", "p"]
-        - key: karpenter.k8s.aws/instance-generation
-          operator: Gt
-          values: ["4"]
+          values: ["g5"]
+        - key: karpenter.k8s.aws/instance-size
+          operator: In
+          values: ["2xlarge"]
         - key: karpenter.sh/capacity-type
           operator: In
-          values: ["spot", "on-demand"]
+          values: ["on-demand"]
   limits:
     cpu: "1000"
     memory: 4000Gi
