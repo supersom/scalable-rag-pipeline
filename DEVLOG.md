@@ -88,7 +88,7 @@ Focus: *why*, not *what* (git log has the what).
 **Problem:** The previous `scripts/build_push_api.sh` pushed directly from the build machine to ECR. For large images (~15GB GPU image) this is slow, unreliable over a flaky uplink, and not restartable. Resuming a failed push means re-pushing all layers.
 
 **New approach:** Two-script pipeline:
-1. `scripts/build_push_image.sh <api|ray>` — builds the Docker image locally and streams it to S3 as a gzipped tar: `docker save ... | gzip | aws s3 cp - s3://<bucket>/images/<ecr-repo>/<git-sha>.tar.gz`. The S3 upload uses AWS multipart under the hood and is resumable. Does not touch ECR.
+1. `scripts/build_push_image.sh <api|ray|ingestion> [git-sha]` — with no SHA, builds the Docker image locally and streams it to S3 as a gzipped tar: `docker save ... | gzip | aws s3 cp - s3://<bucket>/images/<ecr-repo>/<git-sha>.tar.gz`. With a SHA, verifies that tag exists in ECR, pulls that image, and exports it to the same S3 key. The S3 upload uses AWS multipart under the hood and is resumable.
 2. `scripts/sync_s3_to_ecr.sh <api|ray> <git-sha>` — runs on demand (or from any machine with ECR access): `aws s3 cp <s3-uri> - | gunzip | docker load` then retags and pushes to ECR. Lists available SHAs if no SHA is given.
 
 **Routing:**

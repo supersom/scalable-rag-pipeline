@@ -2,20 +2,25 @@
 # scripts/build_push_image.sh
 #
 # Builds a service Docker image from the current git HEAD and uploads it to S3.
-# Use sync_s3_to_ecr.sh to promote the image from S3 to ECR.
+# If a git SHA is provided, exports that exact ECR image to S3 instead.
 #
 # Usage:
 #   bash scripts/build_push_image.sh api
 #   bash scripts/build_push_image.sh ray
 #   bash scripts/build_push_image.sh ingestion
+#   bash scripts/build_push_image.sh api <git-sha>
+#   bash scripts/build_push_image.sh ray <git-sha>
+#   bash scripts/build_push_image.sh ingestion <git-sha>
+#
 
 set -euo pipefail
 
-SERVICE="${1:?Usage: build_push_image.sh <api|ray|ingestion>}"
+SERVICE="${1:?Usage: build_push_image.sh <api|ray|ingestion> [git-sha]}"
+GIT_SHA="${2:-}"
 
 REGION="us-east-1"
-MODELS_BUCKET="rag-platform-models-prod-7649"
-GIT_SHA=$(git rev-parse --short HEAD)
+MODELS_BUCKET="${MODELS_BUCKET:-rag-platform-models-prod-7649}"
+DEFAULT_SHA=$(git rev-parse --short HEAD)
 
 case "$SERVICE" in
   api)
@@ -36,22 +41,45 @@ case "$SERVICE" in
     ;;
 esac
 
-S3_KEY="images/${ECR_REPO}/${GIT_SHA}.tar.gz"
-S3_URI="s3://${MODELS_BUCKET}/${S3_KEY}"
-LOCAL_TAG="${ECR_REPO}:${GIT_SHA}"
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+ECR_BASE="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+
+if [[ -n "$GIT_SHA" ]]; then
+  S3_KEY="images/${ECR_REPO}/${GIT_SHA}.tar.gz"
+  S3_URI="s3://${MODELS_BUCKET}/${S3_KEY}"
+  ECR_TAG="${ECR_BASE}/${ECR_REPO}:${GIT_SHA}"
+  IMAGE_REF="${ECR_TAG}"
+else
+  GIT_SHA="$DEFAULT_SHA"
+  S3_KEY="images/${ECR_REPO}/${GIT_SHA}.tar.gz"
+  S3_URI="s3://${MODELS_BUCKET}/${S3_KEY}"
+  IMAGE_REF="${ECR_REPO}:${GIT_SHA}"
+fi
 
 echo "--- Service   : ${SERVICE}"
 echo "--- Git SHA   : ${GIT_SHA}"
-echo "--- Dockerfile: ${DOCKERFILE}"
 echo "--- S3 target : ${S3_URI}"
 
-echo "--- 1. Build ---"
-docker build -t "${LOCAL_TAG}" -f "${DOCKERFILE}" .
+if [[ -n "${2:-}" ]]; then
+  echo "--- Source    : ECR"
+  echo "--- ECR image : ${ECR_TAG}"
+
+  if ! aws ecr describe-images     --repository-name "${ECR_REPO}"     --image-ids "imageTag=${GIT_SHA}"     --region "${REGION}"     >/dev/null; then
+    echo "ERROR: ${ECR_TAG} does not exist in ECR. Nothing uploaded." >&2
+    exit 1
+  fi
+
+  echo "--- 1. Pull ---"
+  aws ecr get-login-password --region "${REGION}" |     docker login --username AWS --password-stdin "${ECR_BASE}"
+  docker pull "${ECR_TAG}"
+else
+  echo "--- Dockerfile: ${DOCKERFILE}"
+  echo "--- Source    : local build"
+  echo "--- 1. Build ---"
+  docker build -t "${IMAGE_REF}" -f "${DOCKERFILE}" .
+fi
 
 echo "--- 2. Save + upload to S3 ---"
-docker save "${LOCAL_TAG}" | gzip | \
-  aws s3 cp - "${S3_URI}" \
-    --region "${REGION}" \
-    --no-progress
+docker save "${IMAGE_REF}" | gzip |   aws s3 cp - "${S3_URI}"     --region "${REGION}"     --no-progress
 
-echo "--- Done: ${LOCAL_TAG} → ${S3_URI} ---"
+echo "--- Done: ${IMAGE_REF} → ${S3_URI} ---"

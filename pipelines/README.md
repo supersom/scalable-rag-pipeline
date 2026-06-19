@@ -34,6 +34,7 @@ Build and publish the ingestion image before bootstrap:
 
 ```bash
 bash scripts/build_push_image.sh ingestion
+bash scripts/build_push_image.sh ingestion <git-sha>
 bash scripts/sync_s3_to_ecr.sh ingestion <git-sha>
 ```
 
