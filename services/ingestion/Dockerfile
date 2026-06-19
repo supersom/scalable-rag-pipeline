@@ -26,7 +26,12 @@ RUN pip install --no-cache-dir --constraint /tmp/constraints.txt \
   && pip install --no-cache-dir --force-reinstall --no-deps \
       "opencv-python-headless==4.8.1.78" \
       "numpy==1.26.2" \
-      "protobuf==3.20.3"
+      "protobuf==3.20.3" \
+  && python -c "import nltk; \
+      nltk.download('punkt', quiet=True); \
+      nltk.download('punkt_tab', quiet=True); \
+      nltk.download('averaged_perceptron_tagger', quiet=True); \
+      nltk.download('averaged_perceptron_tagger_eng', quiet=True)"
 
 WORKDIR /app
 COPY pipelines /app/pipelines
