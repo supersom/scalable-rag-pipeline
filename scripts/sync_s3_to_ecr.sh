@@ -56,4 +56,24 @@ docker tag "${LOCAL_TAG}" "${ECR_TAG}"
 echo "--- 4. Push to ECR ---"
 docker push "${ECR_TAG}"
 
+echo "--- 5. Delete older ECR images ---"
+OLD_DIGESTS=$(aws ecr describe-images \
+  --repository-name "${ECR_REPO}" \
+  --region "${REGION}" \
+  --query "imageDetails[?!(contains(imageTags || \`[]\`, '${GIT_SHA}'))].imageDigest" \
+  --output text)
+
+if [[ -n "$OLD_DIGESTS" ]]; then
+  # Build JSON array: [{"imageDigest":"sha256:..."},...]
+  IMAGE_IDS=$(echo "$OLD_DIGESTS" | tr '\t\n' ' ' | xargs -n1 | \
+    python3 -c "import sys,json; print(json.dumps([{'imageDigest':d.strip()} for d in sys.stdin if d.strip()]))")
+  aws ecr batch-delete-image \
+    --repository-name "${ECR_REPO}" \
+    --region "${REGION}" \
+    --image-ids "${IMAGE_IDS}"
+  echo "    Deleted $(echo "$OLD_DIGESTS" | wc -w | tr -d ' ') older image(s)"
+else
+  echo "    No older images to delete"
+fi
+
 echo "--- Done: ${ECR_TAG} ---"
