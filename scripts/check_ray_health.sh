@@ -7,12 +7,39 @@
 #
 # Usage:
 #   bash scripts/check_ray_health.sh
-#   bash scripts/check_ray_health.sh --endpoints-only   # skip ray status (faster)
+#   bash scripts/check_ray_health.sh --endpoints-only        # skip ray status (faster)
+#   bash scripts/check_ray_health.sh --watch                 # repeat every 30s
+#   bash scripts/check_ray_health.sh --watch --interval 10   # repeat every 10s
+#   bash scripts/check_ray_health.sh --watch --endpoints-only
 
 set -euo pipefail
 
 ENDPOINTS_ONLY=false
-[[ "${1:-}" == "--endpoints-only" ]] && ENDPOINTS_ONLY=true
+WATCH=false
+INTERVAL=30
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --endpoints-only) ENDPOINTS_ONLY=true ;;
+    --watch)          WATCH=true ;;
+    --interval)       INTERVAL="${2:?--interval requires a value}"; shift ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+# In watch mode, re-exec the same script (without --watch) on a loop.
+if [[ "$WATCH" == true ]]; then
+  PASSTHROUGH=()
+  [[ "$ENDPOINTS_ONLY" == true ]] && PASSTHROUGH+=(--endpoints-only)
+  while true; do
+    clear
+    echo "Ray health check — $(date '+%Y-%m-%d %H:%M:%S')  (refreshing every ${INTERVAL}s, Ctrl-C to stop)"
+    bash "$0" "${PASSTHROUGH[@]}" || true
+    sleep "$INTERVAL"
+  done
+  exit 0
+fi
 
 PASS="[OK]"
 FAIL="[FAIL]"
