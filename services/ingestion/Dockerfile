@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir --constraint /tmp/constraints.txt \
       --constraint /tmp/constraints.txt \
       "unstructured[pdf]==0.11.0" \
       pypdf pypdfium2 pi-heif \
+      "matplotlib==3.8.2" \
   && pip uninstall -y opencv-python \
   && pip install --no-cache-dir --force-reinstall --no-deps \
       "opencv-python-headless==4.8.1.78" \
