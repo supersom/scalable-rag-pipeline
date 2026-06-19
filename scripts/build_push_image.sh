@@ -79,7 +79,26 @@ else
   docker build -t "${IMAGE_REF}" -f "${DOCKERFILE}" .
 fi
 
-echo "--- 2. Save + upload to S3 ---"
-docker save "${IMAGE_REF}" | gzip |   aws s3 cp - "${S3_URI}"     --region "${REGION}"     --no-progress
+echo "--- 2. Find previous versions ---"
+PREV_KEYS=$(aws s3 ls "s3://${MODELS_BUCKET}/images/${ECR_REPO}/" --region "${REGION}" \
+  | awk '{print $4}' \
+  | grep '\.tar\.gz$' \
+  | grep -v "^${GIT_SHA}\.tar\.gz$")
+
+echo "--- 3. Save + upload to S3 ---"
+docker save "${IMAGE_REF}" | gzip | \
+  aws s3 cp - "${S3_URI}" \
+    --region "${REGION}" \
+    --no-progress
+
+if [[ -n "$PREV_KEYS" ]]; then
+  echo "--- 4. Delete previous versions ---"
+  while IFS= read -r key; do
+    echo "    Deleting: ${key}"
+    aws s3 rm "s3://${MODELS_BUCKET}/images/${ECR_REPO}/${key}" --region "${REGION}"
+  done <<< "$PREV_KEYS"
+else
+  echo "--- 4. No previous versions to delete ---"
+fi
 
 echo "--- Done: ${IMAGE_REF} → ${S3_URI} ---"
