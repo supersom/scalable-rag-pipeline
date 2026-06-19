@@ -97,8 +97,10 @@ def main(source: str, extract_graph: bool = True, init_ray: bool = True):
             ray.init(address="local", runtime_env={"env_vars": worker_env})
             logger.info("Started a new local Ray cluster.")
         else:
+            # Running as a Ray job: env vars are already set by the job submission's
+            # runtime_env. Passing them again here causes a conflict that Ray rejects.
             address = os.environ.get("RAY_ADDRESS", "auto")
-            ray.init(address=address, runtime_env={"env_vars": worker_env})
+            ray.init(address=address)
             logger.info("Connected to Ray cluster at %s.", address)
 
     logger.info(f"Reading files from: {source}")
