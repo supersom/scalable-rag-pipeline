@@ -6,10 +6,6 @@ import sys
 
 import ray
 
-from pipelines.ingestion.loaders.pdf import parse_pdf_bytes
-from pipelines.ingestion.loaders.html import parse_html_bytes
-from pipelines.ingestion.loaders.docx import parse_docx_bytes
-from pipelines.ingestion.loaders.pptx import parse_pptx_bytes
 from pipelines.ingestion.chunking.splitter import split_text
 from pipelines.ingestion.embedding.compute import BatchEmbedder
 from pipelines.ingestion.graph.extractor import GraphExtractor
@@ -36,15 +32,23 @@ def process_batch(batch):
         ext = short_name.rsplit(".", 1)[-1].lower()
         try:
             if ext == "pdf":
+                from pipelines.ingestion.loaders.pdf import parse_pdf_bytes
+
                 raw_text, metadata = parse_pdf_bytes(content, short_name)
             elif ext in ("html", "htm"):
+                from pipelines.ingestion.loaders.html import parse_html_bytes
+
                 raw_text, metadata = parse_html_bytes(content, short_name)
             elif ext == "docx":
+                from pipelines.ingestion.loaders.docx import parse_docx_bytes
+
                 raw_text, metadata = parse_docx_bytes(content, short_name)
             elif ext == "txt":
                 raw_text = content.decode("utf-8", errors="replace")
                 metadata = {"filename": short_name, "type": "txt"}
             elif ext in ("pptx", "ppt"):
+                from pipelines.ingestion.loaders.pptx import parse_pptx_bytes
+
                 raw_text, metadata = parse_pptx_bytes(content, short_name)
             else:
                 logger.warning(f"Skipping unsupported file type: {short_name}")
