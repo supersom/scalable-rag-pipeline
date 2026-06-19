@@ -5,6 +5,95 @@ Focus: *why*, not *what* (git log has the what).
 
 ---
 
+## 2026-06-19 • Silent PDF parse failure (2) — NLTK corpora missing from ingestion image
+
+**Symptom:** After the matplotlib fix (`b353b3b`), PDFs still produced zero Qdrant vectors. Ray job reported SUCCEEDED, Qdrant point count stayed at 3 (the TXT smoke files only).
+
+**Root cause:** `unstructured 0.11.0` contains a helper `_download_nltk_package_if_not_present` that calls `nltk.download('punkt')` at runtime. However, **NLTK 3.9.0 renamed the corpus from `punkt` to `punkt_tab`** — the new `sent_tokenize()` call path goes through `PunktTokenizer(language)` which looks specifically for `punkt_tab`, not `punkt`. So the auto-download fetches the old name, the actual call still hits `LookupError`, and `unstructured` swallows it with `PDF text extraction failed, skip text extraction...`. Same pattern kills the graph extraction pass (`averaged_perceptron_tagger` → `averaged_perceptron_tagger_eng`). All four corpora were missing from the image.
+
+**Fix:** Added a `python -c "import nltk; nltk.download(...)"` step at the end of the Dockerfile `RUN` chain, pre-downloading all four: `punkt`, `punkt_tab`, `averaged_perceptron_tagger`, `averaged_perceptron_tagger_eng`. Both old and new names are needed: the `unstructured` download helper uses the old names; the NLTK 3.9.4 runtime uses the new names. Commit `ace240e`.
+
+**Pattern:** This is the third consecutive silent parse failure in the ingestion image (`pkg_resources` → `matplotlib` → NLTK). All share the same root structure: `process_batch()` catches and continues on any parse exception, Ray job exits 0, SQS message is deleted. The only evidence is in Ray worker logs via `JobSubmissionClient`. The mitigation (emit a parse-failure metric or structured log) is still unaddressed and now more urgent.
+
+---
+
+## 2026-06-19 • Silent PDF parse failure — matplotlib missing from ingestion image
+
+**Symptom:** Every PDF ingestion job reported `Ingestion succeeded` (Ray job exit 0, SQS message deleted) but Qdrant accumulated zero points from PDFs. Only the three TXT smoke files appeared in the collection.
+
+**Root cause:** `matplotlib` is a transitive dependency of `unstructured-inference` (the PDF layout analysis layer pulled in by `unstructured[pdf]`). It was listed in `constraints.txt` (which pins versions of packages that *are* installed) but was never explicitly listed in the Dockerfile's `pip install` step. `pip` does not install packages solely because they appear in a constraints file — constraints only cap the version resolver. At runtime, `unstructured`'s PDF parser tried to import `matplotlib` and raised `No module named 'matplotlib'`.
+
+**Why it was invisible:** `process_batch()` wraps each file parse in `except Exception as e: logger.error(...); continue`. The parse error was logged inside the Ray worker (visible only in Ray job logs, not in the SQS consumer), and the pipeline completed with zero output chunks. Zero chunks → zero embeddings → zero Qdrant writes → "Ingestion complete". The SQS consumer sees the job exit 0 and logs `Ingestion succeeded`. Every PDF that was uploaded produced this silent zero-write outcome.
+
+**Fix:** Added `"matplotlib==3.8.2"` to the explicit `pip install` step in `services/ingestion/Dockerfile`. The version is already pinned in `constraints.txt`; only the explicit install was missing.
+
+**Consequence:** All PDFs ingested so far need to be re-queued after the new image is deployed (re-upload or copy in S3 to trigger fresh SQS notifications). TXT files indexed correctly and do not need re-ingestion.
+
+**Observability gap flagged:** The silent-skip pattern in `process_batch()` is intentional for partial-batch resilience but makes whole-file failures invisible at the job level. Consider emitting a metric or a structured log event on parse failure so these can be counted without tailing Ray worker logs.
+
+---
+
+## 2026-06-19 • Observability groundwork — Prometheus PodMonitors and runbook
+
+No Prometheus or Grafana currently runs in the cluster. The codebase has `prometheus-client==0.19.0` in the API requirements and metric definitions in `libs/observability/metrics.py`, but no `/metrics` route is wired in the FastAPI app and no scrape target is configured.
+
+**Groundwork added this session:**
+- `deploy/monitoring/ray-service-monitors.yaml` — two PodMonitors (`ray-heads`, `ray-workers`) for kube-prometheus-stack. They match pods by `ray.io/node-type` label across all Ray clusters in the `default` namespace, scraping port 8080 (named `metrics` by KubeRay). Relabels add `ray_cluster` and `ray_worker_group` labels for Grafana filtering. Confirmed port 8080 is already named `metrics` on the live head services — no manifest changes to RayService YAMLs required.
+- Runbook `Observability` section added: port-forward commands for all three Ray dashboards and Grafana, `kube-prometheus-stack` Helm install command with the required `SelectorNilUsesHelmValues=false` flags (without these, cross-namespace PodMonitors are silently ignored), useful Ray metric names, and `check_ray_health.sh` usage reference.
+
+**Not yet deployed** — Prometheus/Grafana install and PodMonitors are ready to apply but haven't been deployed to the live cluster.
+
+**Remaining gap:** API custom metrics (`rag_api_requests_total`, `rag_api_latency_seconds`, `rag_llm_tokens_total`) need a `/metrics` FastAPI route before they are scrapeable. Tracked in backlog.
+
+---
+
+## 2026-06-19 • Ingestion pipeline — three independent job failures debugged
+
+Three separate failures surfaced while testing end-to-end ingestion with the new image (`1edb6ba`). Each needed a distinct fix.
+
+**1. `runtime_env` conflict in Ray job driver**
+`sqs_ingestion_worker.py` submits jobs with `runtime_env={"env_vars": {...}}`. `main.py` (the job driver, invoked via `--no-init-ray`) was calling `ray.init(address=..., runtime_env={"env_vars": same_keys})`. Ray 2.9 refuses to merge overlapping env_var keys between Job-level and Driver-level runtime envs (`ValueError: Failed to merge... because of a conflict`). Fix: drop `runtime_env` from `ray.init()` in the `--no-init-ray` path — the job submission already propagates those vars to every worker.
+
+**2. Eager PDF loader imports crashing TXT jobs**
+`main.py` imported all format loaders at module level. A missing optional dependency (e.g. `opencv-python-headless` not yet installed) caused the entire worker to crash before reading a single file — even for a plain TXT job. Fix: moved each parser import inside its file-type branch in `process_batch()` so workers only load the deps they actually need.
+
+**3. S3 URI with spaces/parens not recognised by PyArrow**
+Filenames like `A Brief Introduction (v2).pdf` produce S3 URIs with literal spaces. PyArrow's URI parser requires RFC-3986-compliant URIs — spaces and parentheses are illegal and cause it to fail filesystem detection, silently falling back to `LocalFileSystem`, which then rejects the URI with `ArrowInvalid: Expected a local filesystem path, got a URI`. Fix: `quote(key, safe='/')` in `sqs_ingestion_worker.py` before building the `s3://` URI. Plain TXT smoke files had no special characters so this bug was invisible until a real PDF filename was used.
+
+**Smoke test result:** Both TXT files (`smoke-fact.txt`, `smoke-fact2.txt`) indexed successfully in Qdrant after the `runtime_env` fix. PDF ingestion blocked pending a new image build containing the URI fix (`b3be7e2`).
+
+---
+
+## 2026-06-19 • API pod crash loop from Qdrant connection refused at startup
+
+Pod `api-5fc48cd794-s7wqx` restarted 6 times over ~10 minutes before stabilising. Root cause: `services/api/app/cache/semantic.py`'s `ensure_collection()` is called unconditionally in the FastAPI lifespan and calls `qdrant_client.get_collections()` with no retry. If Qdrant is temporarily unreachable (scheduling race, pod cold start, network blip) the lifespan raises immediately, the process exits, and Kubernetes restarts with exponential backoff. The other pod (`lkzqc`) scheduled after Qdrant was stable and succeeded on first attempt.
+
+The liveness probe also firing `connection refused` during the same window confirms the API process had exited, not hung. The crash loop resolved itself once the backoff interval grew long enough that Qdrant was reliably up by the time of the next restart.
+
+**Not fixed yet** — `ensure_collection()` should either catch the exception and let the pod start (staying unready via the readiness probe until Qdrant is available) or retry with backoff. Tracked in backlog.
+
+---
+
+## 2026-06-19 • Karpenter consolidation confirmed as cause of node churn
+
+Observed: embed GPU head, ingestion worker, and ingestion Ray head all restarted within a ~2-minute window. Root cause: Karpenter deleted node `ip-10-0-102-60` (a CPU spot instance) via consolidation — it found the workloads could fit onto a cheaper `c6i.xlarge` — and provisioned two replacement nodes (`cpu-r4dpz` c6i.2xlarge, `cpu-2v5gw` c6i.xlarge). All pods on the evicted node were rescheduled, including the embed-service Ray head. Karpenter logs confirmed `SpotToSpotConsolidation` was the trigger (not a spot interruption notice).
+
+The existing backlog item covers adding `karpenter.sh/do-not-disrupt: "true"` to pod templates. This incident extends that scope to Ray heads and the ingestion worker deployment, not just Qdrant.
+
+---
+
+## 2026-06-19 • Image build/push hygiene — S3 and ECR cleanup
+
+`build_push_image.sh` now deletes all previous tarballs under `images/<ecr-repo>/` in S3 after a successful upload. `sync_s3_to_ecr.sh` now deletes all ECR images in the repository that don't carry the new tag after a successful push (using `batch-delete-image` with a JSON `imageIds` array; untagged digests are also caught). Deletions in both scripts run only after the upload/push succeeds — a failed transfer leaves the previous version intact.
+
+---
+
+## 2026-06-19 • `check_ray_health.sh` — layered Ray Serve health check
+
+New script covers three layers in one pass: (1) RayService CRD `serviceStatus` and active cluster state, (2) `ray status` + `serve status` from each head pod, (3) live HTTP probes against `/llm/chat/completions` and `/embed/embeddings` via `kubectl exec` on the API pod (avoids ephemeral pod overhead). KubeRay 1.0.0 states `FailedToUpdateService` and `FailedToGetServeDeploymentStatus` are treated as warnings (not failures) because they are known operator bugs that don't prevent serving. Supports `--endpoints-only` to skip the slow `ray status` exec, and `--watch [--interval N]` to loop with screen-clear between runs.
+
+---
+
 ## 2026-06-18 • Ingestion teardown ordering and ECR cleanup
 
 **Problem:** The existing cleanup script removed the KubeRay operator before deleting the new ingestion RayCluster, did not explicitly remove the ingestion service account, and Terraform could not delete a non-empty `services/ingestion` ECR repository.
