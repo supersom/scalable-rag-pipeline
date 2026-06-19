@@ -1,0 +1,59 @@
+# deploy/monitoring/ray-service-monitors.yaml
+#
+# PodMonitors for kube-prometheus-stack to scrape Ray head and worker pods.
+# Ray exposes Prometheus metrics on port 8080 (named "metrics") of every pod.
+# Apply after kube-prometheus-stack is installed in the monitoring namespace.
+#
+#   kubectl apply -f deploy/monitoring/ray-service-monitors.yaml
+
+---
+# Scrape all Ray head pods (llm-service, embed-service, ingestion-ray)
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: ray-heads
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack   # must match serviceMonitorSelector in kube-prometheus-stack values
+spec:
+  namespaceSelector:
+    matchNames:
+      - default
+  selector:
+    matchLabels:
+      ray.io/node-type: head
+  podMetricsEndpoints:
+    - port: metrics        # port 8080, named "metrics" by KubeRay on every head pod
+      path: /metrics
+      interval: 30s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_ray_io_cluster]
+          targetLabel: ray_cluster
+        - sourceLabels: [__meta_kubernetes_pod_label_ray_io_serve]
+          targetLabel: ray_serve
+
+---
+# Scrape all Ray worker pods
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: ray-workers
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - default
+  selector:
+    matchLabels:
+      ray.io/node-type: worker
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_ray_io_cluster]
+          targetLabel: ray_cluster
+        - sourceLabels: [__meta_kubernetes_pod_label_ray_io_group]
+          targetLabel: ray_worker_group

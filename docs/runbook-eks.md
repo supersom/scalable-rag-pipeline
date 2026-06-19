@@ -323,6 +323,90 @@ Note: tokens expire. If you see `{"detail":"Could not validate credentials"}` on
 
 ---
 
+## Observability
+
+### Port-forward dashboards
+
+All dashboards run inside the cluster with no external ingress. Forward locally:
+
+```bash
+# Ray dashboard — LLM service (head pod, port 8265)
+kubectl port-forward svc/llm-service-head-svc 8265:8265
+# open http://localhost:8265
+
+# Ray dashboard — embed service
+kubectl port-forward svc/embed-service-head-svc 8266:8265
+# open http://localhost:8266
+
+# Ray dashboard — ingestion cluster
+kubectl port-forward svc/ingestion-ray-head-svc 8267:8265
+# open http://localhost:8267
+
+# Grafana (once kube-prometheus-stack is installed)
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+# open http://localhost:3000  (default creds: admin / prom-operator)
+```
+
+Run all in background:
+
+```bash
+kubectl port-forward svc/llm-service-head-svc 8265:8265 &
+kubectl port-forward svc/embed-service-head-svc 8266:8265 &
+kubectl port-forward svc/ingestion-ray-head-svc 8267:8265 &
+# kill with: kill %1 %2 %3
+```
+
+### Install Prometheus + Grafana (kube-prometheus-stack)
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  --namespace monitoring --create-namespace \
+  --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+  --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+  --set grafana.adminPassword=changeme
+```
+
+The two `SelectorNilUsesHelmValues=false` flags make Prometheus pick up PodMonitors and ServiceMonitors from any namespace, not just those created by the chart itself. Without them the Ray PodMonitors below are silently ignored.
+
+Then apply the Ray scrape targets:
+
+```bash
+kubectl apply -f deploy/monitoring/ray-service-monitors.yaml
+```
+
+This creates two PodMonitors (`ray-heads`, `ray-workers`) in the `monitoring` namespace. They match pods by `ray.io/node-type` label across all Ray clusters in the `default` namespace and scrape port `8080` (named `metrics` by KubeRay). Metrics include active nodes, pending tasks, object store usage, GPU utilisation, and Serve request latency.
+
+Verify Prometheus is scraping:
+
+```bash
+# Port-forward Prometheus UI
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+# open http://localhost:9090/targets  — look for ray-heads and ray-workers
+```
+
+Useful Ray metric names in Grafana:
+- `ray_cluster_active_nodes` — nodes per cluster
+- `ray_object_store_memory` — object store pressure
+- `ray_serve_num_ongoing_requests` — per-deployment request queue depth
+- `ray_serve_deployment_replica_starts_total` — cold start events
+- `ray_node_gpus_utilization` — GPU % per worker
+
+### Scripted health check
+
+```bash
+bash scripts/check_ray_health.sh                   # full check: CRD + ray status + HTTP probes
+bash scripts/check_ray_health.sh --endpoints-only  # HTTP probes only (faster)
+bash scripts/check_ray_health.sh --watch           # repeat every 30s
+bash scripts/check_ray_health.sh --watch --interval 10
+```
+
+Exit code 0 = all checks passed. `[WARN]` entries (known KubeRay 1.0.0 states, pods still starting) do not affect the exit code.
+
+---
+
 ## Known issues and workarounds
 
 ### vLLM 0.4.2 + Ray 2.9.0 compatibility
