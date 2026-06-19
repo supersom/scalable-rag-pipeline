@@ -5,6 +5,12 @@ Focus: *why*, not *what* (git log has the what).
 
 ---
 
+## 2026-06-19 • bootstrap_cluster.sh / cleanup.sh — stagewise execution
+
+Added `--start N --end M` flags to both scripts so individual stages can be re-run without replaying the full sequence. `--start N` without `--end` runs only that stage; no flags runs everything. Required env vars (`API_IMAGE_TAG`, `DB_SECRET_ARN`, etc.) were moved from upfront checks to lazy checks inside the stages that actually use them (11, 12, 13) so a partial run targeting e.g. stages 1–10 doesn't demand image tags or DB secrets. Commit `75fe693`.
+
+---
+
 ## 2026-06-19 • Silent PDF parse failure (2) — NLTK corpora missing from ingestion image
 
 **Symptom:** After the matplotlib fix (`b353b3b`), PDFs still produced zero Qdrant vectors. Ray job reported SUCCEEDED, Qdrant point count stayed at 3 (the TXT smoke files only).
