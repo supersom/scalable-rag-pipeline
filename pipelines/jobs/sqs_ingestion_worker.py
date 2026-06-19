@@ -6,7 +6,7 @@ import logging
 import os
 import shlex
 import time
-from urllib.parse import unquote_plus
+from urllib.parse import quote, unquote_plus
 
 import boto3
 from ray.job_submission import JobStatus, JobSubmissionClient
@@ -81,7 +81,7 @@ def _process_message(sqs, ray_client, message: dict) -> None:
 
         identity = f"{message['MessageId']}:{receive_count}:{index}:{bucket}:{key}"
         submission_id = "ingest-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
-        source = f"s3://{bucket}/{key}"
+        source = f"s3://{bucket}/{quote(key, safe='/')}"
         logger.info("Submitting %s as Ray job %s", source, submission_id)
         ray_client.submit_job(
             submission_id=submission_id,
