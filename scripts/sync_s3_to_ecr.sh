@@ -57,23 +57,71 @@ echo "--- 4. Push to ECR ---"
 docker push "${ECR_TAG}"
 
 echo "--- 5. Delete older ECR images ---"
-OLD_DIGESTS=$(aws ecr describe-images \
-  --repository-name "${ECR_REPO}" \
-  --region "${REGION}" \
-  --query "imageDetails[?!(contains(imageTags || \`[]\`, '${GIT_SHA}'))].imageDigest" \
-  --output text)
+# Docker's default buildx builder attaches a provenance manifest, so every
+# push is an OCI index (the tagged, top-level image) referencing untagged
+# per-platform/attestation children. Filtering on "not tagged with GIT_SHA"
+# alone — as this used to — matches those untagged children of the image
+# we JUST pushed too (they carry no tag at all, so the check trivially
+# passes), and ECR only refused to delete them because they're still
+# ImageReferencedByManifestList by the current tag. Two-phase delete instead:
+# first the stale top-level tags, then their now-orphaned children.
 
-if [[ -n "$OLD_DIGESTS" ]]; then
-  # Build JSON array: [{"imageDigest":"sha256:..."},...]
-  IMAGE_IDS=$(echo "$OLD_DIGESTS" | tr '\t\n' ' ' | xargs -n1 | \
+delete_digests() {
+  # $1 = whitespace/newline-separated digests. Prints the batch-delete-image
+  # JSON response, or {"imageIds":[],"failures":[]} if given nothing.
+  local digests="$1"
+  if [[ -z "$digests" ]]; then
+    echo '{"imageIds":[],"failures":[]}'
+    return
+  fi
+  local image_ids
+  image_ids=$(echo "$digests" | tr '\t\n' ' ' | xargs -n1 | \
     python3 -c "import sys,json; print(json.dumps([{'imageDigest':d.strip()} for d in sys.stdin if d.strip()]))")
   aws ecr batch-delete-image \
     --repository-name "${ECR_REPO}" \
     --region "${REGION}" \
-    --image-ids "${IMAGE_IDS}"
-  echo "    Deleted $(echo "$OLD_DIGESTS" | wc -w | tr -d ' ') older image(s)"
+    --image-ids "${image_ids}"
+}
+
+OLD_TAGGED_DIGESTS=$(aws ecr describe-images \
+  --repository-name "${ECR_REPO}" \
+  --region "${REGION}" \
+  --query "imageDetails[?imageTags && !contains(imageTags, '${GIT_SHA}')].imageDigest" \
+  --output text)
+
+if [[ -n "$OLD_TAGGED_DIGESTS" ]]; then
+  delete_digests "$OLD_TAGGED_DIGESTS" >/dev/null
+  echo "    Deleted $(echo "$OLD_TAGGED_DIGESTS" | wc -w | tr -d ' ') old tagged image(s)"
 else
-  echo "    No older images to delete"
+  echo "    No older tagged images to delete"
+fi
+
+# Orphaned children of the tags just deleted are now unreferenced and safe to
+# remove. Children still belonging to a kept tag (e.g. the one just pushed)
+# fail with ImageReferencedByManifestList — that's the expected, correct
+# outcome, not an error; only a different failure code is worth surfacing.
+UNTAGGED_DIGESTS=$(aws ecr describe-images \
+  --repository-name "${ECR_REPO}" \
+  --region "${REGION}" \
+  --filter tagStatus=UNTAGGED \
+  --query 'imageDetails[].imageDigest' \
+  --output text)
+
+if [[ -n "$UNTAGGED_DIGESTS" ]]; then
+  RESPONSE=$(delete_digests "$UNTAGGED_DIGESTS")
+  echo "$RESPONSE" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+deleted = len(data.get('imageIds', []))
+failures = data.get('failures', [])
+kept = [f for f in failures if f.get('failureCode') == 'ImageReferencedByManifestList']
+other = [f for f in failures if f.get('failureCode') != 'ImageReferencedByManifestList']
+print(f'    Deleted {deleted} orphaned untagged manifest(s); {len(kept)} still referenced by a kept image (expected)')
+for f in other:
+    print(f\"    WARNING: {f['imageId']['imageDigest']}: {f['failureCode']} — {f['failureReason']}\")
+"
+else
+  echo "    No untagged images to clean up"
 fi
 
 echo "--- Done: ${ECR_TAG} ---"
