@@ -80,10 +80,14 @@ else
 fi
 
 echo "--- 2. Find previous versions ---"
-PREV_KEYS=$(aws s3 ls "s3://${MODELS_BUCKET}/images/${ECR_REPO}/" --region "${REGION}" \
+# `aws s3 ls` exits 1 (not 0) when the prefix has zero objects — true on the very
+# first push after the bucket/repo is (re)created. Under `set -euo pipefail` that
+# would otherwise abort the script here with no error message. Empty is a valid,
+# expected result (nothing to clean up yet), so don't let it trip set -e.
+PREV_KEYS=$( (aws s3 ls "s3://${MODELS_BUCKET}/images/${ECR_REPO}/" --region "${REGION}" \
   | awk '{print $4}' \
   | grep '\.tar\.gz$' \
-  | grep -v "^${GIT_SHA}\.tar\.gz$")
+  | grep -v "^${GIT_SHA}\.tar\.gz$") || true)
 
 echo "--- 3. Save + upload to S3 ---"
 docker save "${IMAGE_REF}" | gzip | \
