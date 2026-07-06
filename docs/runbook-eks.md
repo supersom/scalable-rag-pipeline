@@ -68,6 +68,32 @@ docker push ${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/services/ray-serve:${G
 
 The Ray Serve image uses Docker layer caching — only the `COPY services` layer changes on code edits, so rebuilds after the first are usually quick. The image build also validates the Ray 2.9.0 Serve proxy patch needed for the pinned Starlette version.
 
+### 2.1 Ingestion image (build → S3 → ECR)
+
+The ingestion image goes through a build-to-S3-then-promote-to-ECR relay instead of a direct `docker push` — useful on a slow uplink, and it's the flow needed the first time a fresh/recreated `services/ingestion` ECR repo has no images in it yet:
+
+```bash
+GIT_SHA=$(git rev-parse --short HEAD)
+
+# 1. Build locally, docker save + gzip, upload to
+#    s3://<models-bucket>/images/services/ingestion/<sha>.tar.gz
+bash scripts/build_push_image.sh ingestion
+
+# 2. Download from S3, docker load, retag for ECR, push
+bash scripts/sync_s3_to_ecr.sh ingestion "${GIT_SHA}"
+```
+
+Verify the push landed:
+
+```bash
+aws ecr describe-images --repository-name services/ingestion \
+  --query 'imageDetails[].imageTags' --output text
+```
+
+`build_push_image.sh ingestion <existing-git-sha>` (second argument) instead pulls that exact tag from ECR and re-exports it to S3 without rebuilding — for backing up a known-good image before an unrelated change.
+
+**Before building:** confirm `git log --oneline -- pipelines/ingestion services/ingestion` includes `ace240e` (pre-downloads the NLTK corpora `unstructured`'s PDF parser needs). Without it, PDF ingestion parses to zero chunks silently — the job still reports success (see DEVLOG).
+
 ### 2.5 Populate S3 model weight cache (one-time per bucket)
 
 GPU node cold starts pull model weights from S3 via the free Gateway VPC endpoint rather than HuggingFace via NAT, saving ~$0.90/node in data transfer. The bucket must be populated before RayServices are applied.
