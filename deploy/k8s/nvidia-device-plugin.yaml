@@ -40,7 +40,7 @@ spec:
                 values: ["g", "p"]
       containers:
       - name: nvidia-device-plugin-ctr
-        image: nvcr.io/nvidia/k8s-device-plugin:v0.15.0
+        image: nvcr.io/nvidia/k8s-device-plugin:v0.17.1
         env:
         - name: FAIL_ON_INIT_ERROR
           value: "false"

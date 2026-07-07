@@ -83,8 +83,9 @@ if stage_active 2; then
   echo "--- 2. Karpenter controller (Helm) ---"
   KARPENTER_ROLE_ARN=$(terraform -chdir=infra/terraform output -raw karpenter_controller_role_arn)
   CLUSTER_ENDPOINT=$(terraform -chdir=infra/terraform output -raw eks_cluster_endpoint)
+  # 1.13.0: K8s 1.35 needs Karpenter >= 1.9 (1.0.8 tops out at K8s 1.32)
   helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
-    --version 1.0.8 \
+    --version 1.13.0 \
     --namespace kube-system \
     --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=${KARPENTER_ROLE_ARN}" \
     --set "settings.clusterName=${CLUSTER_NAME}" \
@@ -120,7 +121,8 @@ fi
 
 if stage_active 7; then
   echo "--- 7. KubeRay operator ---"
-  helm upgrade --install kuberay-operator kuberay/kuberay-operator --version 1.0.0 \
+  # 1.2.2 is the ceiling while images run Ray 2.9.0 — KubeRay 1.3+ requires Ray >= 2.38
+  helm upgrade --install kuberay-operator kuberay/kuberay-operator --version 1.2.2 \
     --wait --timeout 3m
 fi
 
