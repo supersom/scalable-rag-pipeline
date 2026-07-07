@@ -31,9 +31,17 @@ spec:
                 cpu: "2"
                 memory: 8Gi
             ports:
+            # KubeRay >=1.2's RayService reconciler requires a head-service port
+            # explicitly named "dashboard" (utils.DashboardPortName) to fetch the
+            # Serve/dashboard client URL — unnamed ports fall back to an
+            # auto-generated "<port>-port" name and reconcileServe fails with
+            # "dashboard port is not found", so Serve is never submitted.
             - containerPort: 6379
+              name: redis
             - containerPort: 8265
+              name: dashboard
             - containerPort: 8000
+              name: serve
     workerGroupSpecs:
     - groupName: gpu-workers
       replicas: 0
