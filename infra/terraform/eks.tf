@@ -2,10 +2,10 @@
 
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 19.0"
+  version = "~> 20.0"
 
   cluster_name    = var.cluster_name
-  cluster_version = "1.30" # Use stable K8s version
+  cluster_version = "1.35" # Standard support until ~mid-2027; 1.30 hit extended-support pricing
 
   # Networking: Connect to the VPC we just created
   vpc_id                         = module.vpc.vpc_id
@@ -42,15 +42,21 @@ module "eks" {
     "karpenter.sh/discovery" = var.cluster_name
   }
 
-  # Manage the aws-auth ConfigMap so Karpenter-launched nodes can join
-  manage_aws_auth_configmap = true
-  aws_auth_roles = [
-    {
-      rolearn  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/KarpenterNodeRole-${var.cluster_name}"
-      username = "system:node:{{EC2PrivateDNSName}}"
-      groups   = ["system:bootstrappers", "system:nodes"]
+  # Cluster auth via EKS access entries (module v20 dropped aws-auth ConfigMap management).
+  # EC2_LINUX grants the node role the system:nodes bootstrap permissions the
+  # aws-auth mapping used to provide, so Karpenter-launched nodes can join.
+  authentication_mode = "API"
+
+  # Without this the applying IAM principal gets no cluster-admin access entry
+  # and kubectl is locked out of the fresh cluster (v20 defaults it to false).
+  enable_cluster_creator_admin_permissions = true
+
+  access_entries = {
+    karpenter_nodes = {
+      principal_arn = aws_iam_role.karpenter_node.arn
+      type          = "EC2_LINUX"
     }
-  ]
+  }
 }
 
 # Export the Cluster Endpoint

@@ -144,8 +144,8 @@ resource "aws_iam_role_policy_attachment" "karpenter_node_ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-# Note: aws_eks_access_entry requires API or API_AND_CONFIG_MAP auth mode.
-# This cluster uses CONFIG_MAP mode — the KarpenterNodeRole is mapped via aws-auth ConfigMap instead.
+# Node access: the cluster runs in API auth mode; the KarpenterNodeRole is granted
+# node bootstrap permissions via an EC2_LINUX access entry in eks.tf (access_entries).
 
 # Allow all Karpenter nodes (including GPU workers) to read model weights from S3.
 # Using the node role rather than per-pod IRSA so the download works during Ray Serve
