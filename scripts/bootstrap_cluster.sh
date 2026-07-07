@@ -164,6 +164,19 @@ if stage_active 11; then
     --query SecretString --output text \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])")
 
+  # Tavily API key is optional — Terraform only provisions a secret for it when
+  # var.tavily_api_key was set in terraform.tfvars (see infra/terraform/secrets.tf).
+  # `|| echo ""` guards against `terraform output` failing under set -e if the
+  # output isn't defined yet (e.g. stale state predating this output).
+  TAVILY_SECRET_ARN=$(terraform -chdir=infra/terraform output -raw tavily_api_key_secret_arn 2>/dev/null || echo "")
+  if [[ -n "$TAVILY_SECRET_ARN" ]]; then
+    TAVILY_API_KEY=$(aws secretsmanager get-secret-value \
+      --secret-id "$TAVILY_SECRET_ARN" \
+      --query SecretString --output text)
+  else
+    TAVILY_API_KEY=""
+  fi
+
   kubectl create secret generic app-env-secret \
     --from-literal=DATABASE_URL="postgresql+asyncpg://ragadmin:${DB_PASSWORD}@${DB_ENDPOINT}/rag_db" \
     --from-literal=REDIS_URL="${REDIS_URL}" \
@@ -175,6 +188,7 @@ if stage_active 11; then
     --from-literal=EMBED_DIM="1024" \
     --from-literal=LLM_API_KEY="" \
     --from-literal=JWT_SECRET_KEY="${JWT_SECRET_KEY}" \
+    --from-literal=TAVILY_API_KEY="${TAVILY_API_KEY}" \
     --dry-run=client -o yaml | kubectl apply -f -
 fi
 

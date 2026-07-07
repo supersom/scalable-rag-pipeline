@@ -24,6 +24,19 @@ variable "vpc_cidr" {
   default     = "10.0.0.0/16" # Gives us 65,536 IPs
 }
 
+variable "tavily_api_key" {
+  description = <<-EOT
+    Tavily Search API key for the RAG agent's web_search tool. Optional —
+    web_search degrades gracefully (returns a "disabled" message) if unset.
+    Set via terraform.tfvars (gitignored), never passed on the command line
+    or as a shell env var. When set, provisions a Secrets Manager secret
+    whose ARN bootstrap_cluster.sh stage 11 fetches at deploy time.
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "db_tier" {
   description = <<-EOT
     Database tier for chat history storage.

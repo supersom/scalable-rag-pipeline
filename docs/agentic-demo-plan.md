@@ -143,14 +143,28 @@ This installs Karpenter + NodePools, KubeRay, Qdrant, Neo4j, creates the
 `app-env-secret` (stage 11), and deploys the API, the LLM/embed RayServices, and the
 queue-backed ingestion worker (stages 12–14).
 
-**Demo-specific addition:** stage 11's secret has no `TAVILY_API_KEY`, so the
-web_search demo would show the "disabled" degradation path. To demo live search, add
-it and restart the API:
+**Demo-specific addition:** stage 11 fetches `TAVILY_API_KEY` from a Secrets Manager
+secret that Terraform only provisions if `tavily_api_key` was set in
+`terraform.tfvars` (`infra/terraform/secrets.tf`) — without it, the web_search demo
+shows the "disabled" degradation path. To demo live search:
 
 ```bash
-kubectl patch secret app-env-secret -p '{"stringData":{"TAVILY_API_KEY":"tvly-..."}}'
-kubectl rollout restart deploy/api
+# infra/terraform/terraform.tfvars — uncomment and fill in:
+#   tavily_api_key = "tvly-..."
+cd infra/terraform && terraform apply   # provisions the Secrets Manager secret
+cd ../..
+
+export API_IMAGE_TAG=<current ECR tag>
+bash scripts/bootstrap_cluster.sh --start 11 --end 12
 ```
+
+Stage 11 recreates `app-env-secret` with the real value (fetched by ARN from
+Secrets Manager, never typed into a shell), and stage 12 re-applies the Helm chart
+so the API Deployment's pod template actually mounts the `secretEnvKeys` entry
+(`values.yaml` lists key *names* only). Re-applying the chart naturally rolls the
+pods — no separate restart needed. The key lives only in the gitignored
+`terraform.tfvars` and Secrets Manager; it's never passed as a shell env var or
+committed anywhere.
 
 Then wait for GPU inference (Karpenter provisions the g5.2xlarge in ~2 min; LLM loads
 ~5 min after):

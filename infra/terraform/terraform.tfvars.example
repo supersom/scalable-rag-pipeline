@@ -11,6 +11,12 @@ db_password = "change-me"
 
 db_tier = "rds"
 
+# ── Optional third-party API keys ────────────────────────────────────────────
+# Uncomment and fill in to enable the corresponding agent tool. Leaving unset
+# is fully supported — the tool degrades gracefully instead of erroring.
+
+# tavily_api_key = "tvly-..."  # web_search tool (https://tavily.com)
+
 # ── Optional overrides ────────────────────────────────────────────────────────
 
 # aws_region   = "us-east-1"
