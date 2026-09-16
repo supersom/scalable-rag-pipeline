@@ -12,6 +12,9 @@ from jose import jwt
 DEFAULT_API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 DEFAULT_JWT_SECRET = os.getenv("JWT_SECRET_KEY", "change_this_to_a_secure_random_string_for_jwt")
 DEFAULT_JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+MANAGED_AUTH = os.getenv("UI_MANAGED_AUTH", "false").lower() == "true"
+DEFAULT_USER_ID = os.getenv("UI_USER_ID", "streamlit-user")
+DEFAULT_USER_ROLE = os.getenv("UI_USER_ROLE", "user" if MANAGED_AUTH else "admin")
 
 
 def make_token(
@@ -57,8 +60,8 @@ def ensure_state() -> None:
         "api_base": DEFAULT_API_BASE,
         "jwt_secret": DEFAULT_JWT_SECRET,
         "jwt_algorithm": DEFAULT_JWT_ALGORITHM,
-        "user_id": "streamlit-user",
-        "role": "admin",
+        "user_id": DEFAULT_USER_ID,
+        "role": DEFAULT_USER_ROLE,
         "ttl_seconds": 3600,
         "jwt_token": "",
         "token_refreshed_at": 0,
@@ -120,14 +123,17 @@ def render_events(events: List[Dict[str, Any]]) -> None:
 def sidebar() -> None:
     with st.sidebar:
         st.header("Session")
-        st.text_input("API base URL", key="api_base")
-        st.text_input("User ID", key="user_id")
-        st.selectbox("Role", ["admin", "user"], key="role")
-        st.number_input("JWT TTL seconds", min_value=60, max_value=86400, step=60, key="ttl_seconds")
+        if MANAGED_AUTH:
+            st.caption(f"Signed in as `{st.session_state.user_id}`")
+        else:
+            st.text_input("API base URL", key="api_base")
+            st.text_input("User ID", key="user_id")
+            st.selectbox("Role", ["admin", "user"], key="role")
+            st.number_input("JWT TTL seconds", min_value=60, max_value=86400, step=60, key="ttl_seconds")
 
-        st.divider()
-        st.text_input("JWT algorithm", key="jwt_algorithm")
-        st.text_input("JWT secret", type="password", key="jwt_secret")
+            st.divider()
+            st.text_input("JWT algorithm", key="jwt_algorithm")
+            st.text_input("JWT secret", type="password", key="jwt_secret")
 
         col_a, col_b = st.columns(2)
         with col_a:
@@ -148,7 +154,8 @@ def sidebar() -> None:
             )
             st.caption(f"JWT refreshed: {refreshed}")
 
-        st.text_area("Bearer token", key="jwt_token", height=180)
+        if not MANAGED_AUTH:
+            st.text_area("Bearer token", key="jwt_token", height=180)
 
 
 def main() -> None:

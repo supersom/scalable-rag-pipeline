@@ -64,3 +64,8 @@ output "tavily_api_key_secret_arn" {
   description = "ARN of the Secrets Manager secret holding the Tavily API key. Empty string if var.tavily_api_key was not set (feature intentionally unconfigured)."
   value       = try(aws_secretsmanager_secret.tavily_api_key[0].arn, "")
 }
+
+output "ui_ecr_repository_url" {
+  description = "ECR repository URL for the Streamlit UI image."
+  value       = aws_ecr_repository.ui.repository_url
+}
