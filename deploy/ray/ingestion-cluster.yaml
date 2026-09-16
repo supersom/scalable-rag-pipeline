@@ -12,6 +12,9 @@ spec:
       dashboard-host: "0.0.0.0"
       num-cpus: "0"
     template:
+      metadata:
+        annotations:
+          karpenter.sh/do-not-disrupt: "true"
       spec:
         serviceAccountName: ingestion-worker
         containers:
@@ -30,6 +33,9 @@ spec:
       maxReplicas: 20
       rayStartParams: {}
       template:
+        metadata:
+          annotations:
+            karpenter.sh/do-not-disrupt: "true"
         spec:
           serviceAccountName: ingestion-worker
           containers:
