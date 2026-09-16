@@ -8,6 +8,11 @@ __pycache__/
 # Claude Code internal directory
 .claude/
 
+# Agent tooling local state (CodeGraph index, Codex CLI marker, self-improvement log)
+.codegraph/
+.codex
+.learnings/
+
 # Terraform plugin cache and local state (state lives in S3)
 **/.terraform/
 *.tfstate
