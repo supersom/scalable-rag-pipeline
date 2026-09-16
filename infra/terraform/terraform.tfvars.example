@@ -17,6 +17,13 @@ db_tier = "rds"
 
 # tavily_api_key = "tvly-..."  # web_search tool (https://tavily.com)
 
+# ── Optional one-off ingestion source ────────────────────────────────────────
+# Grants the ingestion role read-only access to an external bucket's "pdfs/"
+# prefix, for backfilling from a source outside the pipeline's own documents
+# bucket. Leave unset to skip provisioning this extra grant.
+
+# ingestion_source_bucket = "my-external-kb-bucket"
+
 # ── Optional overrides ────────────────────────────────────────────────────────
 
 # aws_region   = "us-east-1"

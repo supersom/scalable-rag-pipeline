@@ -37,6 +37,17 @@ variable "tavily_api_key" {
   sensitive   = true
 }
 
+variable "ingestion_source_bucket" {
+  description = <<-EOT
+    Name of an external S3 bucket to grant the ingestion role read-only access
+    to, under its "pdfs/" prefix — for one-off backfills from a source outside
+    the pipeline's own documents bucket. Optional — leave unset ("") to skip
+    provisioning this extra grant entirely. Set via terraform.tfvars.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "db_tier" {
   description = <<-EOT
     Database tier for chat history storage.

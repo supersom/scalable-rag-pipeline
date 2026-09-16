@@ -1,5 +1,37 @@
 # infra/terraform/iam.tf
 
+# Read-only access to an external ingestion source bucket's "pdfs/" prefix.
+# Only provisioned when var.ingestion_source_bucket is set. The for-loop over
+# a 0-or-1-element list (rather than a ternary between [] and a list of
+# objects) avoids Terraform's conditional-branch type unification, which
+# rejects mismatched tuple shapes.
+locals {
+  ingestion_source_bucket_statements = flatten([
+    for b in(var.ingestion_source_bucket == "" ? [] : [var.ingestion_source_bucket]) : [
+      {
+        Sid      = "ReadIngestionSourceBucketList"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = ["arn:aws:s3:::${b}"]
+        Condition = {
+          StringLike = {
+            "s3:prefix" = ["pdfs", "pdfs/*"]
+          }
+        }
+      },
+      {
+        Sid    = "ReadIngestionSourceBucketObjects"
+        Effect = "Allow"
+        Action = ["s3:GetObject"]
+        Resource = [
+          "arn:aws:s3:::${b}/pdfs",
+          "arn:aws:s3:::${b}/pdfs/*",
+        ]
+      }
+    ]
+  ])
+}
+
 # 1. IAM Policy for the Ingestion Pipeline (Ray Workers)
 resource "aws_iam_policy" "ingestion_policy" {
   name        = "RAG_Ingestion_S3_Policy"
@@ -7,7 +39,7 @@ resource "aws_iam_policy" "ingestion_policy" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Action = [
           "s3:GetObject",
@@ -30,7 +62,7 @@ resource "aws_iam_policy" "ingestion_policy" {
         Effect   = "Allow"
         Resource = aws_sqs_queue.ingestion.arn
       }
-    ]
+    ], local.ingestion_source_bucket_statements)
   })
 }
 
