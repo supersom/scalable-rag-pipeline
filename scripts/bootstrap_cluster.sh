@@ -208,6 +208,11 @@ fi
 if stage_active 13; then
   echo "--- 13. Ray Serve (LLM + Embeddings) ---"
   : "${RAY_IMAGE_TAG:?RAY_IMAGE_TAG is required for stage 13}"
+  RAY_MODELS_ROLE_ARN=$(terraform -chdir=infra/terraform output -raw ray_models_irsa_role_arn)
+  kubectl create serviceaccount ray-models --namespace default \
+    --dry-run=client -o yaml | kubectl apply -f -
+  kubectl annotate serviceaccount ray-models --namespace default \
+    "eks.amazonaws.com/role-arn=${RAY_MODELS_ROLE_ARN}" --overwrite
   # Substitute the image tag into the manifests before applying.
   # RayService triggers GPU node provisioning via Karpenter — allow up to 15 min.
   sed "s|ray-serve:[^ ]*|ray-serve:${RAY_IMAGE_TAG}|g" deploy/ray/ray-serve-llm.yaml \

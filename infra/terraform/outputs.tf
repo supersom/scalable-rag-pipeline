@@ -55,6 +55,11 @@ output "ingestion_irsa_role_arn" {
   value       = module.ingestion_irsa_role.iam_role_arn
 }
 
+output "ray_models_irsa_role_arn" {
+  description = "Read-only model-cache role used by Ray Serve GPU workers."
+  value       = module.ray_models_irsa_role.iam_role_arn
+}
+
 output "tavily_api_key_secret_arn" {
   description = "ARN of the Secrets Manager secret holding the Tavily API key. Empty string if var.tavily_api_key was not set (feature intentionally unconfigured)."
   value       = try(aws_secretsmanager_secret.tavily_api_key[0].arn, "")

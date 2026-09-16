@@ -56,3 +56,23 @@ module "ingestion_irsa_role" {
     policy = aws_iam_policy.ingestion_policy.arn
   }
 }
+
+# Read-only model-cache access for Ray Serve GPU workers. Pods cannot inherit the
+# Karpenter node role because the EC2NodeClass keeps IMDS hop limit at 1.
+module "ray_models_irsa_role" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.0"
+
+  role_name = "rag-ray-models-role"
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["default:ray-models"]
+    }
+  }
+
+  role_policy_arns = {
+    models = aws_iam_policy.karpenter_node_models.arn
+  }
+}

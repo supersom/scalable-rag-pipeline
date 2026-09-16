@@ -50,6 +50,7 @@ spec:
       rayStartParams: {}
       template:
         spec:
+          serviceAccountName: ray-models
           containers:
           - name: ray-worker
             image: 764988411032.dkr.ecr.us-east-1.amazonaws.com/services/ray-serve:4c46e7c-proxy-fix2
