@@ -106,7 +106,15 @@ def main(source: str, extract_graph: bool = True, init_ray: bool = True):
     logger.info(f"Reading files from: {source}")
 
     # ── 1. Read files ─────────────────────────────────────────────────────────
-    ds = ray.data.read_binary_files(source, include_paths=True)
+    # Explicit parallelism avoids Ray autodetecting too few blocks when few CPUs
+    # are free at submit time: each block becomes one PyArrow binary array, and
+    # a too-large corpus packed into one block trips Arrow's ~2GB array cap.
+    ds = ray.data.read_binary_files(
+        source,
+        include_paths=True,
+        file_extensions=["pdf", "PDF"],
+        parallelism=200,
+    )
 
     # ── 2. Parse & chunk (CPU) ────────────────────────────────────────────────
     chunked_ds = ds.map_batches(
