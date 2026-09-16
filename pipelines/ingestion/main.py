@@ -2,6 +2,7 @@
 import argparse
 import logging
 import os
+import signal
 import sys
 
 import ray
@@ -14,6 +15,21 @@ from pipelines.ingestion.indexing.neo4j import Neo4jIndexer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+# Some malformed PDFs make pdfminer's content-stream interpreter loop for
+# minutes to hours (seen on real files with corrupt pattern-colorspace
+# operators). A per-file wall-clock cap keeps one bad file from wedging an
+# entire block. SIGALRM only interrupts the main thread, which is fine here —
+# Ray Data actors run map_batches on the worker's main thread.
+PARSE_TIMEOUT_SECONDS = int(os.getenv("INGESTION_PARSE_TIMEOUT_SECONDS", "90"))
+
+
+class _ParseTimeout(Exception):
+    pass
+
+
+def _raise_parse_timeout(signum, frame):
+    raise _ParseTimeout()
 
 
 def process_batch(batch):
@@ -30,6 +46,8 @@ def process_batch(batch):
         short_name = filename.split("/")[-1]
 
         ext = short_name.rsplit(".", 1)[-1].lower()
+        previous_handler = signal.signal(signal.SIGALRM, _raise_parse_timeout)
+        signal.alarm(PARSE_TIMEOUT_SECONDS)
         try:
             if ext == "pdf":
                 from pipelines.ingestion.loaders.pdf import parse_pdf_bytes
@@ -53,9 +71,17 @@ def process_batch(batch):
             else:
                 logger.warning(f"Skipping unsupported file type: {short_name}")
                 continue
+        except _ParseTimeout:
+            logger.error(
+                f"Timed out parsing {short_name} after {PARSE_TIMEOUT_SECONDS}s, skipping"
+            )
+            continue
         except Exception as e:
             logger.error(f"Failed to parse {short_name}: {e}")
             continue
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous_handler)
 
         metadata["source_path"] = filename
         chunks = split_text(raw_text, chunk_size=512, overlap=50)
