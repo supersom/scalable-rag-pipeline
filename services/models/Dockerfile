@@ -25,13 +25,25 @@ FROM rayproject/ray:2.9.0-py310-gpu
 RUN pip install --no-cache-dir \
       "vllm==0.4.2" \
       "sentence-transformers==2.7.0" \
-      "transformers>=4.40,<4.45"
+      "transformers>=4.40,<4.45" \
+      "fastapi==0.109.0" \
+      "awscli>=1.32,<2"
 
-# Ray 2.9.0 proxy.py calls middleware.options, but Starlette's Middleware class
-# exposes kwargs. Patch and validate so Serve proxies don't crash-loop.
+# FastAPI 0.109 avoids the newer non-serializable route lock. Starlette 0.35
+# uses Middleware.kwargs, while Ray 2.9 still reads Middleware.options, so patch
+# that single compatibility point and validate the result.
 RUN python - <<'PY'
 from pathlib import Path
-import shutil
+import fastapi
+import starlette
+from starlette.middleware import Middleware
+
+middleware = Middleware(object)
+if fastapi.__version__ != "0.109.0" or not hasattr(middleware, "kwargs"):
+    raise SystemExit(
+        f"incompatible Serve web stack: fastapi={fastapi.__version__}, "
+        f"starlette={starlette.__version__}"
+    )
 
 proxy = Path("/home/ray/anaconda3/lib/python3.10/site-packages/ray/serve/_private/proxy.py")
 text = proxy.read_text()
@@ -39,18 +51,38 @@ old = "self.wrapped_http_proxy, **middleware.options"
 new = "self.wrapped_http_proxy, **middleware.kwargs"
 if old not in text:
     raise SystemExit(f"expected Ray proxy middleware expression not found in {proxy}")
-proxy.write_text(text.replace(old, new))
+text = text.replace(old, new)
 
-cache_dir = proxy.parent / "__pycache__"
-if cache_dir.exists():
-    shutil.rmtree(cache_dir)
-
-patched = proxy.read_text()
-compile(patched, str(proxy), "exec")
-if old in patched or new not in patched:
-    raise SystemExit("Ray proxy middleware patch validation failed")
+# Starlette 0.35 derives the route path from the full ASGI path and root_path.
+# Ray 2.9 strips the prefix as well as setting root_path, causing every FastAPI
+# endpoint below a non-root Serve route prefix to return 404.
+old_path = 'proxy_request.set_path(route_path.replace(route_prefix, "", 1))'
+new_path = "proxy_request.set_path(route_path)"
+if old_path not in text:
+    raise SystemExit(f"expected Ray proxy route rewrite not found in {proxy}")
+proxy.write_text(text.replace(old_path, new_path))
+compile(proxy.read_text(), str(proxy), "exec")
 PY
+
+# Model actors run as the non-root `ray` user and sync weights here at startup.
+USER root
+RUN mkdir -p /model-cache && chown ray:users /model-cache
+USER ray
 
 WORKDIR /app
 COPY services /app/services
 ENV PYTHONPATH=/app
+
+# Importing these symbols forces Ray to serialize both FastAPI ingress apps.
+RUN python - <<'PY'
+import shutil
+import subprocess
+
+from services.api.app.models.embedding_engine import app as embedding_app
+from services.api.app.models.vllm_engine import app as llm_app
+
+assert embedding_app is not None
+assert llm_app is not None
+assert shutil.which("aws") is not None
+subprocess.run(["aws", "--version"], check=True)
+PY
