@@ -1,7 +1,7 @@
 # pipelines/ingestion/indexing/qdrant.py
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from typing import List, Dict, Any
+from typing import Dict, List, Any, Optional
 import os
 import uuid
 
@@ -13,20 +13,20 @@ class QdrantIndexer:
         host = os.getenv("QDRANT_HOST", "qdrant-service")
         port = int(os.getenv("QDRANT_PORT", 6333))
         self.collection_name = os.getenv("QDRANT_COLLECTION", "rag_collection")
-        
+
         self.client = QdrantClient(host=host, port=port)
-        
+
     def write(self, batch: List[Dict[str, Any]]):
         """
         Uploads points in batch.
         """
         points = []
-        
+
         for row in batch:
             # Skip if embedding failed
             if "vector" not in row or len(row["vector"]) == 0:
                 continue
-                
+
             # Construct Payload (Metadata)
             payload = {
                 "text": row["text"],
@@ -34,9 +34,10 @@ class QdrantIndexer:
                 "source_path": row["metadata"].get(
                     "source_path", row["metadata"]["filename"]
                 ),
-                "page": row["metadata"].get("page_number", 0)
+                "page": row["metadata"].get("page_number", 0),
+                "content_hash": row["metadata"].get("content_hash"),
             }
-            
+
             # Create Point
             point_key = (
                 f"{payload['source_path']}:{payload['page']}:{payload['text']}"
@@ -46,10 +47,53 @@ class QdrantIndexer:
                 vector=row["vector"],
                 payload=payload
             ))
-            
+
         if points:
             # Upsert is atomic
             self.client.upsert(
                 collection_name=self.collection_name,
                 points=points
             )
+
+    def iter_known_hashes(self) -> Dict[str, Optional[str]]:
+        """
+        One entry per already-ingested source_path, mapping to its stored
+        content_hash (None for points written before content_hash tracking
+        existed). Used to skip re-parsing/re-embedding unchanged files.
+        """
+        known: Dict[str, Optional[str]] = {}
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=self.collection_name,
+                with_payload=["source_path", "content_hash"],
+                with_vectors=False,
+                limit=500,
+                offset=offset,
+            )
+            for point in points:
+                source_path = point.payload.get("source_path")
+                if source_path and source_path not in known:
+                    known[source_path] = point.payload.get("content_hash")
+            if offset is None:
+                break
+        return known
+
+    def delete_by_source_path(self, source_path: str):
+        """Removes all points for a file whose content changed, so stale
+        chunks from the previous version don't linger alongside the new
+        ones (point IDs are derived from chunk text, so a changed file
+        produces new IDs rather than overwriting the old ones)."""
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="source_path",
+                            match=models.MatchValue(value=source_path),
+                        )
+                    ]
+                )
+            ),
+        )

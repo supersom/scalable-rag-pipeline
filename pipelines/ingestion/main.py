@@ -1,5 +1,6 @@
 # pipelines/ingestion/main.py
 import argparse
+import hashlib
 import logging
 import os
 import signal
@@ -23,6 +24,18 @@ logger = logging.getLogger(__name__)
 # Ray Data actors run map_batches on the worker's main thread.
 PARSE_TIMEOUT_SECONDS = int(os.getenv("INGESTION_PARSE_TIMEOUT_SECONDS", "90"))
 
+# Points written before content_hash tracking existed have no hash to compare
+# against. When enabled, a source_path match alone (no hash available) is
+# trusted as "unchanged" rather than being re-parsed/re-embedded. Off by
+# default since it can't actually detect a change in that case — it's a
+# one-time bridge for backfilling this feature onto an already-ingested
+# corpus, not a substitute for real hash comparison.
+TRUST_PATH_WITHOUT_HASH = os.getenv(
+    "INGESTION_TRUST_PATH_MATCH_WITHOUT_HASH", "false"
+).lower() in ("1", "true", "yes")
+
+_NOT_INGESTED = object()  # sentinel: distinguishes "never seen" from "seen, hash=None"
+
 
 class _ParseTimeout(Exception):
     pass
@@ -32,7 +45,7 @@ def _raise_parse_timeout(signum, frame):
     raise _ParseTimeout()
 
 
-def process_batch(batch):
+def process_batch(batch, known_hashes: dict, trust_path_without_hash: bool):
     """
     Ray Data transformation function.
     Receives a batch of file contents (binary bytes + path).
@@ -44,6 +57,20 @@ def process_batch(batch):
         filename = batch["path"][i]
         # Keep only the basename for cleaner metadata
         short_name = filename.split("/")[-1]
+
+        content_hash = hashlib.sha256(content).hexdigest()
+        known_hash = known_hashes.get(filename, _NOT_INGESTED)
+        if known_hash == content_hash:
+            continue  # unchanged since last run — skip parse/embed/write entirely
+        if known_hash is None and trust_path_without_hash:
+            # Legacy point, ingested before content_hash existed. No hash to
+            # compare, but the toggle says to trust the path match anyway.
+            continue
+        if known_hash is not _NOT_INGESTED:
+            # Previously ingested under this path with different (or
+            # untrusted-missing) content — clear the stale version first so
+            # its old chunks don't linger alongside the new ones.
+            QdrantIndexer().delete_by_source_path(filename)
 
         ext = short_name.rsplit(".", 1)[-1].lower()
         previous_handler = signal.signal(signal.SIGALRM, _raise_parse_timeout)
@@ -84,6 +111,7 @@ def process_batch(batch):
             signal.signal(signal.SIGALRM, previous_handler)
 
         metadata["source_path"] = filename
+        metadata["content_hash"] = content_hash
         chunks = split_text(raw_text, chunk_size=512, overlap=50)
 
         for chunk in chunks:
@@ -131,6 +159,12 @@ def main(source: str, extract_graph: bool = True, init_ray: bool = True):
 
     logger.info(f"Reading files from: {source}")
 
+    known_hashes = QdrantIndexer().iter_known_hashes()
+    logger.info(
+        f"Found {len(known_hashes)} already-ingested source paths "
+        f"(trust_path_without_hash={TRUST_PATH_WITHOUT_HASH})"
+    )
+
     # ── 1. Read files ─────────────────────────────────────────────────────────
     # Explicit parallelism avoids Ray autodetecting too few blocks when few CPUs
     # are free at submit time: each block becomes one PyArrow binary array, and
@@ -147,6 +181,10 @@ def main(source: str, extract_graph: bool = True, init_ray: bool = True):
         process_batch,
         batch_size=10,
         num_cpus=1,
+        fn_kwargs={
+            "known_hashes": known_hashes,
+            "trust_path_without_hash": TRUST_PATH_WITHOUT_HASH,
+        },
     )
 
     # ── 3a. Embed (calls Ollama locally, Ray Serve in prod) ───────────────────
