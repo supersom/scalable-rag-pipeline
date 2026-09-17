@@ -37,8 +37,13 @@ TRUST_PATH_WITHOUT_HASH = os.getenv(
 _NOT_INGESTED = object()  # sentinel: distinguishes "never seen" from "seen, hash=None"
 
 
-class _ParseTimeout(Exception):
-    pass
+class _ParseTimeout(BaseException):
+    """Deliberately not Exception — unstructured/pdfminer have their own
+    broad `except Exception:` around individual extraction steps (seen live:
+    it swallowed this as a normal parse failure and kept going with the
+    alarm already consumed, leaving the rest of the file unprotected).
+    Subclassing BaseException lets this pass through those handlers
+    untouched, the same reason KeyboardInterrupt/SystemExit do."""
 
 
 def _raise_parse_timeout(signum, frame):
