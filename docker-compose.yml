@@ -31,7 +31,6 @@ services:
   # 4. Neo4j (Graph DB)
   neo4j:
     image: neo4j:5.16.0-community
-    runtime: runc
     environment:
       NEO4J_AUTH: neo4j/password
       NEO4J_dbms_memory_pagecache_size: 1G
