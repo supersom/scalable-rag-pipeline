@@ -91,7 +91,7 @@ Seeds: the 14 cases in `scripts/eval_pipeline.py` with tool labels added, and th
 
 `calibration_sources` (fuzzy items only) is an optional list of filenames that makes an item dual-labelled. `ground_truth` is optional and unused in slice 1. `golden.json` already has it.
 
-Seeds: the 20 golden items as fuzzy items, and hand-written source items starting from the 4 retrieval queries in `scripts/eval_pipeline.py` (Mamba, Windows `KEY_VALUE_BASIC_INFORMATION`, Oracle history tables, mutual information). Their source PDFs must be in the sampled corpus.
+Seeds: the 20 golden items as fuzzy items, and hand-written source items starting from the 4 retrieval queries in `scripts/eval_pipeline.py` (Mamba, Windows `KEY_VALUE_BASIC_INFORMATION`, Oracle history tables, mutual information). Their source PDFs must be in the sampled corpus. The fourth of these (Oracle history table storage, originally seeded as `h003`) was dropped: no file in this corpus contains "history table" in the relevant database sense (matches only appear in unrelated CPU branch-prediction papers), so there was no genuine source to label it against. `qa.jsonl`'s hand-written IDs therefore run `h001, h002, h004, h005, h006, h007, h008`.
 
 Payloads are normalised on read: `ingest_local.py` writes nested `metadata.filename`, and the Ray pipeline writes flat `filename`.
 
@@ -142,9 +142,9 @@ Ranking comes from the retrieval recorder, not from `retrieve_node`'s output. Th
 ## Corpus
 
 - **Answer sources:** `eval/datasets/true_data/`, 6 files (`architecture.pptx`, `cronjobs.docx`, `monitor_job.docx`, `job_management.html`, `pods_autoscale.html`, `parallel_work_queue.txt`), tracked in git.
-- **Distractors:** a seeded sample from the noisy pool. `noisy_data/` is empty, and the pool is now the 934 files in `ingested/` (694) and `digested/` (240). `failed/` (20) is excluded.
+- **Distractors:** a seeded sample from the noisy pool. Since `scripts/revert_datasets.py --apply` was run, `ingested/` and `digested/` are empty and the pool is now the 934 files in `noisy_data/`. `failed/` (20) is excluded.
 - **Sample size:** about 60 random PDFs plus about 20 hard negatives chosen by keyword (scheduling, distributed, container, autoscaling). The numbers are defaults.
-- **Reproducibility:** the noisy directories are gitignored, so the sample is recorded in `eval/sets/corpus_manifest.json` as filenames, SHA-256 hashes and the seed. Only the manifest is tracked.
+- **Reproducibility:** the noisy directories are gitignored, so the sample is recorded in `eval/sets/corpus_manifest.json` as filenames, SHA-256 hashes and the seed. Only the manifest is tracked. Note that the `random` group is no longer reproducible from the seed alone: after the initial seeded draw, several oversized files (see the composition-fix note above) were manually swapped for smaller ones, without recording which ones or why. The manifest's filenames and hashes, not the seed, are now the authoritative record of the corpus — a fresh `corpus.py build --seed 42` will NOT reproduce this exact set.
 
 ## Environment prerequisites
 
@@ -155,8 +155,8 @@ Ranking comes from the retrieval recorder, not from `retrieve_node`'s output. Th
 | `qdrant-client` matches the API pin (1.7.3, the same version as the compose server image) | Done, in an overlay venv `.venv-eval` (the conda environment has 1.18.0, which has no `AsyncQdrantClient.search`, and cannot be downgraded without breaking `langchain-qdrant` and, via protobuf, `vllm`). Run the harness with `.venv-eval/bin/python`. |
 | Create `rag_collection`, 768 dimensions, cosine | Done. Created manually via `curl -X PUT .../collections/rag_collection` (nothing local creates it automatically; only the EKS bootstrap does, at 1024). |
 | Set `EMBED_DIM=768` in `.env` | Done (`.env` line 65). |
-| Ingest `true_data` and the sample through the Ray pipeline with `--no-graph` | Done. Two production bugs found and fixed along the way (`langchain.text_splitter` moved packages; `read_binary_files` was hardcoded to PDF-only, silently dropping docx/html/pptx/txt). True_data smoke ingest: ~70s. Full 80-file corpus: 57m34s, 36,868 chunks. A duplication bug (staging copies `true_data` into `eval_corpus`, so ingesting both separately double-counted 6 files) was found and fixed with a targeted delete, not a re-ingest. A corpus-composition issue (one 4983-page forced file was 40.5% of the collection, swamping unrelated queries by chunk volume) was found and fixed by truncating it to a 30-page excerpt and swapping 5 other oversized files for smaller ones. Final collection: 12,780 points, no file over 7.3%. |
-| `scripts/revert_datasets.py --apply` | Written and dry-run only. |
+| Ingest `true_data` and the sample through the Ray pipeline with `--no-graph` | Done. Two production bugs found and fixed along the way (`langchain.text_splitter` moved packages; `read_binary_files` was hardcoded to PDF-only, silently dropping docx/html/pptx/txt). True_data smoke ingest: ~70s. Full 80-file corpus: 57m34s, 36,868 chunks. A duplication bug (staging copies `true_data` into `eval_corpus`, so ingesting both separately double-counted 6 files) was found and fixed with a targeted delete, not a re-ingest. A corpus-composition issue (one 4983-page forced file was 40.5% of the collection, swamping unrelated queries by chunk volume) was found and fixed by truncating it to a 30-page excerpt and swapping 5 other oversized files for smaller ones. The excerpt (`Windows Kernel - MSDN Export - Registry Key Structures Excerpt.pdf`) was derived from the original `Windows Kernel - MSDN Export (7th Feb, 2019).pdf`, pages 250–280 (0-indexed), via `pypdf.PdfWriter`. Final collection: 12,780 points, no file over 7.3%. |
+| `scripts/revert_datasets.py --apply` | Applied. `eval/datasets/ingested/` and `digested/` are now empty; their files were moved back into `noisy_data/`. |
 
 The Ray pipeline is chosen because `ingest_local.py` supports only PDF, TXT and MD, and 5 of the 6 `true_data` files are pptx, docx or html. It also gives one flat payload shape.
 

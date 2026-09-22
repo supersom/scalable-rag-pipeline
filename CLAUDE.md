@@ -90,15 +90,16 @@ JWT is validated in `services/api/app/auth/jwt.py`. Token is passed via `AUTH_TO
 Run from the repo root with the local stack up (Qdrant, Ollama; Neo4j optional):
 
 ```bash
-python -m eval.harness routing --repeats 3
-python -m eval.harness retrieval
-python -m eval.harness retrieval --set-baseline    # then later: --compare
+.venv-eval/bin/python -m eval.harness routing --repeats 3
+.venv-eval/bin/python -m eval.harness retrieval
+.venv-eval/bin/python -m eval.harness retrieval --set-baseline    # then later: --compare
 ```
 
 Runs land in `eval/runs/` (gitignored). Exit code 2 means preflight failed or the run is invalid.
 Run with `.venv-eval/bin/python` (or activate it): an overlay venv that pins `qdrant-client==1.7.3`, the API's version.
 Recreate it with `python -m venv --system-site-packages .venv-eval && .venv-eval/bin/python -m pip install --no-deps qdrant-client==1.7.3`.
-Corpus: `python -m eval.harness.corpus build|stage`.
+Corpus: `.venv-eval/bin/python -m eval.harness.corpus build|stage`.
+Tests: `.venv-eval/bin/python -m pytest tests/eval_harness`.
 
 ## Source layout
 
