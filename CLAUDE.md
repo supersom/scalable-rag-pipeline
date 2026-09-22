@@ -85,6 +85,21 @@ JWT is validated in `services/api/app/auth/jwt.py`. Token is passed via `AUTH_TO
 - **Qdrant:** `http://localhost:6333/collections/rag_collection`
 - **Neo4j:** `http://localhost:7474` (browser), run `MATCH (n) RETURN count(n)`
 
+## Eval harness
+
+Run from the repo root with the local stack up (Qdrant, Ollama; Neo4j optional):
+
+```bash
+python -m eval.harness routing --repeats 3
+python -m eval.harness retrieval
+python -m eval.harness retrieval --set-baseline    # then later: --compare
+```
+
+Runs land in `eval/runs/` (gitignored). Exit code 2 means preflight failed or the run is invalid.
+Run with `.venv-eval/bin/python` (or activate it): an overlay venv that pins `qdrant-client==1.7.3`, the API's version.
+Recreate it with `python -m venv --system-site-packages .venv-eval && .venv-eval/bin/python -m pip install --no-deps qdrant-client==1.7.3`.
+Corpus: `python -m eval.harness.corpus build|stage`.
+
 ## Source layout
 
 ```
@@ -109,6 +124,9 @@ scripts/
   load_test.py           # Locust load test
 
 eval/
-  judges/llm_judge.py    # LLM-as-judge scoring
-  ragas/run.py           # RAGAS evaluation harness
+  harness/               # routing + retrieval eval: python -m eval.harness routing|retrieval
+  sets/                  # routing.jsonl, qa.jsonl, corpus_manifest.json
+  baselines/             # committed baselines (each carries its run manifest)
+  judges/llm_judge.py    # LLM-as-judge scoring (not wired to the harness)
+  ragas/run.py           # RAGAS harness (ragas not installed; not wired)
 ```
