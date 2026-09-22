@@ -7,6 +7,17 @@ from typing import Dict, Any
 EMBED_ENDPOINT = os.getenv("RAY_EMBED_ENDPOINT", "http://localhost:11434/api/embeddings")
 EMBED_MODEL    = os.getenv("EMBED_MODEL_NAME",   "nomic-embed-text")
 
+# nomic-embed-text was contrastively trained on task-prefixed inputs and its
+# model card says the prefix "must" be included; BAAI/bge-m3 (production)
+# explicitly does the opposite — its card says it "no longer requires adding
+# instructions" — so prefixing bge-m3 input would feed it literal instruction
+# text it was never trained to strip. Gate on EMBED_MODEL, not a global
+# toggle, so the same client code stays correct across both.
+def _document_prefixed(texts: list) -> list:
+    if "nomic-embed-text" not in EMBED_MODEL:
+        return texts
+    return [f"search_document: {t}" for t in texts]
+
 class BatchEmbedder:
     """
     Callable class for Ray Data map_batches.
@@ -18,7 +29,7 @@ class BatchEmbedder:
         self.client         = httpx.Client(timeout=120.0)
 
     def __call__(self, batch: Dict[str, Any]) -> Dict[str, Any]:
-        texts = batch["text"].tolist()  # ndarray → list[str] for JSON serialization
+        texts = _document_prefixed(batch["text"].tolist())  # ndarray → list[str] for JSON serialization
         if self.endpoint.endswith("/api/embed"):
             response = self.client.post(
                 self.endpoint, json={"model": self.model, "input": texts}

@@ -42,6 +42,14 @@ spec:
               value: http://llm-service-head-svc:8000/llm/chat/completions
             - name: RAY_EMBED_ENDPOINT
               value: http://embed-service-head-svc:8000/embed/embeddings
+            # Must match the model actually served by embed-service (deploy/ray/ray-serve-embed.yaml's
+            # EMBED_MODEL_ID) — BatchEmbedder uses this name to decide whether to add
+            # nomic-embed-text's required search_document task prefix. bge-m3 explicitly does NOT
+            # want that prefix, so leave this as the bge-m3 model id, never "nomic-embed-text", or
+            # every document ingested in production will be prefixed with instruction text bge-m3
+            # wasn't trained on. Forwarded into the Ray job's runtime_env by sqs_ingestion_worker.py.
+            - name: EMBED_MODEL_NAME
+              value: BAAI/bge-m3
           resources:
             requests: {cpu: 100m, memory: 256Mi}
             limits: {cpu: 500m, memory: 512Mi}

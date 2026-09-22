@@ -49,6 +49,13 @@ env:
     value: http://embed-service-head-svc:8000/embed/embeddings
   - name: EMBED_DIM
     value: "1024"
+  # Must match the model actually served by embed-service (deploy/ray/ray-serve-embed.yaml's
+  # EMBED_MODEL_ID) — the client uses this name to decide whether to add nomic-embed-text's
+  # required search_query/search_document task prefix. bge-m3 explicitly does NOT want that
+  # prefix, so leave this as the bge-m3 model id, never "nomic-embed-text", or every query and
+  # document sent to production will be prefixed with instruction text bge-m3 wasn't trained on.
+  - name: EMBED_MODEL_NAME
+    value: BAAI/bge-m3
   - name: JWT_ALGORITHM
     value: HS256
 

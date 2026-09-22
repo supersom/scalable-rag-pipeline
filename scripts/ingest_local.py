@@ -70,13 +70,24 @@ def _parse_pdf(path: Path) -> str:
 
 # ── Embedding ─────────────────────────────────────────────────────────────────
 
+# nomic-embed-text was contrastively trained on task-prefixed inputs and its
+# model card says the prefix "must" be included; BAAI/bge-m3 (production)
+# explicitly does the opposite — its card says it "no longer requires adding
+# instructions" — so prefixing bge-m3 input would feed it literal instruction
+# text it was never trained to strip. Gate on EMBED_MODEL, not a global
+# toggle, so the same client code stays correct across both.
+def _document_prefixed(text: str) -> str:
+    if "nomic-embed-text" not in EMBED_MODEL:
+        return text
+    return f"search_document: {text}"
+
 async def embed_texts(texts: list[str]) -> list[list[float]]:
     async with httpx.AsyncClient(timeout=60.0) as client:
         embeddings = []
         for text in texts:
             r = await client.post(
                 EMBED_ENDPOINT,
-                json={"model": EMBED_MODEL, "prompt": text}
+                json={"model": EMBED_MODEL, "prompt": _document_prefixed(text)}
             )
             r.raise_for_status()
             embeddings.append(r.json()["embedding"])
