@@ -6,11 +6,11 @@
     },
     "source_hit@3": {
       "n": 7,
-      "successes": 5
+      "successes": 6
     },
     "source_hit@5": {
       "n": 7,
-      "successes": 5
+      "successes": 6
     }
   },
   "manifest": {
@@ -23,7 +23,7 @@
     "embed_model": "nomic-embed-text",
     "endpoint_host": "openrouter.ai",
     "git_dirty": false,
-    "git_sha": "0518b11dd38afda2882e703d126127cb2e0aa449",
+    "git_sha": "1d115d6c901bf41fc83200e36bcae477a258beeb",
     "judge": null,
     "k": 5,
     "layer": "retrieval",
@@ -32,6 +32,6 @@
     "planner_prompt_hash": "fea1506925cea2576fc12bd5d9b8ed12b07ed15b18598e32914a06dfd30408b4",
     "qdrant_points": 12780,
     "qdrant_vector_size": 768,
-    "started_at": "2026-09-22T09:35:59+00:00"
+    "started_at": "2026-09-22T17:45:36+00:00"
   }
 }
