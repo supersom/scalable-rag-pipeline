@@ -2,7 +2,7 @@ import types
 
 import pytest
 
-from eval.harness.cli import build_parser, exit_code, main, verify_planner_contract
+from eval.harness.cli import build_parser, exit_code, main, neo4j_state_warning, verify_planner_contract
 from eval.harness.recorders import RecorderError
 
 
@@ -40,6 +40,15 @@ def test_verify_planner_contract(tmp_path):
     bad.write_text('plan = ["Planner failed"]\n')
     with pytest.raises(RecorderError, match="FALLBACK_PLAN_PREFIX"):
         verify_planner_contract(types.SimpleNamespace(__file__=str(bad)))
+
+
+def test_neo4j_state_warning_only_for_retrieval_and_differing_state():
+    assert neo4j_state_warning("routing", {"neo4j_nodes": 10}, {"neo4j_nodes": None}) is None
+    assert neo4j_state_warning("retrieval", {"neo4j_nodes": None}, {"neo4j_nodes": None}) is None
+    assert neo4j_state_warning("retrieval", {"neo4j_nodes": 10}, {"neo4j_nodes": 10}) is None
+    warning = neo4j_state_warning("retrieval", {"neo4j_nodes": 10}, {"neo4j_nodes": None})
+    assert warning is not None
+    assert "baseline: None nodes" in warning and "this run: 10 nodes" in warning
 
 
 def test_main_refuses_to_run_outside_the_repo_root(tmp_path, monkeypatch, capsys):

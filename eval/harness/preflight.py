@@ -12,7 +12,8 @@ class PreflightResult:
         return not self.errors
 
 
-async def run_preflight(*, layer, embed_dim, expected_sources, probes, collection="rag_collection"):
+async def run_preflight(*, layer, embed_dim, expected_sources, probes, collection="rag_collection",
+                        calibration_sources=None):
     result = PreflightResult()
     if layer == "routing":
         try:
@@ -54,6 +55,13 @@ async def run_preflight(*, layer, embed_dim, expected_sources, probes, collectio
             result.facts["missing_sources"] = missing
             if missing:
                 result.warnings.append(f"{len(missing)} expected source(s) not ingested; their items will be unscorable: {missing}")
+
+            missing_calibration = {name: ids for name, ids in (calibration_sources or {}).items()
+                                   if name not in info["filenames"]}
+            result.facts["missing_calibration_sources"] = sorted(missing_calibration)
+            for name, ids in sorted(missing_calibration.items()):
+                result.warnings.append(
+                    f"calibration source {name!r} not ingested; fuzzy-threshold calibration for item(s) {ids} will be degraded")
 
     try:
         nodes = await probes["neo4j"]()

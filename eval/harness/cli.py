@@ -44,6 +44,19 @@ def exit_code(invalid, preflight_ok, comparison_error):
     return EXIT_INVALID if invalid or not preflight_ok or comparison_error else EXIT_OK
 
 
+def neo4j_state_warning(layer, manifest, baseline_manifest):
+    """Neo4j is optional and deliberately excluded from COMPARABLE_KEYS, so a
+    differing graph state must never refuse a comparison — only warn that the
+    graph arm's contribution may differ. Routing never touches Neo4j."""
+    if layer != "retrieval":
+        return None
+    current, baseline = manifest.get("neo4j_nodes"), baseline_manifest.get("neo4j_nodes")
+    if current == baseline:
+        return None
+    return (f"Comparing against a baseline with different Neo4j state (baseline: {baseline} nodes, "
+            f"this run: {current} nodes) — the graph arm's contribution may differ.")
+
+
 def verify_planner_contract(module):
     if FALLBACK_PLAN_PREFIX not in Path(module.__file__).read_text():
         raise RecorderError(
@@ -67,17 +80,23 @@ async def _run(args):
     out_dir = Path(args.out) if args.out else Path("eval/runs") / f"{datetime.now():%Y%m%d-%H%M%S}-{layer}"
     dataset_path = Path(args.dataset)
     corpus_path = None
+    calibration_sources = {}
     if layer == "routing":
         items, expected_sources = load_routing(dataset_path), set()
     else:
         items = load_qa(dataset_path)
         expected_sources = {s for i in items if i.label_type == "source" for s in i.expected_sources}
+        for i in items:
+            if i.label_type == "fuzzy":
+                for s in i.calibration_sources:
+                    calibration_sources.setdefault(s, []).append(i.id)
         corpus_path = Path(args.corpus_manifest)
 
     await llm_client.start()
     try:
         pre = await run_preflight(
             layer=layer, embed_dim=settings.EMBED_DIM, expected_sources=expected_sources,
+            calibration_sources=calibration_sources,
             probes={"llm": probes.llm_probe, "embed": probes.embed_probe,
                     "qdrant": probes.qdrant_probe, "neo4j": probes.neo4j_probe})
         for message in pre.errors:
@@ -124,6 +143,9 @@ async def _run(args):
             pre.warnings.append(f"No baseline at {baseline_path}; run once with --set-baseline first.")
         else:
             baseline = load_baseline(baseline_path)
+            neo4j_warning = neo4j_state_warning(layer, manifest, baseline["manifest"])
+            if neo4j_warning:
+                pre.warnings.append(neo4j_warning)
             try:
                 differing = check_comparable(manifest, baseline["manifest"], force=args.force_compare)
                 if differing:

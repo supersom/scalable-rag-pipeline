@@ -33,8 +33,9 @@ def returning(value):
     return fn
 
 
-def preflight(layer="retrieval", sources=("a.pdf",), **over):
-    return asyncio.run(run_preflight(layer=layer, embed_dim=768, expected_sources=set(sources), probes=probes(**over)))
+def preflight(layer="retrieval", sources=("a.pdf",), calibration_sources=None, **over):
+    return asyncio.run(run_preflight(layer=layer, embed_dim=768, expected_sources=set(sources),
+                                     calibration_sources=calibration_sources, probes=probes(**over)))
 
 
 def test_routing_needs_only_the_llm():
@@ -88,6 +89,12 @@ def test_missing_sources_are_warnings_not_errors():
     result = preflight(sources=("a.pdf", "gone.pdf"))
     assert result.ok and result.facts["missing_sources"] == ["gone.pdf"]
     assert any("gone.pdf" in w for w in result.warnings)
+
+
+def test_missing_calibration_sources_are_warnings_not_errors():
+    result = preflight(calibration_sources={"gone.pdf": ["h010", "h011"]})
+    assert result.ok and result.facts["missing_calibration_sources"] == ["gone.pdf"]
+    assert any("gone.pdf" in w and "h010" in w and "h011" in w for w in result.warnings)
 
 
 def test_neo4j_unavailable_and_empty_are_warnings():
