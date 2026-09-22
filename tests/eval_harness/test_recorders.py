@@ -100,3 +100,34 @@ def test_retrieval_recorder_rejects_sync_search():
 
     with pytest.raises(RecorderError, match="async"):
         RetrievalRecorder(SyncClient())
+
+
+def test_planner_recorder_rejects_double_install():
+    module = make_module(lambda text: {"action": "retrieve"})
+    recorder = PlannerRecorder(module)
+    recorder.install()
+    with pytest.raises(RecorderError):
+        recorder.install()
+
+
+def test_planner_recorder_uninstall_fully_restores_after_failed_double_install():
+    def original(text):
+        return {}
+
+    module = make_module(original)
+    recorder = PlannerRecorder(module)
+    recorder.install()
+    try:
+        recorder.install()
+    except RecorderError:
+        pass
+    recorder.uninstall()
+    assert module._extract_json is original
+
+
+def test_retrieval_recorder_rejects_double_install():
+    client = FakeClient([point({"filename": "a.pdf", "text": "t"}, 0.1)])
+    recorder = RetrievalRecorder(client)
+    recorder.install()
+    with pytest.raises(RecorderError):
+        recorder.install()

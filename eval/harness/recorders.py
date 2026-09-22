@@ -41,6 +41,8 @@ class PlannerRecorder(_Recorder):
         self._original = None
 
     def install(self):
+        if self._original is not None:
+            raise RecorderError("planner recorder is already installed")
         original = self._module._extract_json
         recorder = self
 
@@ -70,6 +72,8 @@ class RetrievalRecorder(_Recorder):
         self._original = None
 
     def install(self):
+        if self._original is not None:
+            raise RecorderError("retrieval recorder is already installed")
         original = self._client.search
         recorder = self
 
