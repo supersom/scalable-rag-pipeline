@@ -1,0 +1,37 @@
+{
+  "headline": {
+    "action_accuracy": {
+      "n": 69,
+      "successes": 66
+    },
+    "pass_rate": {
+      "n": 69,
+      "successes": 66
+    },
+    "tool_accuracy": {
+      "n": 37,
+      "successes": 37
+    }
+  },
+  "manifest": {
+    "corpus_hash": null,
+    "corpus_seed": null,
+    "dataset_hashes": {
+      "routing.jsonl": "eceb0bdaac537f9dbd6ead8f1597ffd903aca55d393074fcf0185e23092dbb5f"
+    },
+    "embed_dim": 768,
+    "embed_model": "nomic-embed-text",
+    "endpoint_host": "openrouter.ai",
+    "git_dirty": false,
+    "git_sha": "0518b11dd38afda2882e703d126127cb2e0aa449",
+    "judge": null,
+    "k": 5,
+    "layer": "routing",
+    "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "neo4j_nodes": null,
+    "planner_prompt_hash": "fea1506925cea2576fc12bd5d9b8ed12b07ed15b18598e32914a06dfd30408b4",
+    "qdrant_points": null,
+    "qdrant_vector_size": null,
+    "started_at": "2026-09-22T09:54:57+00:00"
+  }
+}
