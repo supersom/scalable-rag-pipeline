@@ -177,7 +177,7 @@ def main(source: str, extract_graph: bool = True, init_ray: bool = True):
     ds = ray.data.read_binary_files(
         source,
         include_paths=True,
-        file_extensions=["pdf", "PDF", "html", "htm", "docx", "txt", "pptx", "ppt"],
+        file_extensions=["pdf", "PDF", "html", "HTML", "htm", "HTM", "docx", "DOCX", "txt", "TXT", "pptx", "PPTX"],
         parallelism=200,
     )
 

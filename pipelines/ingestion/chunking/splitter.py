@@ -1,5 +1,8 @@
 # pipelines/ingestion/chunking/splitter.py
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+except ImportError:  # the pinned production image (langchain==0.1.5) still has this in-package
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 def split_text(text: str, chunk_size: int = 512, overlap: int = 50):
     """
