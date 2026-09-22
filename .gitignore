@@ -27,3 +27,6 @@ eval/datasets/digested/
 eval/datasets/failed/
 infra/terraform/terraform.tfvars
 infra/terraform/*.tfvars
+.venv-eval/
+eval/runs/
+eval/datasets/eval_corpus/
