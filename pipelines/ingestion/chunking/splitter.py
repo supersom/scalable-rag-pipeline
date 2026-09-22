@@ -1,5 +1,5 @@
 # pipelines/ingestion/chunking/splitter.py
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 def split_text(text: str, chunk_size: int = 512, overlap: int = 50):
     """
