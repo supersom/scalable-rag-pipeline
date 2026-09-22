@@ -1,0 +1,28 @@
+{"id":"r001","query":"hello there","expected_action":"direct_answer","expected_tool":null,"tags":["greeting"]}
+{"id":"r002","query":"thank you","expected_action":"direct_answer","expected_tool":null,"tags":["greeting"]}
+{"id":"r003","query":"good morning","expected_action":"direct_answer","expected_tool":null,"tags":["greeting"]}
+{"id":"r004","query":"that's all for now, bye","expected_action":"direct_answer","expected_tool":null,"tags":["greeting","farewell"]}
+{"id":"r005","query":"hlelo there","expected_action":"direct_answer","expected_tool":null,"tags":["greeting","typo"]}
+{"id":"r006","query":"ok","expected_action":"direct_answer","expected_tool":null,"tags":["greeting","single-word"]}
+{"id":"r010","query":"3*7","expected_action":"tool_use","expected_tool":"calculator","expected_tool_output":"21","tags":["arithmetic"]}
+{"id":"r011","query":"55-31+21","expected_action":"tool_use","expected_tool":"calculator","expected_tool_output":"45","tags":["arithmetic"]}
+{"id":"r012","query":"32-(14/2)","expected_action":"tool_use","expected_tool":"calculator","expected_tool_output":"25","tags":["arithmetic"]}
+{"id":"r013","query":"sqrt(256)","expected_action":"tool_use","expected_tool":"calculator","expected_tool_output":"16","tags":["arithmetic","calculator-gap"]}
+{"id":"r014","query":"sqrt(144) + 15% of 200","expected_action":"tool_use","expected_tool":"calculator","expected_tool_output":"42","tags":["arithmetic","calculator-gap"]}
+{"id":"r015","query":"what is 12 times 12","expected_action":"tool_use","expected_tool":"calculator","expected_tool_output":"144","tags":["arithmetic","natural-language"]}
+{"id":"r020","query":"what is the weather today","expected_action":"tool_use","expected_tool":"web_search","tags":["realtime"]}
+{"id":"r021","query":"current bitcoin price","expected_action":"tool_use","expected_tool":"web_search","tags":["realtime"]}
+{"id":"r022","query":"latest news headlines","expected_action":"tool_use","expected_tool":"web_search","tags":["realtime"]}
+{"id":"r023","query":"what's the weather in Oslo today","expected_action":"tool_use","expected_tool":"web_search","tags":["realtime"]}
+{"id":"r030","query":"run this python: print(sum(range(10)))","expected_action":"tool_use","expected_tool":"sandbox","tags":["code"]}
+{"id":"r031","query":"```python\nprint('hello')\n```","expected_action":"tool_use","expected_tool":"sandbox","tags":["code"]}
+{"id":"r040","query":"what entities are connected to the Horizontal Pod Autoscaler?","expected_action":"tool_use","expected_tool":"graph_search","tags":["graph"]}
+{"id":"r041","query":"find entities related to Kubernetes","expected_action":"tool_use","expected_tool":"graph_search","tags":["graph"]}
+{"id":"r050","query":"How does selective state space modeling work?","expected_action":"retrieve","expected_tool":null,"tags":["factual"]}
+{"id":"r051","query":"What are the requirements for KEY_VALUE_BASIC_INFORMATION in Windows?","expected_action":"retrieve","expected_tool":null,"tags":["factual"]}
+{"id":"r052","query":"How does Oracle optimize history table storage?","expected_action":"retrieve","expected_tool":null,"tags":["factual"]}
+{"id":"r053","query":"What is mutual information estimation?","expected_action":"retrieve","expected_tool":null,"tags":["factual"]}
+{"id":"r054","query":"Explain the difference between the Horizontal Pod Autoscaler and the Cluster Autoscaler in Kubernetes.","expected_action":"retrieve","expected_tool":null,"tags":["factual"]}
+{"id":"r055","query":"Who won the 1998 football world cup?","expected_action":"retrieve","expected_tool":null,"also_accept":[["tool_use","web_search"]],"tags":["out-of-corpus"]}
+{"id":"r060","query":"what's the weather in Oslo and what is 2+2","expected_action":"tool_use","expected_tool":"web_search","also_accept":[["tool_use","calculator"]],"tags":["multi-intent"]}
+{"id":"r061","query":"and who maintains it?","expected_action":"retrieve","expected_tool":null,"tags":["coreference","known-limitation"]}
