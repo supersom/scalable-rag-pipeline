@@ -1,0 +1,331 @@
+{
+  "forced": [
+    {
+      "filename": "Efficient Estimation of Mutual Information for Strongly Dependent Variables (gao15).pdf",
+      "sha256": "60ec492add9955f94e3ce4693a8437484e6e25346b718c419c3c4055e8074350"
+    },
+    {
+      "filename": "Mamba - Linear-Time Sequence Modeling with Selective State Spaces (2312.00752v2).pdf",
+      "sha256": "adf70ed1803c85b1899dec3e21f3af0b124411439e8654b840ea65f7b9f52b2e"
+    },
+    {
+      "filename": "Windows Kernel - MSDN Export - Registry Key Structures Excerpt.pdf",
+      "sha256": "ba7db912df8e20368683a94525c9db5b82e58949a0598477a7c97f782cd01dfc"
+    }
+  ],
+  "hard_negatives": [
+    {
+      "filename": "Advances in Cloud-Scale Machine Learning for Cyber-Defense - Russinovich 2017 (exp-t11-advances-in-cloud-scale-machine-learning-for-cyber-defense).pdf",
+      "sha256": "96b409198c9c6088bbe8e40f3f2fa32b70520f1cc8499cde64a3bdb5129423e2"
+    },
+    {
+      "filename": "Dapper - A Large-Scale Distributed Systems Tracing Infrastructure (36356).pdf",
+      "sha256": "41baea09d066e0167ca0943968d44f7f07790be700440427f78c034910e5765d"
+    },
+    {
+      "filename": "Distributed Component Object Model (DCOM) Remote Protocol - MS-DCOM-2015 (October 16th, 2015).pdf",
+      "sha256": "6846264b3ecc19fa1cf6f2bef2bd0d57574733ed4069eaa8b3df3543d072b549"
+    },
+    {
+      "filename": "Distributed and Parallel Time Series Feature Extraction for Industrial Big Data Applications - 25th October 2016 (1610.07717v1).pdf",
+      "sha256": "892cc989cf76d53da9e91018614835c593e5de702c2693fa5dc545e582e9c416"
+    },
+    {
+      "filename": "Learning with Hypergraphs - Clustering, Classification, and Embedding (2017).pdf",
+      "sha256": "86f5355c418f922ee7e45af9d3d8c26a424ce566320e56148ebdcc0ff6fa6991"
+    },
+    {
+      "filename": "Nobody ever got fired for using Hadoop on a Cluster - Microsoft 2012 (hotcbp12).pdf",
+      "sha256": "fc9958d15ecd96a2698c81756a1bd2af65931fa6e227d9579321ec0420b6d284"
+    },
+    {
+      "filename": "SIMNET and Beyod - A History of the Development of Distributed Simulation - 2015 (2015_FellowPaper_Miller).pdf",
+      "sha256": "7d18f96cfcb8668548fe068cf2068c86bdbadc0d9ba0dee62a883601d3229d09"
+    },
+    {
+      "filename": "Scheduling, Thread Context and Synchronization - Windows Hardware and Driver Central (2004).pdf",
+      "sha256": "9e5b10932ce40909d4be38031d15fe0b765b34fd729fcb46867e532f053d0864"
+    },
+    {
+      "filename": "Tango - Distributed Data Structures over a Shared Log.pdf",
+      "sha256": "5f22dc4e5177dcf0275a35345f025d110107ed78dc8d03eb8dbf945c6bac0e14"
+    },
+    {
+      "filename": "Thrill - High-Performance Algorithmic Distributed Batch Data Processing in C++ - Slides (2016).pdf",
+      "sha256": "9e9a7a64b11679fc53ae64d358a202daf56304285abc7ed4af7b20a30aa90abc"
+    },
+    {
+      "filename": "Time, Clocks, and the Ordering of Events in a Distributed System - Leslie Lamport, 1978 (p558-lamport).pdf",
+      "sha256": "8b29d8b7fc62b898f174e3d9c59371c869527931099dcb0cde4cf5f81ca121fb"
+    }
+  ],
+  "random": [
+    {
+      "filename": "2005 - A Practical Minimal Perfect Hashing Method.pdf",
+      "sha256": "16d0063f4cba7b57913edee1eb6193f77a4b04a86dc84953fd68366271fd2880"
+    },
+    {
+      "filename": "A Crash Course in x86 Assembly for Reverse Engineers - SensePost (2014).pdf",
+      "sha256": "edfa8a992b47f34415c5c723408e7046f36dbd62b42eea0ec12a5eed9a81859e"
+    },
+    {
+      "filename": "A Fast x86 Implementation of Select - 2017 (1706.00990).pdf",
+      "sha256": "f5ac78b84cc7149042ce5d97b977dc53d10f48ae1cc52fbd0941fc244c5dfe88"
+    },
+    {
+      "filename": "A Faster Cutting Plane Method and its Implications for Combinatorial and Convex Optimization - MIT - 2015 (1508.04874).pdf",
+      "sha256": "679c7c18f3cb2a65752dbe94f6135a5d1918ed171e737bbd63b400e390c749c6"
+    },
+    {
+      "filename": "A Malloc Tutorial (Feb 16, 2009).pdf",
+      "sha256": "dc7c684c25e2c984c5fdf296210de0b4ea1b75c57d1a82b7d8b271f8a2729bff"
+    },
+    {
+      "filename": "A Mathematical Theory of Communication (1948).pdf",
+      "sha256": "54af236a64cdfc2f937cf44f89698e89730acae1549e9266e479645a30bfcc69"
+    },
+    {
+      "filename": "Adaptive Ray Packet Reordering - 2008 (reorder_rt08).pdf",
+      "sha256": "2fba2102629a5001bb0efb38259c500af708c7c153f7589e5f96e170d5981e74"
+    },
+    {
+      "filename": "Adding Lock Elision to Linux - Slides (2012).pdf",
+      "sha256": "0f311905400c428d6999cf2f28bcaaeb2689dd8c99a75a2ae41bb4b703682712"
+    },
+    {
+      "filename": "Advances in Memory Management for Windows - October 12, 2007 (136_MemMgt).pdf",
+      "sha256": "4aa8abbe971c3383547b764dbcdcd5b32b0be53a40fcc1295d15cce65792cd63"
+    },
+    {
+      "filename": "Architecture of a Database System - 2007 (fntdb07-architecture).pdf",
+      "sha256": "f922de7ac782e8c5e075b03adf8f4bffc29bd5edb52bd19ac407c5110a7c1fc2"
+    },
+    {
+      "filename": "Bitmap Indexing and Related Techniques - Slides.pdf",
+      "sha256": "e488bd8bf999de5e035e371e9beff52a3a3db90b7da514c07bb485684504f172"
+    },
+    {
+      "filename": "Boosting Vector Calculus with the Graphical Notation - 3 Nov 2019 (1911.00892).pdf",
+      "sha256": "bf3c49375575be8ebfba40e68825f839f2838aa429c3394da43379ad69c14bbc"
+    },
+    {
+      "filename": "CUDA Training Series - 04 - Fundamental CUDA Optimization - Part 2 (2020).pdf",
+      "sha256": "5297233124fa9450e243769533673b81b682ce8f128b432f6cc9b5a212ef3d7d"
+    },
+    {
+      "filename": "CUDA Training Series - 13 - CUDA Graphs (2021).pdf",
+      "sha256": "353093cfe736fdd32b3316f7590c2869715b9dd3979c582f16fd6c6f13d3f9e1"
+    },
+    {
+      "filename": "Chord - A Scalable Peer-to-peer Lookup Service for Internet Applications (2001).pdf",
+      "sha256": "cca4ae7873ac128b7b9034b2c3fbf32f7d84541a88b5e70d0c7c1ce1d6381fe8"
+    },
+    {
+      "filename": "Compiler Construction - The Art of Niklaus Wirth (2000).pdf",
+      "sha256": "efcc8b1738f016d55013b1f8ddc0eb4b989ec36723d7745b5491e4218da222a1"
+    },
+    {
+      "filename": "Compiler Internals - Exceptions and RTTI - Igor Skorchinsky (Hex-Rays) - Recon 2012.pdf",
+      "sha256": "26ae2ae706a786d690028db8926db4cbf20b766fab6fe98487d0591b73aeb10f"
+    },
+    {
+      "filename": "Constraint Propagation Algorithms for Temporal Reasoning - A Revised Report (vilain-kautz-book).pdf",
+      "sha256": "4ba1b4480e9a3d9d29c0bee8814fcb145345bb9cf298d9ac33f8d2570db604ce"
+    },
+    {
+      "filename": "Current Best Practices for Training LLMs from Scratch - Final (6435aabdc0a041194b243eef).pdf",
+      "sha256": "dadca28cb289f5339f654e164e048f9a3e0361531b60d358ca7ab5ad981755e4"
+    },
+    {
+      "filename": "Draw Me A Local Kernel Debuger - Slides (2015).pdf",
+      "sha256": "113c40f7bb917bf446bf4a350cbf19e578971eb912e60cc027f06d297e6bd5c7"
+    },
+    {
+      "filename": "Efficient Implementation of Sorting on Multicore SIMD CPU Architecture - VLDB 2008 (1454171).pdf",
+      "sha256": "e0e949beec35627e04a265df6c0b94b7c5d3f4bfee90c45e96e2457e7771084e"
+    },
+    {
+      "filename": "Estimating Flight Characteristics of Anomalous Unidentified Aerial Vehicles (entropy-21-00939-v2).pdf",
+      "sha256": "97fa997771ec01c0512517a32e0860f383d2fb83aabc7e9230fa23a7efce111c"
+    },
+    {
+      "filename": "Foreign Library Interface.pdf",
+      "sha256": "7ea0e35aaccbd680e54cbb3dbc6d22a2d89d4e294e5a178d1a23a8b0476928ed"
+    },
+    {
+      "filename": "Fully Concurrent Garbage Collection of Actors on Many-Core Machines - 2013 (opsla237-clebsch).pdf",
+      "sha256": "08728ba155830fde0154ec897107ef6e8bc10ab07a1d40c041406feafe28f2f4"
+    },
+    {
+      "filename": "Futexes Are Tricky - Ulrich Depper (2005).pdf",
+      "sha256": "1a3e5db2d46d2256cf3c1038a11262c18d5cd6d19dd5ca8e71aed1ea3d0aa97f"
+    },
+    {
+      "filename": "Graphs, Hypergraphs and Hashing (1994).pdf",
+      "sha256": "b0e191201bcc04986843c2353d6b8383ba35b7a8adc6ae37956ff90f732b40bf"
+    },
+    {
+      "filename": "Haswell Block Diagram.pdf",
+      "sha256": "1091fa7ed5ad63c94573d68d60d92f5ccd43e24330257711b75ff66830aee79f"
+    },
+    {
+      "filename": "Heracles - Improving Resource Efficiency at Scale (2015).pdf",
+      "sha256": "579f689dff6130bc94d5cace7899e7e9bcca9873b31c8f8435dbb301b3dd26f8"
+    },
+    {
+      "filename": "Information Retrieval - Compression, Encoding - Slides - Cornell (2013).pdf",
+      "sha256": "379f7c2967c397e2aba136f189b7220be16ff183b53559443bc3901a8713c8dd"
+    },
+    {
+      "filename": "Inside The Deal That Made Bill Gates 350,000,000 (1986).pdf",
+      "sha256": "7a5614d24fa5cb8265dda925b31c9823d3a5312ce1513381fbf033c75c383d2e"
+    },
+    {
+      "filename": "Introduction to Intel Ethernet Flow Director.pdf",
+      "sha256": "b885a8f999a988b03e89b88ddbf8a4cddaf187c4b872a76586d401dc64a9cbcd"
+    },
+    {
+      "filename": "MIPSpro C and C++ Pragmas (007-3587-005).pdf",
+      "sha256": "260ae453b683e4d2036f6e8eee9606a49c52642a8d2aa1cf237db93d9cad85cb"
+    },
+    {
+      "filename": "Modeling High-Frequency Limit Order Book Dynamics with Support Vector Machines.pdf",
+      "sha256": "bb1c6183d440a01c707d594bf87a81ae8d00efa47664839bc7f8b331f6bbab4d"
+    },
+    {
+      "filename": "NTFS System Crash - Marius Tivadar - July 19th, 2017.pdf",
+      "sha256": "92fe142e42a9f0ef65ada106387897790074f5ad8012ac98bfc527522ea80402"
+    },
+    {
+      "filename": "NVIDIA - GeForce GTX 1080 Whitepaper - Gaming Perfected.pdf",
+      "sha256": "4329024604466005e5934e0d0d69abd01a7e03e6d661b82030736478a103f2ee"
+    },
+    {
+      "filename": "Name Mangling Demystified (2007).pdf",
+      "sha256": "a03ab9986fab628aa93b948f33f1d25c34b8ed0c06982d136f192215bc160a7b"
+    },
+    {
+      "filename": "On the Implementation of Minimum Redundancy Prefix Codes (1997).pdf",
+      "sha256": "763299d1dab404431efd56368b6c5b8a5c7eeee888ee14cb4fdedd98ac64c157"
+    },
+    {
+      "filename": "Optimizing TLS for High-Bandwidth Applications on FreeBSD - Netflix (asiabsd_2015_tls).pdf",
+      "sha256": "7e379eeaab34f2fff7049b7cabfa28ece11ced9b3b7215bc5afa4e626549f13f"
+    },
+    {
+      "filename": "Oracle B-Tree Index Internals - Rebuilding the Truth (Richard Foote).pdf",
+      "sha256": "d8409442171380e58bdba2ed36f0ed8768f3b093f828e77bc3da967b53389d38"
+    },
+    {
+      "filename": "Oracle Spatial - Developing Location-Enabled Applications - Oracle Spatial Geocoding and Routing Engines.pdf",
+      "sha256": "ddfe215cf2c945f482722f96e4764699550b19a1d03de235ffa3f2ab87c80425"
+    },
+    {
+      "filename": "PE Format Layout.pdf",
+      "sha256": "4e527144d3027344f01b8b74cb4540ee6baa054df7769dd87815037bd330fd5c"
+    },
+    {
+      "filename": "Pandoc User's Guide.pdf",
+      "sha256": "94ac1ef33752f9cf21de55611f15318ebfef2c58a1942158959f85c0d4b87ecc"
+    },
+    {
+      "filename": "Parallel Depth-First Search for Directed Acyclic Graphs - Poster (2018).pdf",
+      "sha256": "00f1604a8bde2e94397a4afcedeff1e838eb5bbf4942c0f1dc8e9494452a0f55"
+    },
+    {
+      "filename": "Parallel and External-Memory Construction of Minimal Perfect Hash Functions with PTHash - 4 Jun 2021 (2106.02350).pdf",
+      "sha256": "15e4cc2640866a4999f854e730d9080e679019738806f6a4605962b2869d668a"
+    },
+    {
+      "filename": "Practical R (2013).pdf",
+      "sha256": "d16f1b29b440094f7fda9a4bef9b9639a987d84ab4c3d18365254997d90c8296"
+    },
+    {
+      "filename": "Proactor - An Object Behavioral Pattern for Demultiplexing and Dispatching Handlers for Asynchronous Events.pdf",
+      "sha256": "6ccd46eee39a9a47cc83788c1679e06f0cea10ce5a5eaaf2aae0c7cd51d07994"
+    },
+    {
+      "filename": "SALSA - Scalable and Low Synchronization NUMA-aware Algorithm for Producer-Consumer Pools (spaa049-gidron).pdf",
+      "sha256": "278f0237acebb168368949c49c271510535eb9fbdab8ba54e8a3921931027092"
+    },
+    {
+      "filename": "SIMD at Insomniac Games (How We Do The Shuffle) - Slides - 2015.pdf",
+      "sha256": "575e4771578f6f8b2affbfe0b25631353b7b77d3db9c36823e6c75a32fff602b"
+    },
+    {
+      "filename": "SMT and Z3 - Microsoft Research - Slides (2009).pdf",
+      "sha256": "6bdebde7d894eb6b5440965d9d9bd8be6667407aa2a5d971bb1a3270955399e2"
+    },
+    {
+      "filename": "Sequence to Sequence Learning with Neural Networks (1409.3215v3).pdf",
+      "sha256": "5c74e1db863e2d61b869c9b0603494b34c41fb05db1a4fa7f9a83d5a42b7350f"
+    },
+    {
+      "filename": "Sortledon - A Universal, Transactional Graph Data Structure (p1173-fuchs).pdf",
+      "sha256": "b4cf3b014be787cbee34ce34de99c20fcf902ca2e95869df51d2e375766f755d"
+    },
+    {
+      "filename": "The Development of JOVIAL - 1978 (p203-schwartz-jovial).pdf",
+      "sha256": "2c8d05aaf1ac6a6cac187a5fd3121204862dc18e2627ec2ad730fcd0c20377b3"
+    },
+    {
+      "filename": "Tracing the Meta-Level - PyPy\u2019s Tracing JIT Compiler - 2009 (bolz-tracing-jit-final).pdf",
+      "sha256": "364905a65340141b63a28c3f9b8a6ba87222998aabe4409a80cb7788a4caf365"
+    },
+    {
+      "filename": "Traps and Pitfalls of Topic-Biased PageRank.pdf",
+      "sha256": "38d5cfec862dbb76bc2b69deed31d11532422043f1b4b1776b78aa8a46a24bd5"
+    },
+    {
+      "filename": "Tries and String Matching - Slides - 2009 (Small09).pdf",
+      "sha256": "f6b7085b6030dd7a723481470b794693ac30889ffee2c890b8c89724ee9c4592"
+    },
+    {
+      "filename": "Using Graphics Processors for Parallelizing Hash-based Data Carving - 2009 (10.1.1.405.6531).pdf",
+      "sha256": "baac9b45a3512039bbbdef8e27b9788f41f5867dfeb6928eaa0c5d51a207f233"
+    },
+    {
+      "filename": "What Modern NVMe Storage Can Do, And How To Exploit It -- High-Performance IO for High-Performance Storage Engines (p2090-haas).pdf",
+      "sha256": "7bb2df62011b5b85afca1d70d615d515dae6bf6ee06ffc2d9817501ccaa4fc79"
+    },
+    {
+      "filename": "Windows Assembly Programming Tutorial - Jeff Huang (v1.02, Dec 10 2003).pdf",
+      "sha256": "c55b9d8535a782a13f571ca12b07de271b2a479499a9839835c47772e6ecb48b"
+    },
+    {
+      "filename": "Windows Kernel Internals - Traps, Interrupts and Exceptions.pdf",
+      "sha256": "7943ceb02b656a9ed94cd2dd2f52e549b76c18781a4a986840fae85fa9e5b4a5"
+    },
+    {
+      "filename": "cuda-debugging.pdf",
+      "sha256": "75c72b073c0d090748897127dfebc007bebe73397cda144534199cb120e10018"
+    }
+  ],
+  "seed": 42,
+  "true_data": [
+    {
+      "filename": "architecture.pptx",
+      "sha256": "f78717f305cf5e3998c01f54e4255781f1e8503515161f0c9c5ead152d26fa93"
+    },
+    {
+      "filename": "cronjobs.docx",
+      "sha256": "21a1ac5bbd78b29632c46d1f94a421367c9b7e7f06586373f017b334acb6b1a9"
+    },
+    {
+      "filename": "job_management.html",
+      "sha256": "c638a0bc3b424362d4429749c0cdb16a885597096eba408119d2b75c8f5076dd"
+    },
+    {
+      "filename": "monitor_job.docx",
+      "sha256": "f801ecc0a9de373aada2c048226fddb724031024b985e1ba098146d124fccb39"
+    },
+    {
+      "filename": "parallel_work_queue.txt",
+      "sha256": "1d2934392a49b132d5f3bb44eee179464f1ee1bb1ac91771a3af0ffd962bff5b"
+    },
+    {
+      "filename": "pods_autoscale.html",
+      "sha256": "06c1b5057bb8a1a76e853e9989c2b58ddeb9cf5dd90e8e49957043a9531885bd"
+    }
+  ]
+}
