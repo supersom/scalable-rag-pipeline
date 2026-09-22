@@ -29,7 +29,7 @@
 {"id":"u009","query":"What is the population of Nigeria?","origin":"hand","answerable":false,"tags":["unanswerable"]}
 {"id":"u010","query":"How does a four-stroke engine work?","origin":"hand","answerable":false,"tags":["unanswerable"]}
 {"id": "h001", "query": "How does selective state space modeling work?", "origin": "hand", "answerable": true, "label_type": "source", "expected_sources": ["Mamba - Linear-Time Sequence Modeling with Selective State Spaces (2312.00752v2).pdf"], "tags": ["ml"]}
-{"id": "h002", "query": "What are the requirements for KEY_VALUE_BASIC_INFORMATION in Windows?", "origin": "hand", "answerable": true, "label_type": "source", "expected_sources": ["Windows Kernel - MSDN Export (7th Feb, 2019).pdf"], "tags": ["windows"]}
+{"id": "h002", "query": "What are the requirements for KEY_VALUE_BASIC_INFORMATION in Windows?", "origin": "hand", "answerable": true, "label_type": "source", "expected_sources": ["Windows Kernel - MSDN Export - Registry Key Structures Excerpt.pdf"], "tags": ["windows"]}
 {"id": "h004", "query": "What is mutual information estimation?", "origin": "hand", "answerable": true, "label_type": "source", "expected_sources": ["Efficient Estimation of Mutual Information for Strongly Dependent Variables (gao15).pdf"], "tags": ["ml"]}
 {"id": "h005", "query": "How do I autoscale pods in Kubernetes?", "origin": "hand", "answerable": true, "label_type": "source", "expected_sources": ["pods_autoscale.html"], "tags": ["k8s"]}
 {"id": "h006", "query": "How do I run a parallel work queue job?", "origin": "hand", "answerable": true, "label_type": "source", "expected_sources": ["parallel_work_queue.txt"], "tags": ["k8s"]}
