@@ -7,7 +7,18 @@ from typing import Dict, Any
 from pipelines.ingestion.graph.schema import GraphSchema
 
 LLM_ENDPOINT = os.getenv("RAY_LLM_ENDPOINT", "http://localhost:11434/v1/chat/completions")
-LLM_MODEL    = os.getenv("LLM_MODEL_NAME",   "llama3.2:3b")
+
+
+def resolve_llm_model(env):
+    """Matches RayLLMClient.chat_completion's settings.LLM_MODEL_ID or settings.LLM_MODEL_NAME
+    resolution order. LLM_MODEL_NAME alone previously silently sent the Ollama-only model name
+    "llama3.2:3b" to OpenRouter whenever only LLM_MODEL_ID was set (as in .env) -- OpenRouter
+    rejects it (400: "llama3.2:3b is not a valid model ID"), and the blanket except in __call__
+    swallowed that per chunk, so extraction silently produced zero triples for every chunk."""
+    return env.get("LLM_MODEL_ID") or env.get("LLM_MODEL_NAME") or "llama3.2:3b"
+
+
+LLM_MODEL = resolve_llm_model(os.environ)
 
 
 class GraphExtractor:

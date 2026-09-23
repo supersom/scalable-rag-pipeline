@@ -18,8 +18,13 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
+
+# Must run before the module-level os.getenv(...) calls below, which read
+# LLM_MODEL_ID/RAY_LLM_ENDPOINT etc. once at import time.
+load_dotenv()
 
 # ── Project root on the path so we can import shared modules ──────────────────
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -39,7 +44,18 @@ EMBED_ENDPOINT = os.getenv("RAY_EMBED_ENDPOINT", "http://localhost:11434/api/emb
 EMBED_MODEL    = os.getenv("EMBED_MODEL_NAME", "nomic-embed-text")
 
 LLM_ENDPOINT = os.getenv("RAY_LLM_ENDPOINT", "http://localhost:11434/v1/chat/completions")
-LLM_MODEL    = os.getenv("LLM_MODEL_NAME", "llama3.2:3b")
+
+
+def resolve_llm_model(env):
+    """Matches RayLLMClient.chat_completion's settings.LLM_MODEL_ID or settings.LLM_MODEL_NAME
+    resolution order. LLM_MODEL_NAME alone previously silently sent the Ollama-only model name
+    "llama3.2:3b" to OpenRouter whenever only LLM_MODEL_ID was set (as in .env) -- OpenRouter
+    rejects it (400: "llama3.2:3b is not a valid model ID"), and extract_graph's per-chunk
+    except swallowed that, so graph extraction silently produced zero triples for every chunk."""
+    return env.get("LLM_MODEL_ID") or env.get("LLM_MODEL_NAME") or "llama3.2:3b"
+
+
+LLM_MODEL = resolve_llm_model(os.environ)
 
 CHUNK_SIZE    = 512
 CHUNK_OVERLAP = 50

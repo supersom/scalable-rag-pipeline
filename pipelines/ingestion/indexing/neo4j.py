@@ -8,13 +8,30 @@ class Neo4jIndexer:
     Writes data to Neo4j Graph Database.
     Implements efficient Batch Writes.
     """
+    # Class-level, not instance-level: a fresh Neo4jIndexer() is constructed per
+    # map_batches call, but the fulltext index only needs creating once per worker
+    # process, not once per batch — ensure_neo4j_fulltext_index() in scripts/ingest_local.py
+    # does the equivalent once at startup; this mirrors that for the Ray path, which had no
+    # such call at all, so retrieve_node's entity_index fulltext query would fail on data
+    # written through this path alone.
+    _index_ensured = False
+
     def __init__(self):
         # Read from Env Vars (injected by Ray Cluster environment)
         uri = os.getenv("NEO4J_URI", "bolt://neo4j-cluster:7687")
         user = os.getenv("NEO4J_USER", "neo4j")
         password = os.getenv("NEO4J_PASSWORD", "changeme")
-        
+
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
+        self._ensure_fulltext_index()
+
+    def _ensure_fulltext_index(self):
+        cls = type(self)
+        if cls._index_ensured:
+            return
+        with self.driver.session() as session:
+            session.run("CREATE FULLTEXT INDEX entity_index IF NOT EXISTS FOR (n:Entity) ON EACH [n.name]")
+        cls._index_ensured = True
 
     def write(self, batch: List[Dict[str, Any]]):
         """

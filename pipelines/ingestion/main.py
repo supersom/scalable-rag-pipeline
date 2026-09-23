@@ -6,6 +6,13 @@ import os
 import signal
 import sys
 
+# Must run before any project import below: GraphExtractor and others read
+# LLM_MODEL_ID/RAY_LLM_ENDPOINT etc. from os.environ at module import time, so
+# .env has to be loaded into the process environment before that first import,
+# not merely before main() runs (matches services/models/serve.py's pattern).
+from dotenv import load_dotenv
+load_dotenv()
+
 import ray
 
 from pipelines.ingestion.chunking.splitter import split_text
@@ -129,13 +136,16 @@ def process_batch(batch, known_hashes: dict, trust_path_without_hash: bool):
     }
 
 
-def main(source: str, extract_graph: bool = True, init_ray: bool = True):
+def main(source: str, extract_graph: bool = True, init_ray: bool = True, graph_only: bool = False):
     """
     Main orchestration flow.
 
     Args:
         source:        Local directory path or s3://bucket/prefix
         extract_graph: Whether to run graph extraction into Neo4j
+        graph_only:    Skip embedding/Qdrant entirely; only parse, chunk and run graph
+                       extraction into Neo4j. For adding graph data to files already
+                       vector-ingested, without re-embedding or duplicating their vectors.
     """
     # ── Ray init ──────────────────────────────────────────────────────────────
     # address="auto"  → connects to an existing cluster (prod / K8s)
@@ -146,7 +156,7 @@ def main(source: str, extract_graph: bool = True, init_ray: bool = True):
         "QDRANT_HOST", "QDRANT_PORT", "QDRANT_COLLECTION",
         "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD",
         "RAY_EMBED_ENDPOINT", "EMBED_MODEL_NAME",
-        "RAY_LLM_ENDPOINT", "LLM_MODEL_NAME",
+        "RAY_LLM_ENDPOINT", "LLM_MODEL_NAME", "LLM_MODEL_ID",
     ) if k in os.environ}
 
     if ray.is_initialized():
@@ -164,11 +174,18 @@ def main(source: str, extract_graph: bool = True, init_ray: bool = True):
 
     logger.info(f"Reading files from: {source}")
 
-    known_hashes = QdrantIndexer().iter_known_hashes()
-    logger.info(
-        f"Found {len(known_hashes)} already-ingested source paths "
-        f"(trust_path_without_hash={TRUST_PATH_WITHOUT_HASH})"
-    )
+    if graph_only:
+        # Every file must flow through to graph extraction regardless of whether it's
+        # already vector-ingested — that's the whole point of this mode — so the
+        # known-hash dedup (which exists to skip re-embedding unchanged files) must not
+        # apply here.
+        known_hashes = {}
+    else:
+        known_hashes = QdrantIndexer().iter_known_hashes()
+        logger.info(
+            f"Found {len(known_hashes)} already-ingested source paths "
+            f"(trust_path_without_hash={TRUST_PATH_WITHOUT_HASH})"
+        )
 
     # ── 1. Read files ─────────────────────────────────────────────────────────
     # Explicit parallelism avoids Ray autodetecting too few blocks when few CPUs
@@ -192,22 +209,23 @@ def main(source: str, extract_graph: bool = True, init_ray: bool = True):
         },
     )
 
-    # ── 3a. Embed (calls Ollama locally, Ray Serve in prod) ───────────────────
-    vector_ds = chunked_ds.map_batches(
-        BatchEmbedder,
-        concurrency=2,
-        batch_size=20,
-    )
+    if not graph_only:
+        # ── 3a. Embed (calls Ollama locally, Ray Serve in prod) ────────────────
+        vector_ds = chunked_ds.map_batches(
+            BatchEmbedder,
+            concurrency=2,
+            batch_size=20,
+        )
 
-    # ── 4a. Index vectors into Qdrant ─────────────────────────────────────────
-    logger.info("Writing vectors to Qdrant...")
-    vector_ds.map_batches(
-        lambda batch: (QdrantIndexer().write(
-            [{"text": t, "metadata": m, "vector": v}
-             for t, m, v in zip(batch["text"], batch["metadata"], batch["vector"])]
-        ) or batch),
-        batch_size=100,
-    ).count()   # .count() triggers execution
+        # ── 4a. Index vectors into Qdrant ───────────────────────────────────────
+        logger.info("Writing vectors to Qdrant...")
+        vector_ds.map_batches(
+            lambda batch: (QdrantIndexer().write(
+                [{"text": t, "metadata": m, "vector": v}
+                 for t, m, v in zip(batch["text"], batch["metadata"], batch["vector"])]
+            ) or batch),
+            batch_size=100,
+        ).count()   # .count() triggers execution
 
     if extract_graph:
         # ── 3b. Graph extraction (calls Ollama locally, Ray Serve in prod) ────
@@ -248,6 +266,16 @@ if __name__ == "__main__":
         action="store_true",
         help="Connect to an existing Ray cluster (RAY_ADDRESS env var) instead of starting one",
     )
+    parser.add_argument(
+        "--graph-only",
+        action="store_true",
+        help="Skip embedding/Qdrant; only parse, chunk and run graph extraction into Neo4j "
+             "(e.g. for files already vector-ingested)",
+    )
     args = parser.parse_args()
 
-    main(args.source, extract_graph=not args.no_graph, init_ray=not args.no_init_ray)
+    if args.graph_only and args.no_graph:
+        parser.error("--graph-only and --no-graph are mutually exclusive")
+
+    main(args.source, extract_graph=not args.no_graph, init_ray=not args.no_init_ray,
+        graph_only=args.graph_only)

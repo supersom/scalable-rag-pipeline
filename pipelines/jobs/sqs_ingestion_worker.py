@@ -34,6 +34,7 @@ FORWARDED_ENV = (
     "EMBED_MODEL_NAME",
     "RAY_LLM_ENDPOINT",
     "LLM_MODEL_NAME",
+    "LLM_MODEL_ID",
 )
 
 
