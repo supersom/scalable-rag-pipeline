@@ -150,8 +150,14 @@ def _retrieval_sections(s):
 
 
 def _answer_sections(s):
+    lines = []
+    groups = s.get("groups")
+    if groups:
+        metrics = ("false_refusal_rate", "correct_refusal_rate", "citation_clean_rate")
+        rows = [[origin, g["n"], *[_fmt(g.get(m)) for m in metrics]] for origin, g in groups.items()]
+        lines += ["", "## Groups", ""] + _table(["origin", "n", *metrics], rows)
     cv = s["citation_validity"]
-    lines = ["", "## Citation validity", "",
+    lines += ["", "## Citation validity", "",
              f"- {cv['n_citations']} citation(s) across {cv['n_items_with_citations']} item(s) with citations; "
              f"{cv['n_hallucinated']} hallucinated"]
     el = s["error_leak"]

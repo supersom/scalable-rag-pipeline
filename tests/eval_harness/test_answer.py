@@ -21,8 +21,8 @@ class FakeRecorder:
         return self.value
 
 
-def qa(id, answerable=True, ground_truth=None):
-    return QAItem(id=id, query="q", origin="hand", answerable=answerable, label_type=None,
+def qa(id, answerable=True, ground_truth=None, origin="hand"):
+    return QAItem(id=id, query="q", origin=origin, answerable=answerable, label_type=None,
                  expected_sources=(), reference_contexts=(), calibration_sources=(), ground_truth=ground_truth,
                  tags=())
 
@@ -76,6 +76,13 @@ def test_run_qa_answers_detects_refusal_on_unanswerable_item():
     fn = agent(rec, [], "I don't have that information in my documents.")
     [result] = asyncio.run(run_qa_answers([qa("u1", answerable=False)], fn, rec, NO_ANSWER_PHRASES))
     assert result.refused is True and result.answerable is False
+
+
+def test_run_qa_answers_captures_origin():
+    rec = FakeRecorder()
+    fn = agent(rec, [], "hi")
+    [result] = asyncio.run(run_qa_answers([qa("g1", origin="golden")], fn, rec, NO_ANSWER_PHRASES))
+    assert result.origin == "golden"
 
 
 def test_run_qa_answers_records_errors():
@@ -237,3 +244,16 @@ def test_summarize_answer_excludes_judge_call_failures_from_rates_and_means():
     assert s["headline"]["faithfulness_pass_rate"] == {"successes": 1, "n": 1}
     assert s["judge_quality"] == {"n_judged": 1, "mean_correctness": 5.0, "mean_faithfulness": 4.0,
                                   "n_judge_errors": 2}
+
+
+def test_summarize_answer_groups_refusal_and_citation_metrics_by_origin():
+    qa_results = [
+        scored("h1", origin="hand", answerable=True, refused=False, citations_total=1, citations_hallucinated=0),
+        scored("h2", origin="hand", answerable=False, refused=True),
+        scored("g1", origin="golden", answerable=True, refused=True),
+        scored("g2", origin="golden", answerable=True, refused=True),
+    ]
+    s = summarize_answer(qa_results, [])
+    assert s["groups"]["hand"] == {"n": 2, "false_refusal_rate": 0.0, "correct_refusal_rate": 1.0,
+                                   "citation_clean_rate": 1.0}
+    assert s["groups"]["golden"] == {"n": 2, "false_refusal_rate": 1.0}

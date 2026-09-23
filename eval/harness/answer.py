@@ -26,6 +26,7 @@ class AnswerResult:
     answer: str = ""
     action: Optional[str] = None
     answerable: Optional[bool] = None
+    origin: Optional[str] = None
     context: str = ""
     citations_total: int = 0
     citations_hallucinated: int = 0
@@ -54,7 +55,8 @@ def has_error_leak(answer):
     return any(p in answer for p in ERROR_LEAK_PATTERNS)
 
 
-async def _invoke(item_id, query, agent_fn, recorder, no_answer_phrases, *, answerable=None, expected_number=None):
+async def _invoke(item_id, query, agent_fn, recorder, no_answer_phrases, *, answerable=None, origin=None,
+                  expected_number=None):
     recorder.reset()
     state = {"messages": [{"role": "user", "content": query}], "current_query": query,
              "action": "retrieve", "tool_name": "", "tool_input": "", "documents": [], "plan": []}
@@ -62,8 +64,9 @@ async def _invoke(item_id, query, agent_fn, recorder, no_answer_phrases, *, answ
     try:
         out = await agent_fn(state)
     except Exception as e:
-        return AnswerResult(item_id=item_id, verdict="error", answerable=answerable, expected_number=expected_number,
-                            reason=f"{type(e).__name__}: {e}", latency_ms=(time.perf_counter() - started) * 1000)
+        return AnswerResult(item_id=item_id, verdict="error", answerable=answerable, origin=origin,
+                            expected_number=expected_number, reason=f"{type(e).__name__}: {e}",
+                            latency_ms=(time.perf_counter() - started) * 1000)
     latency_ms = (time.perf_counter() - started) * 1000
     messages = out.get("messages") or []
     answer = messages[-1]["content"] if messages else ""
@@ -74,13 +77,14 @@ async def _invoke(item_id, query, agent_fn, recorder, no_answer_phrases, *, answ
     number_present = (expected_number in answer) if expected_number is not None else None
     return AnswerResult(
         item_id=item_id, verdict="scored", answer=answer, action=out.get("action"), answerable=answerable,
-        context=context, citations_total=len(citations), citations_hallucinated=hallucinated,
+        origin=origin, context=context, citations_total=len(citations), citations_hallucinated=hallucinated,
         refused=is_refusal(answer, no_answer_phrases), error_leak=has_error_leak(answer),
         expected_number=expected_number, number_present=number_present, latency_ms=latency_ms)
 
 
 async def run_qa_answers(items, agent_fn, recorder, no_answer_phrases):
-    return [await _invoke(i.id, i.query, agent_fn, recorder, no_answer_phrases, answerable=i.answerable)
+    return [await _invoke(i.id, i.query, agent_fn, recorder, no_answer_phrases, answerable=i.answerable,
+                          origin=i.origin)
             for i in items]
 
 
@@ -143,12 +147,28 @@ def summarize_answer(qa_results, calc_results):
         headline["faithfulness_pass_rate"] = _rate(
             sum(r.faithfulness_score >= JUDGE_PASS_THRESHOLD for r in faithfulness_judged), len(faithfulness_judged))
 
+    groups = {}
+    for origin in sorted({r.origin for r in scored if r.origin}):
+        rows = [r for r in scored if r.origin == origin]
+        ans = [r for r in rows if r.answerable is True]
+        unans = [r for r in rows if r.answerable is False]
+        cited = [r for r in rows if r.citations_total > 0]
+        entry = {"n": len(rows)}
+        if ans:
+            entry["false_refusal_rate"] = sum(r.refused for r in ans) / len(ans)
+        if unans:
+            entry["correct_refusal_rate"] = sum(r.refused for r in unans) / len(unans)
+        if cited:
+            entry["citation_clean_rate"] = sum(r.citations_hallucinated == 0 for r in cited) / len(cited)
+        groups[origin] = entry
+
     all_results = qa_results + calc_results
     checked = [r for r in all_results if r.verdict == "scored"]
     latencies = [r.latency_ms for r in all_results if r.latency_ms is not None]
 
     summary = {
         "headline": headline,
+        "groups": groups,
         "citation_validity": {"n_citations": sum(r.citations_total for r in scored),
                               "n_hallucinated": sum(r.citations_hallucinated for r in scored),
                               "n_items_with_citations": len(with_citations)},

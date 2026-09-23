@@ -159,6 +159,18 @@ def test_render_answer_summary():
     assert "## Judge quality" not in md
 
 
+def test_render_answer_summary_includes_groups_by_origin():
+    from eval.harness.answer import AnswerResult, summarize_answer
+
+    qa_results = [
+        AnswerResult("h1", "scored", origin="hand", answerable=True, refused=False),
+        AnswerResult("g1", "scored", origin="golden", answerable=True, refused=True),
+    ]
+    summary = summarize_answer(qa_results, [])
+    md = render_summary_md("answer", dict(MANIFEST, layer="answer"), summary, [], [])
+    assert "## Groups" in md and "hand" in md and "golden" in md
+
+
 def test_render_answer_summary_includes_judge_quality_section_when_present():
     from eval.harness.answer import AnswerResult, summarize_answer
 
