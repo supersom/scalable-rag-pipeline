@@ -1,0 +1,54 @@
+{
+  "headline": {
+    "calculator_number_present_rate": {
+      "n": 6,
+      "successes": 5
+    },
+    "citation_clean_rate": {
+      "n": 13,
+      "successes": 11
+    },
+    "correct_refusal_rate": {
+      "n": 10,
+      "successes": 10
+    },
+    "correctness_pass_rate": {
+      "n": 19,
+      "successes": 4
+    },
+    "faithfulness_pass_rate": {
+      "n": 19,
+      "successes": 4
+    },
+    "false_refusal_rate": {
+      "n": 26,
+      "successes": 16
+    }
+  },
+  "manifest": {
+    "corpus_hash": "47924f6e3fdf6a537d8c174aa527bbddc34e3340d7be35cf9ae743151cd391f6",
+    "corpus_seed": 42,
+    "dataset_hashes": {
+      "qa.jsonl": "6e38b31157ace00b32f0f2b90a2dfd01e9ee4b8476912da32068baf6e469ebc3",
+      "routing.jsonl": "eceb0bdaac537f9dbd6ead8f1597ffd903aca55d393074fcf0185e23092dbb5f"
+    },
+    "embed_dim": 768,
+    "embed_model": "nomic-embed-text",
+    "endpoint_host": "openrouter.ai",
+    "git_dirty": true,
+    "git_sha": "0ac7e813b32b191d9b70e67ac26723790b28a665",
+    "judge": {
+      "endpoint": "http://localhost:11434/v1/chat/completions",
+      "model": "llama3.2:3b",
+      "prompt_hash": "5aeb15aa76c5f322c4ea5e0fbf965f5611accfcec9542a077a2a475c1d203120"
+    },
+    "k": 5,
+    "layer": "answer",
+    "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "neo4j_nodes": null,
+    "planner_prompt_hash": "fea1506925cea2576fc12bd5d9b8ed12b07ed15b18598e32914a06dfd30408b4",
+    "qdrant_points": 12780,
+    "qdrant_vector_size": 768,
+    "started_at": "2026-09-22T21:15:03+00:00"
+  }
+}
