@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import functools
 import json
 import logging
 import sys
@@ -8,8 +9,12 @@ from datetime import datetime
 from pathlib import Path
 
 from eval.harness import probes
-from eval.harness.answer import run_calculator_answers, run_qa_answers, summarize_answer
+from eval.harness.answer import judge_qa_answers, run_calculator_answers, run_qa_answers, summarize_answer
 from eval.harness.datasets import DatasetError, file_sha256, load_qa, load_routing
+from eval.judges.llm_judge import (
+    CORRECTNESS_PROMPT, FAITHFULNESS_PROMPT, OLLAMA_ENDPOINT, OLLAMA_JUDGE_MODEL, grade_answer, grade_faithfulness,
+    ollama_chat,
+)
 from eval.harness.manifest import build_manifest, git_info, planner_prompt_hash
 from eval.harness.preflight import run_preflight
 from eval.harness.recorders import PlannerRecorder, RecorderError, RetrievalRecorder
@@ -37,6 +42,8 @@ def build_parser():
     answer.add_argument("--qa-dataset", default="eval/sets/qa.jsonl")
     answer.add_argument("--calc-dataset", default="eval/sets/routing.jsonl")
     answer.add_argument("--corpus-manifest", default="eval/sets/corpus_manifest.json")
+    answer.add_argument("--judge", action="store_true",
+                        help="also judge correctness and faithfulness for items with ground_truth (local Ollama)")
     for sub in (routing, retrieval, answer):
         sub.add_argument("--out", default=None)
         sub.add_argument("--set-baseline", action="store_true")
@@ -104,13 +111,14 @@ async def _run(args):
             calc_items = [i for i in load_routing(calc_dataset_path)
                          if i.expected_tool == "calculator" and i.expected_tool_output is not None]
 
+    run_judge = layer == "answer" and args.judge
     await llm_client.start()
     try:
         pre = await run_preflight(
             layer=layer, embed_dim=settings.EMBED_DIM, expected_sources=expected_sources,
-            calibration_sources=calibration_sources,
+            calibration_sources=calibration_sources, judge=run_judge,
             probes={"llm": probes.llm_probe, "embed": probes.embed_probe, "qdrant": probes.qdrant_probe,
-                    "neo4j": probes.neo4j_probe})
+                    "neo4j": probes.neo4j_probe, "judge": probes.judge_probe})
         for message in pre.errors:
             print(f"ERROR: {message}", file=sys.stderr)
         for message in pre.warnings:
@@ -139,6 +147,10 @@ async def _run(args):
             with recorder:
                 qa_results = await run_qa_answers(items, agent_app.ainvoke, recorder, NO_ANSWER_PHRASES)
                 calc_results = await run_calculator_answers(calc_items, agent_app.ainvoke, recorder, NO_ANSWER_PHRASES)
+            if run_judge:
+                correctness_fn = functools.partial(grade_answer, chat_fn=ollama_chat)
+                faithfulness_fn = functools.partial(grade_faithfulness, chat_fn=ollama_chat)
+                qa_results = await judge_qa_answers(items, qa_results, correctness_fn, faithfulness_fn)
             summary = summarize_answer(qa_results, calc_results)
             results, items = qa_results + calc_results, items + calc_items
     finally:
@@ -152,13 +164,18 @@ async def _run(args):
     dataset_hashes = {dataset_path.name: file_sha256(dataset_path)}
     if calc_dataset_path is not None:
         dataset_hashes[calc_dataset_path.name] = file_sha256(calc_dataset_path)
+    judge_manifest = None
+    if run_judge:
+        judge_manifest = {"model": OLLAMA_JUDGE_MODEL, "endpoint": OLLAMA_ENDPOINT,
+                          "prompt_hash": planner_prompt_hash(CORRECTNESS_PROMPT + FAITHFULNESS_PROMPT)}
     manifest = build_manifest(
         layer=layer, model=settings.LLM_MODEL_ID or settings.LLM_MODEL_NAME, endpoint=settings.RAY_LLM_ENDPOINT,
         embed_model=settings.EMBED_MODEL_NAME, embed_dim=settings.EMBED_DIM,
         prompt_hash=planner_prompt_hash(planner_module.SYSTEM_PROMPT), git_sha=sha, git_dirty=dirty,
         dataset_hashes=dataset_hashes, corpus_hash=corpus_hash,
         corpus_seed=corpus_seed, qdrant_points=pre.facts.get("qdrant_points"),
-        qdrant_vector_size=pre.facts.get("qdrant_vector_size"), neo4j_nodes=pre.facts.get("neo4j_nodes"))
+        qdrant_vector_size=pre.facts.get("qdrant_vector_size"), neo4j_nodes=pre.facts.get("neo4j_nodes"),
+        judge=judge_manifest)
 
     baseline_path = Path("eval/baselines") / f"{layer}.json"
     comparison, comparison_error = None, None

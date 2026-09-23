@@ -13,7 +13,7 @@ class PreflightResult:
 
 
 async def run_preflight(*, layer, embed_dim, expected_sources, probes, collection="rag_collection",
-                        calibration_sources=None):
+                        calibration_sources=None, judge=False):
     result = PreflightResult()
     if layer in ("routing", "answer"):
         try:
@@ -73,4 +73,10 @@ async def run_preflight(*, layer, embed_dim, expected_sources, probes, collectio
         result.warnings.append("Neo4j unavailable: the graph arm returns no documents.")
     elif nodes == 0:
         result.warnings.append("Neo4j is up but empty: the graph arm returns no documents.")
+
+    if judge:
+        try:
+            await probes["judge"]()
+        except Exception as e:
+            result.errors.append(f"Judge endpoint failed ({type(e).__name__}: {e}). Check Ollama is running and the judge model is pulled.")
     return result

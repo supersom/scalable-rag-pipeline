@@ -16,6 +16,8 @@ def test_parser_defaults():
     assert answer.qa_dataset == "eval/sets/qa.jsonl" and answer.calc_dataset == "eval/sets/routing.jsonl"
     assert answer.corpus_manifest == "eval/sets/corpus_manifest.json"
     assert answer.out is None and not answer.set_baseline and not answer.compare and not answer.force_compare
+    assert not answer.judge
+    assert build_parser().parse_args(["answer", "--judge"]).judge
 
 
 def test_parser_flags():

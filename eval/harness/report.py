@@ -157,6 +157,12 @@ def _answer_sections(s):
     el = s["error_leak"]
     lines += ["", "## Error-string leaks", "",
               f"- {el['n_leaked']}/{el['n_checked']} answer(s) leaked a tool/retriever error string"]
+    jq = s.get("judge_quality")
+    if jq:
+        lines += ["", "## Judge quality", "",
+                  f"- {jq['n_judged']} item(s) judged; mean correctness {_fmt(jq['mean_correctness'])}, "
+                  f"mean faithfulness {_fmt(jq['mean_faithfulness'])}"
+                  + (f"; {jq['n_judge_errors']} judge call(s) failed" if jq["n_judge_errors"] else "")]
     return lines
 
 

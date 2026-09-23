@@ -1,10 +1,11 @@
 import asyncio
 
 from eval.harness.answer import (
-    AnswerResult, citation_filenames, has_error_leak, is_refusal, run_calculator_answers, run_qa_answers,
-    summarize_answer,
+    AnswerResult, citation_filenames, has_error_leak, is_refusal, judge_qa_answers, run_calculator_answers,
+    run_qa_answers, summarize_answer,
 )
 from eval.harness.datasets import QAItem, RoutingItem
+from eval.judges.llm_judge import Grade
 
 NO_ANSWER_PHRASES = ["i don't have", "i do not have", "no relevant"]
 
@@ -20,9 +21,10 @@ class FakeRecorder:
         return self.value
 
 
-def qa(id, answerable=True):
+def qa(id, answerable=True, ground_truth=None):
     return QAItem(id=id, query="q", origin="hand", answerable=answerable, label_type=None,
-                 expected_sources=(), reference_contexts=(), calibration_sources=(), ground_truth=None, tags=())
+                 expected_sources=(), reference_contexts=(), calibration_sources=(), ground_truth=ground_truth,
+                 tags=())
 
 
 def calc_item(id, query="3*7", output="21"):
@@ -34,10 +36,11 @@ def hits(*filenames):
     return [{"filename": f, "page": 1, "score": 0.9, "text": "t"} for f in filenames]
 
 
-def agent(recorder, filenames, answer, action="retrieve"):
+def agent(recorder, filenames, answer, action="retrieve", documents=None):
     async def fn(state):
         recorder.value = hits(*filenames)
-        return {"messages": [{"role": "assistant", "content": answer}], "action": action}
+        return {"messages": [{"role": "assistant", "content": answer}], "action": action,
+                "documents": documents if documents is not None else []}
     return fn
 
 
@@ -84,6 +87,20 @@ def test_run_qa_answers_records_errors():
     assert result.answerable is True
 
 
+def test_run_qa_answers_captures_joined_retrieved_context():
+    rec = FakeRecorder()
+    fn = agent(rec, ["a.pdf"], "an answer", documents=["chunk one [Source: a.pdf]", "chunk two [Source: a.pdf]"])
+    [result] = asyncio.run(run_qa_answers([qa("s1")], fn, rec, NO_ANSWER_PHRASES))
+    assert result.context == "chunk one [Source: a.pdf]\n\nchunk two [Source: a.pdf]"
+
+
+def test_run_qa_answers_context_is_empty_string_when_no_documents():
+    rec = FakeRecorder()
+    fn = agent(rec, [], "hi there", action="direct_answer")
+    [result] = asyncio.run(run_qa_answers([qa("s1")], fn, rec, NO_ANSWER_PHRASES))
+    assert result.context == ""
+
+
 def test_run_calculator_answers_checks_number_present():
     rec = FakeRecorder()
     fn = agent(rec, [], "3 times 7 is 21.", action="tool_use")
@@ -96,6 +113,52 @@ def test_run_calculator_answers_flags_missing_number():
     fn = agent(rec, [], "I'm not sure what the result is.", action="tool_use")
     [result] = asyncio.run(run_calculator_answers([calc_item("c1")], fn, rec, NO_ANSWER_PHRASES))
     assert result.number_present is False
+
+
+def judge_fn(*grades):
+    calls = []
+
+    async def fn(question, reference, answer):
+        calls.append((question, reference, answer))
+        return grades[len(calls) - 1]
+    fn.calls = calls
+    return fn
+
+
+def test_judge_qa_answers_scores_items_with_ground_truth():
+    items = [qa("s1", ground_truth="the real answer"), qa("s2")]
+    results = [
+        AnswerResult("s1", "scored", answer="an answer", context="ctx"),
+        AnswerResult("s2", "scored", answer="another answer", context="ctx2"),
+    ]
+    correctness = judge_fn(Grade(score=5, reasoning="matches"))
+    faithfulness = judge_fn(Grade(score=4, reasoning="grounded"))
+    judged = asyncio.run(judge_qa_answers(items, results, correctness, faithfulness))
+    s1, s2 = judged
+    assert s1.correctness_score == 5 and s1.correctness_reasoning == "matches"
+    assert s1.faithfulness_score == 4 and s1.faithfulness_reasoning == "grounded"
+    assert s2.correctness_score is None and s2.faithfulness_score is None
+    assert results[0].correctness_score is None  # original result untouched, not mutated
+
+
+def test_judge_qa_answers_passes_ground_truth_to_correctness_and_context_to_faithfulness():
+    items = [qa("s1", ground_truth="the real answer")]
+    results = [AnswerResult("s1", "scored", answer="an answer", context="the retrieved context")]
+    correctness = judge_fn(Grade(score=5, reasoning="ok"))
+    faithfulness = judge_fn(Grade(score=5, reasoning="ok"))
+    asyncio.run(judge_qa_answers(items, results, correctness, faithfulness))
+    assert correctness.calls == [("q", "the real answer", "an answer")]
+    assert faithfulness.calls == [("q", "the retrieved context", "an answer")]
+
+
+def test_judge_qa_answers_skips_error_and_no_ground_truth_results():
+    items = [qa("s1", ground_truth="gt"), qa("s2")]
+    results = [AnswerResult("s1", "error", reason="boom"), AnswerResult("s2", "scored", answer="a")]
+    correctness = judge_fn()
+    faithfulness = judge_fn()
+    judged = asyncio.run(judge_qa_answers(items, results, correctness, faithfulness))
+    assert correctness.calls == [] and faithfulness.calls == []
+    assert all(r.correctness_score is None for r in judged)
 
 
 def scored(item_id, **kwargs):
@@ -139,3 +202,38 @@ def test_summarize_answer_counts_errors_separately_from_scored():
     qa_results = [scored("s1", answerable=True, refused=False), AnswerResult(item_id="s2", verdict="error")]
     s = summarize_answer(qa_results, [])
     assert s["errors"] == 1 and s["n_items"] == 2
+
+
+def test_summarize_answer_omits_judge_metrics_when_no_results_were_judged():
+    s = summarize_answer([scored("s1", answerable=True, refused=False)], [])
+    assert "correctness_pass_rate" not in s["headline"] and "faithfulness_pass_rate" not in s["headline"]
+    assert "judge_quality" not in s
+
+
+def test_summarize_answer_reports_judge_pass_rates_and_mean_scores():
+    qa_results = [
+        scored("s1", answerable=True, refused=False, correctness_score=5, correctness_reasoning="ok",
+              faithfulness_score=2, faithfulness_reasoning="unsupported"),
+        scored("s2", answerable=True, refused=False, correctness_score=3, correctness_reasoning="partial",
+              faithfulness_score=4, faithfulness_reasoning="mostly grounded"),
+        scored("s3", answerable=True, refused=False),  # not judged (no ground_truth)
+    ]
+    s = summarize_answer(qa_results, [])
+    assert s["headline"]["correctness_pass_rate"] == {"successes": 1, "n": 2}  # score>=4 -> only s1 passes
+    assert s["headline"]["faithfulness_pass_rate"] == {"successes": 1, "n": 2}  # only s2 passes
+    assert s["judge_quality"] == {"n_judged": 2, "mean_correctness": 4.0, "mean_faithfulness": 3.0,
+                                  "n_judge_errors": 0}
+
+
+def test_summarize_answer_excludes_judge_call_failures_from_rates_and_means():
+    qa_results = [
+        scored("s1", answerable=True, refused=False, correctness_score=5, correctness_reasoning="ok",
+              faithfulness_score=0, faithfulness_reasoning="Judge Error: down"),
+        scored("s2", answerable=True, refused=False, correctness_score=0, correctness_reasoning="Judge Error: down",
+              faithfulness_score=4, faithfulness_reasoning="grounded"),
+    ]
+    s = summarize_answer(qa_results, [])
+    assert s["headline"]["correctness_pass_rate"] == {"successes": 1, "n": 1}
+    assert s["headline"]["faithfulness_pass_rate"] == {"successes": 1, "n": 1}
+    assert s["judge_quality"] == {"n_judged": 1, "mean_correctness": 5.0, "mean_faithfulness": 4.0,
+                                  "n_judge_errors": 2}

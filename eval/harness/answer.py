@@ -1,6 +1,6 @@
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 from eval.harness.stats import percentile
@@ -15,6 +15,9 @@ ERROR_LEAK_PATTERNS = (
     "Search Error:", "Graph search error:", "Unknown tool:", "Web Search Error:",
 )
 
+# llm_judge.py's rubric: 5=perfect, 3=partially correct. 4 is the "good enough" cutoff.
+JUDGE_PASS_THRESHOLD = 4
+
 
 @dataclass
 class AnswerResult:
@@ -23,12 +26,17 @@ class AnswerResult:
     answer: str = ""
     action: Optional[str] = None
     answerable: Optional[bool] = None
+    context: str = ""
     citations_total: int = 0
     citations_hallucinated: int = 0
     refused: Optional[bool] = None
     error_leak: bool = False
     expected_number: Optional[str] = None
     number_present: Optional[bool] = None
+    correctness_score: Optional[int] = None
+    correctness_reasoning: Optional[str] = None
+    faithfulness_score: Optional[int] = None
+    faithfulness_reasoning: Optional[str] = None
     latency_ms: Optional[float] = None
     reason: Optional[str] = None
 
@@ -59,13 +67,14 @@ async def _invoke(item_id, query, agent_fn, recorder, no_answer_phrases, *, answ
     latency_ms = (time.perf_counter() - started) * 1000
     messages = out.get("messages") or []
     answer = messages[-1]["content"] if messages else ""
+    context = "\n\n".join(out.get("documents") or [])
     retrieved = {h["filename"] for h in (recorder.last() or [])}
     citations = citation_filenames(answer)
     hallucinated = sum(1 for c in citations if c not in retrieved)
     number_present = (expected_number in answer) if expected_number is not None else None
     return AnswerResult(
         item_id=item_id, verdict="scored", answer=answer, action=out.get("action"), answerable=answerable,
-        citations_total=len(citations), citations_hallucinated=hallucinated,
+        context=context, citations_total=len(citations), citations_hallucinated=hallucinated,
         refused=is_refusal(answer, no_answer_phrases), error_leak=has_error_leak(answer),
         expected_number=expected_number, number_present=number_present, latency_ms=latency_ms)
 
@@ -80,8 +89,27 @@ async def run_calculator_answers(items, agent_fn, recorder, no_answer_phrases):
             for i in items]
 
 
+async def judge_qa_answers(items, results, correctness_fn, faithfulness_fn):
+    by_id = {i.id: i for i in items}
+    judged = []
+    for r in results:
+        item = by_id[r.item_id]
+        if r.verdict != "scored" or not item.ground_truth:
+            judged.append(r)
+            continue
+        correctness = await correctness_fn(item.query, item.ground_truth, r.answer)
+        faithfulness = await faithfulness_fn(item.query, r.context, r.answer)
+        judged.append(replace(r, correctness_score=correctness.score, correctness_reasoning=correctness.reasoning,
+                              faithfulness_score=faithfulness.score, faithfulness_reasoning=faithfulness.reasoning))
+    return judged
+
+
 def _rate(successes, n):
     return {"successes": successes, "n": n}
+
+
+def _mean(values):
+    return sum(values) / len(values) if values else None
 
 
 def summarize_answer(qa_results, calc_results):
@@ -103,11 +131,23 @@ def summarize_answer(qa_results, calc_results):
         headline["calculator_number_present_rate"] = _rate(
             sum(bool(r.number_present) for r in calc_scored), len(calc_scored))
 
+    # score==0 is llm_judge.py's degrade-on-failure sentinel (the 1-5 rubric never emits it
+    # for a real judgement), so it means "the judge call itself failed", not "the answer failed".
+    correctness_judged = [r for r in scored if r.correctness_score is not None and r.correctness_score > 0]
+    faithfulness_judged = [r for r in scored if r.faithfulness_score is not None and r.faithfulness_score > 0]
+    n_judge_errors = sum(r.correctness_score == 0 for r in scored) + sum(r.faithfulness_score == 0 for r in scored)
+    if correctness_judged:
+        headline["correctness_pass_rate"] = _rate(
+            sum(r.correctness_score >= JUDGE_PASS_THRESHOLD for r in correctness_judged), len(correctness_judged))
+    if faithfulness_judged:
+        headline["faithfulness_pass_rate"] = _rate(
+            sum(r.faithfulness_score >= JUDGE_PASS_THRESHOLD for r in faithfulness_judged), len(faithfulness_judged))
+
     all_results = qa_results + calc_results
     checked = [r for r in all_results if r.verdict == "scored"]
     latencies = [r.latency_ms for r in all_results if r.latency_ms is not None]
 
-    return {
+    summary = {
         "headline": headline,
         "citation_validity": {"n_citations": sum(r.citations_total for r in scored),
                               "n_hallucinated": sum(r.citations_hallucinated for r in scored),
@@ -118,3 +158,11 @@ def summarize_answer(qa_results, calc_results):
         "latency_ms": {"p50": percentile(latencies, 50), "p95": percentile(latencies, 95)},
         "n_items": len(qa_results) + len(calc_results),
     }
+    if correctness_judged or faithfulness_judged:
+        summary["judge_quality"] = {
+            "n_judged": max(len(correctness_judged), len(faithfulness_judged)),
+            "mean_correctness": _mean([r.correctness_score for r in correctness_judged]),
+            "mean_faithfulness": _mean([r.faithfulness_score for r in faithfulness_judged]),
+            "n_judge_errors": n_judge_errors,
+        }
+    return summary

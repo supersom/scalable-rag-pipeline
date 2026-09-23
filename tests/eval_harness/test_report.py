@@ -156,6 +156,19 @@ def test_render_answer_summary():
                      "correct_refusal_rate", "false_refusal_rate", "calculator_number_present_rate",
                      "## Failures"]:
         assert expected in md
+    assert "## Judge quality" not in md
+
+
+def test_render_answer_summary_includes_judge_quality_section_when_present():
+    from eval.harness.answer import AnswerResult, summarize_answer
+
+    qa_results = [AnswerResult("s1", "scored", answerable=True, refused=False,
+                               correctness_score=5, faithfulness_score=4)]
+    summary = summarize_answer(qa_results, [])
+    md = render_summary_md("answer", dict(MANIFEST, layer="answer"), summary, [], [])
+    assert "## Judge quality" in md
+    assert "correctness_pass_rate" in md and "faithfulness_pass_rate" in md
+    assert "mean correctness 5.0" in md and "mean faithfulness 4.0" in md
 
 
 def test_write_run_creates_all_files(tmp_path):

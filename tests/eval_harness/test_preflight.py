@@ -16,7 +16,10 @@ def probes(**over):
     async def neo4j():
         return 5
 
-    base = {"llm": llm, "embed": embed, "qdrant": qdrant, "neo4j": neo4j}
+    async def judge():
+        return None
+
+    base = {"llm": llm, "embed": embed, "qdrant": qdrant, "neo4j": neo4j, "judge": judge}
     base.update(over)
     return base
 
@@ -33,9 +36,9 @@ def returning(value):
     return fn
 
 
-def preflight(layer="retrieval", sources=("a.pdf",), calibration_sources=None, **over):
+def preflight(layer="retrieval", sources=("a.pdf",), calibration_sources=None, run_judge=False, **over):
     return asyncio.run(run_preflight(layer=layer, embed_dim=768, expected_sources=set(sources),
-                                     calibration_sources=calibration_sources, probes=probes(**over)))
+                                     calibration_sources=calibration_sources, judge=run_judge, probes=probes(**over)))
 
 
 def test_routing_needs_only_the_llm():
@@ -107,6 +110,22 @@ def test_answer_ok_records_facts_from_both_checks():
     result = preflight("answer")
     assert result.ok and result.warnings == []
     assert result.facts["qdrant_points"] == 100 and result.facts["neo4j_nodes"] == 5
+
+
+def test_judge_probe_not_called_unless_requested():
+    result = preflight("answer", run_judge=False, judge=failing(RuntimeError("must not be probed")))
+    assert result.ok
+
+
+def test_judge_probe_runs_and_reports_failure_when_requested():
+    result = preflight("answer", run_judge=True, judge=failing(ConnectionError("refused")))
+    assert not result.ok
+    assert any("Judge endpoint" in e and "refused" in e for e in result.errors)
+
+
+def test_judge_probe_ok_when_reachable():
+    result = preflight("answer", run_judge=True)
+    assert result.ok
 
 
 def test_neo4j_unavailable_and_empty_are_warnings():

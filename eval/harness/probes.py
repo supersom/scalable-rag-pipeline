@@ -45,3 +45,9 @@ async def neo4j_probe():
 
     rows = await neo4j_client.query("MATCH (n) RETURN count(n) AS c")
     return rows[0]["c"]
+
+
+async def judge_probe():
+    from eval.judges.llm_judge import ollama_chat
+
+    await ollama_chat(messages=[{"role": "user", "content": "Reply with the word ok."}])
