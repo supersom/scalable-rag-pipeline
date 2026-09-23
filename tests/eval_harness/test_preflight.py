@@ -97,6 +97,18 @@ def test_missing_calibration_sources_are_warnings_not_errors():
     assert any("gone.pdf" in w and "h010" in w and "h011" in w for w in result.warnings)
 
 
+def test_answer_needs_both_llm_and_retrieval_checks():
+    result = preflight("answer", llm=failing(RuntimeError("401")))
+    assert not result.ok and "RAY_LLM_ENDPOINT" in result.errors[0]
+    assert result.facts["qdrant_points"] == 100 and result.facts["embed_dim_actual"] == 768
+
+
+def test_answer_ok_records_facts_from_both_checks():
+    result = preflight("answer")
+    assert result.ok and result.warnings == []
+    assert result.facts["qdrant_points"] == 100 and result.facts["neo4j_nodes"] == 5
+
+
 def test_neo4j_unavailable_and_empty_are_warnings():
     down = preflight(neo4j=failing(ConnectionError("refused")))
     assert down.ok and down.facts["neo4j_nodes"] is None and any("Neo4j unavailable" in w for w in down.warnings)

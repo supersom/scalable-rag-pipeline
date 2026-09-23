@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from eval.harness import probes
+from eval.harness.answer import run_calculator_answers, run_qa_answers, summarize_answer
 from eval.harness.datasets import DatasetError, file_sha256, load_qa, load_routing
 from eval.harness.manifest import build_manifest, git_info, planner_prompt_hash
 from eval.harness.preflight import run_preflight
@@ -32,7 +33,11 @@ def build_parser():
     retrieval = layers.add_parser("retrieval", help="score retrieval")
     retrieval.add_argument("--dataset", default="eval/sets/qa.jsonl")
     retrieval.add_argument("--corpus-manifest", default="eval/sets/corpus_manifest.json")
-    for sub in (routing, retrieval):
+    answer = layers.add_parser("answer", help="score citation validity, refusal correctness and calculator answers")
+    answer.add_argument("--qa-dataset", default="eval/sets/qa.jsonl")
+    answer.add_argument("--calc-dataset", default="eval/sets/routing.jsonl")
+    answer.add_argument("--corpus-manifest", default="eval/sets/corpus_manifest.json")
+    for sub in (routing, retrieval, answer):
         sub.add_argument("--out", default=None)
         sub.add_argument("--set-baseline", action="store_true")
         sub.add_argument("--compare", action="store_true")
@@ -48,7 +53,7 @@ def neo4j_state_warning(layer, manifest, baseline_manifest):
     """Neo4j is optional and deliberately excluded from COMPARABLE_KEYS, so a
     differing graph state must never refuse a comparison — only warn that the
     graph arm's contribution may differ. Routing never touches Neo4j."""
-    if layer != "retrieval":
+    if layer not in ("retrieval", "answer"):
         return None
     current, baseline = manifest.get("neo4j_nodes"), baseline_manifest.get("neo4j_nodes")
     if current == baseline:
@@ -68,22 +73,25 @@ async def _run(args):
 
     load_dotenv()
 
+    from services.api.app.agents.graph import agent_app
     from services.api.app.agents.nodes import planner as planner_module
     from services.api.app.agents.nodes.retriever import retrieve_node
     from services.api.app.agents.nodes.tool import tool_node
     from services.api.app.clients.qdrant import qdrant_client
     from services.api.app.clients.ray_llm import llm_client
     from services.api.app.config import settings
-    from services.api.app.tools.registry import TOOL_REGISTRY
+    from services.api.app.tools.registry import NO_ANSWER_PHRASES, TOOL_REGISTRY
 
     layer = args.layer
     out_dir = Path(args.out) if args.out else Path("eval/runs") / f"{datetime.now():%Y%m%d-%H%M%S}-{layer}"
-    dataset_path = Path(args.dataset)
     corpus_path = None
     calibration_sources = {}
+    calc_items, calc_dataset_path = [], None
     if layer == "routing":
+        dataset_path = Path(args.dataset)
         items, expected_sources = load_routing(dataset_path), set()
     else:
+        dataset_path = Path(args.qa_dataset if layer == "answer" else args.dataset)
         items = load_qa(dataset_path)
         expected_sources = {s for i in items if i.label_type == "source" for s in i.expected_sources}
         for i in items:
@@ -91,14 +99,18 @@ async def _run(args):
                 for s in i.calibration_sources:
                     calibration_sources.setdefault(s, []).append(i.id)
         corpus_path = Path(args.corpus_manifest)
+        if layer == "answer":
+            calc_dataset_path = Path(args.calc_dataset)
+            calc_items = [i for i in load_routing(calc_dataset_path)
+                         if i.expected_tool == "calculator" and i.expected_tool_output is not None]
 
     await llm_client.start()
     try:
         pre = await run_preflight(
             layer=layer, embed_dim=settings.EMBED_DIM, expected_sources=expected_sources,
             calibration_sources=calibration_sources,
-            probes={"llm": probes.llm_probe, "embed": probes.embed_probe,
-                    "qdrant": probes.qdrant_probe, "neo4j": probes.neo4j_probe})
+            probes={"llm": probes.llm_probe, "embed": probes.embed_probe, "qdrant": probes.qdrant_probe,
+                    "neo4j": probes.neo4j_probe})
         for message in pre.errors:
             print(f"ERROR: {message}", file=sys.stderr)
         for message in pre.warnings:
@@ -112,7 +124,7 @@ async def _run(args):
                 results = await run_routing(items, args.repeats, planner_module.planner_node, tool_node,
                                             recorder, set(TOOL_REGISTRY))
             summary = summarize_routing(items, results)
-        else:
+        elif layer == "retrieval":
             if pre.facts.get("neo4j_nodes") is None:
                 logging.getLogger("services.api.app.agents.nodes.retriever").setLevel(logging.CRITICAL)
             recorder = RetrievalRecorder(qdrant_client)
@@ -120,6 +132,15 @@ async def _run(args):
                 results = await run_retrieval(items, retrieve_node, recorder, pre.facts["filenames"])
             threshold, agreement, n_dual = calibrate_threshold(items, results)
             summary = summarize_retrieval(items, results, threshold, agreement, n_dual)
+        else:
+            if pre.facts.get("neo4j_nodes") is None:
+                logging.getLogger("services.api.app.agents.nodes.retriever").setLevel(logging.CRITICAL)
+            recorder = RetrievalRecorder(qdrant_client)
+            with recorder:
+                qa_results = await run_qa_answers(items, agent_app.ainvoke, recorder, NO_ANSWER_PHRASES)
+                calc_results = await run_calculator_answers(calc_items, agent_app.ainvoke, recorder, NO_ANSWER_PHRASES)
+            summary = summarize_answer(qa_results, calc_results)
+            results, items = qa_results + calc_results, items + calc_items
     finally:
         await llm_client.close()
 
@@ -128,11 +149,14 @@ async def _run(args):
     if corpus_path is not None and corpus_path.exists():
         corpus_hash = file_sha256(corpus_path)
         corpus_seed = json.loads(corpus_path.read_text()).get("seed")
+    dataset_hashes = {dataset_path.name: file_sha256(dataset_path)}
+    if calc_dataset_path is not None:
+        dataset_hashes[calc_dataset_path.name] = file_sha256(calc_dataset_path)
     manifest = build_manifest(
         layer=layer, model=settings.LLM_MODEL_ID or settings.LLM_MODEL_NAME, endpoint=settings.RAY_LLM_ENDPOINT,
         embed_model=settings.EMBED_MODEL_NAME, embed_dim=settings.EMBED_DIM,
         prompt_hash=planner_prompt_hash(planner_module.SYSTEM_PROMPT), git_sha=sha, git_dirty=dirty,
-        dataset_hashes={dataset_path.name: file_sha256(dataset_path)}, corpus_hash=corpus_hash,
+        dataset_hashes=dataset_hashes, corpus_hash=corpus_hash,
         corpus_seed=corpus_seed, qdrant_points=pre.facts.get("qdrant_points"),
         qdrant_vector_size=pre.facts.get("qdrant_vector_size"), neo4j_nodes=pre.facts.get("neo4j_nodes"))
 

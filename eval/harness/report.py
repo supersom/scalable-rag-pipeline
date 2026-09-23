@@ -55,6 +55,25 @@ def failure_rows(layer, items, rows, limit=25):
                 failures.append({"id": item.id, "query": item.query,
                                  "expected": f"{item.expected_action}/{item.expected_tool}",
                                  "actual": f"{r['actual_action']}/{r['actual_tool']}", "reason": ", ".join(reasons)})
+        elif layer == "answer":
+            if r["verdict"] == "error":
+                failures.append({"id": item.id, "query": item.query, "expected": "", "actual": "",
+                                 "reason": f"error: {r['reason']}"})
+                continue
+            reasons = []
+            if r["citations_hallucinated"]:
+                reasons.append(f"hallucinated_citation×{r['citations_hallucinated']}")
+            if r["answerable"] is True and r["refused"]:
+                reasons.append("false_refusal")
+            if r["answerable"] is False and not r["refused"]:
+                reasons.append("missed_refusal")
+            if r["expected_number"] is not None and not r["number_present"]:
+                reasons.append("number_missing")
+            if r["error_leak"]:
+                reasons.append("error_leak")
+            if reasons:
+                failures.append({"id": item.id, "query": item.query, "expected": r.get("expected_number") or "",
+                                 "actual": r["answer"][:80], "reason": ", ".join(reasons)})
         elif r["verdict"] in ("unscorable", "error"):
             failures.append({"id": item.id, "query": item.query, "expected": ", ".join(item.expected_sources),
                              "actual": "", "reason": f"{r['verdict']}: {r['reason']}"})
@@ -130,6 +149,17 @@ def _retrieval_sections(s):
     return lines
 
 
+def _answer_sections(s):
+    cv = s["citation_validity"]
+    lines = ["", "## Citation validity", "",
+             f"- {cv['n_citations']} citation(s) across {cv['n_items_with_citations']} item(s) with citations; "
+             f"{cv['n_hallucinated']} hallucinated"]
+    el = s["error_leak"]
+    lines += ["", "## Error-string leaks", "",
+              f"- {el['n_leaked']}/{el['n_checked']} answer(s) leaked a tool/retriever error string"]
+    return lines
+
+
 def render_summary_md(layer, manifest, summary, warnings, failures, comparison=None):
     lines = [f"# Eval run: {layer}", ""]
     if summary.get("invalid"):
@@ -144,7 +174,12 @@ def render_summary_md(layer, manifest, summary, warnings, failures, comparison=N
     if warnings:
         lines += ["", "## Warnings", ""] + [f"- {w}" for w in warnings]
     lines += ["", "## Headline", ""] + _headline_lines(summary["headline"])
-    lines += _routing_sections(summary) if layer == "routing" else _retrieval_sections(summary)
+    if layer == "routing":
+        lines += _routing_sections(summary)
+    elif layer == "retrieval":
+        lines += _retrieval_sections(summary)
+    else:
+        lines += _answer_sections(summary)
     lat = summary["latency_ms"]
     lines += ["", "## Latency", "", f"- p50 {_fmt(lat['p50'])} ms, p95 {_fmt(lat['p95'])} ms"]
     if comparison:

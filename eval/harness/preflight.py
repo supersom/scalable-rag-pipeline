@@ -15,12 +15,13 @@ class PreflightResult:
 async def run_preflight(*, layer, embed_dim, expected_sources, probes, collection="rag_collection",
                         calibration_sources=None):
     result = PreflightResult()
-    if layer == "routing":
+    if layer in ("routing", "answer"):
         try:
             await probes["llm"]()
         except Exception as e:
             result.errors.append(f"LLM endpoint failed ({type(e).__name__}: {e}). Check RAY_LLM_ENDPOINT and LLM_API_KEY in .env.")
-        return result
+        if layer == "routing":
+            return result
 
     actual_dim = None
     try:

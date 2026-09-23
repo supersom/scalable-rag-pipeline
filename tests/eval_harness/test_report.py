@@ -116,6 +116,48 @@ def test_render_retrieval_summary():
         assert expected in md
 
 
+def answer_data():
+    items = [qa_item("s1"), qa_item("u1"), RoutingItem("c1", "3*7", "tool_use", "calculator", (), (), "21")]
+    rows = [
+        {"item_id": "s1", "verdict": "scored", "answer": "X [Source: a.pdf], [Source: ghost.pdf]", "action": "retrieve",
+         "answerable": True, "citations_total": 2, "citations_hallucinated": 1, "refused": False, "error_leak": False,
+         "expected_number": None, "number_present": None, "latency_ms": 5.0, "reason": None},
+        {"item_id": "u1", "verdict": "scored", "answer": "The HPA scales pods.", "action": "retrieve",
+         "answerable": False, "citations_total": 0, "citations_hallucinated": 0, "refused": False, "error_leak": False,
+         "expected_number": None, "number_present": None, "latency_ms": 5.0, "reason": None},
+        {"item_id": "c1", "verdict": "scored", "answer": "Sandbox Error: timeout", "action": "tool_use",
+         "answerable": None, "citations_total": 0, "citations_hallucinated": 0, "refused": False, "error_leak": True,
+         "expected_number": "21", "number_present": False, "latency_ms": 5.0, "reason": None},
+    ]
+    return items, rows
+
+
+def test_failure_rows_for_answer():
+    items, rows = answer_data()
+    failures = failure_rows("answer", items, rows)
+    assert [f["id"] for f in failures] == ["s1", "u1", "c1"]
+    assert failures[0]["reason"] == "hallucinated_citation×1"
+    assert failures[1]["reason"] == "missed_refusal"
+    assert failures[2]["reason"] == "number_missing, error_leak"
+
+
+def test_render_answer_summary():
+    from eval.harness.answer import AnswerResult, summarize_answer
+
+    qa_results = [
+        AnswerResult("s1", "scored", answerable=True, citations_total=2, citations_hallucinated=1, refused=False),
+        AnswerResult("u1", "scored", answerable=False, refused=False),
+    ]
+    calc_results = [AnswerResult("c1", "scored", expected_number="21", number_present=False, error_leak=True)]
+    summary = summarize_answer(qa_results, calc_results)
+    items, rows = answer_data()
+    md = render_summary_md("answer", dict(MANIFEST, layer="answer"), summary, [], failure_rows("answer", items, rows))
+    for expected in ["# Eval run: answer", "## Citation validity", "## Error-string leaks",
+                     "correct_refusal_rate", "false_refusal_rate", "calculator_number_present_rate",
+                     "## Failures"]:
+        assert expected in md
+
+
 def test_write_run_creates_all_files(tmp_path):
     out = tmp_path / "run"
     write_run(out, MANIFEST, [{"item_id": "a", "verdict": "pass"}, {"item_id": "b", "verdict": "wrong_tool"}],

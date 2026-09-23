@@ -12,6 +12,10 @@ def test_parser_defaults():
     assert routing.out is None and not routing.set_baseline and not routing.compare and not routing.force_compare
     retrieval = build_parser().parse_args(["retrieval"])
     assert retrieval.dataset == "eval/sets/qa.jsonl" and retrieval.corpus_manifest == "eval/sets/corpus_manifest.json"
+    answer = build_parser().parse_args(["answer"])
+    assert answer.qa_dataset == "eval/sets/qa.jsonl" and answer.calc_dataset == "eval/sets/routing.jsonl"
+    assert answer.corpus_manifest == "eval/sets/corpus_manifest.json"
+    assert answer.out is None and not answer.set_baseline and not answer.compare and not answer.force_compare
 
 
 def test_parser_flags():
@@ -49,6 +53,12 @@ def test_neo4j_state_warning_only_for_retrieval_and_differing_state():
     warning = neo4j_state_warning("retrieval", {"neo4j_nodes": 10}, {"neo4j_nodes": None})
     assert warning is not None
     assert "baseline: None nodes" in warning and "this run: 10 nodes" in warning
+
+
+def test_neo4j_state_warning_also_applies_to_answer_layer():
+    assert neo4j_state_warning("answer", {"neo4j_nodes": 10}, {"neo4j_nodes": 10}) is None
+    warning = neo4j_state_warning("answer", {"neo4j_nodes": 10}, {"neo4j_nodes": None})
+    assert warning is not None and "this run: 10 nodes" in warning
 
 
 def test_main_refuses_to_run_outside_the_repo_root(tmp_path, monkeypatch, capsys):
