@@ -5,6 +5,34 @@ Focus: *why*, not *what* (git log has the what).
 
 ---
 
+## 2026-09-22 • Embedding query/document prefix fix — model-aware, not blanket
+
+**Decision:** Gated `nomic-embed-text`'s required `search_query:`/`search_document:` task prefix on `EMBED_MODEL_NAME` in three client files (`services/api/app/clients/ray_embed.py`, `pipelines/ingestion/embedding/compute.py`, `scripts/ingest_local.py`), rather than adding the prefix unconditionally.
+
+**Reasoning:** Production runs `BAAI/bge-m3` (`services/api/app/models/embedding_engine.py`), not `nomic-embed-text` — verified against both models' actual HuggingFace cards rather than assumed: Nomic's card says the prefix "must" be included, BGE-M3's says it "no longer requires adding instructions." A blanket fix would have corrected local retrieval and silently fed BGE-M3 literal instruction text it was never trained to strip, degrading production. Checking the model card before writing model-specific logic is now a standing rule for this repo (global CLAUDE.md: "reason through all pipeline stages... before making any statements").
+
+**Second finding this fix exposed:** `EMBED_MODEL_NAME` — the variable the client reads to decide whether to prefix — was never actually set in either production deployment (`deploy/helm/api/values.yaml`, `deploy/k8s/ingestion-worker.yaml`); only the separate server-side `EMBED_MODEL_ID` was. Shipping the client fix without this would have silently mis-prefixed all production traffic. Both manifests now set `EMBED_MODEL_NAME=BAAI/bge-m3` with a comment explaining why it must never be `"nomic-embed-text"`; `.env.example` documents the local/prod split.
+
+**Measured result** (re-ingested full local corpus, 15m vs. 57m before the corpus-composition fix): source_hit@3/@5 71.4%→85.7%, MRR 0.714→0.786, source_recall@5 0.714→0.857, unanswerable AUROC 0.937→0.967 (`eval/baselines/retrieval.json`). Verified the fix took effect on stored vectors, not just code: cosine similarity of a known chunk's stored vector to a freshly-computed prefixed embedding was 0.9999999994, vs. 0.981 unprefixed.
+
+**Known remaining case, not a bug:** `h002` (Windows kernel `KEY_VALUE_BASIC_INFORMATION`) still misses — raw similarity improved (0.6185→0.6403) but rank got worse (821→1691 of 12,780), meaning the correction helped other chunks more than this one. A genuine hard case for dense retrieval (a natural-language question against a terse, jargon-dense reference sentence), not investigated further.
+
+---
+
+## 2026-09-22 • Eval harness slices 3a/3b — deterministic and judged answer checks
+
+**3a — deterministic checks, no LLM judge** (`eval/harness/answer.py`): citation validity (regex out `[Source: X]`, flag any `X` not among the filenames the retrieval recorder actually returned — a hallucination signal, not a "right source" signal), refusal correctness in both directions (false refusal on answerable items, missed refusal on unanswerable ones — reused production's own `NO_ANSWER_PHRASES` from `services/api/app/tools/registry.py`, the same list `chat.py` already uses to gate semantic caching, rather than inventing a second definition of "refused"), calculator number-presence (does the final answer text actually contain the computed number, a stricter check than slice 1's tool-execution check, which only verifies the raw tool call), and a cross-cutting error-string-leak check (drawn from the actual tool/retriever error-return strings) — caught a real one live: `r013`'s `Error: Function 'sqrt' not defined` string leaking straight into the user-facing answer.
+
+**3b — judged correctness and faithfulness** (`eval/judges/llm_judge.py`, extended `answer.py`): two separate judge calls per item with `ground_truth` (20 of `qa.jsonl`'s 37 items) — correctness against `ground_truth`, faithfulness against the retrieved context actually fed to the responder. Kept as two dimensions, not one, because they catch different failure modes: an answer can match `ground_truth` by parametric luck without being grounded in what was retrieved, or vice versa. Spot-checked the faithfulness judge is discriminating, not rubber-stamping: a plausible-sounding fabricated claim scored 1/5 against context that didn't support it, a genuinely matching answer scored 5/5.
+
+**Judge model must be genuinely separate from the system under test.** `services/api/app/clients/ray_llm.py`'s `RayLLMClient` hardcodes its endpoint/model from global settings with no per-call override, so reusing it for the judge wasn't possible without production changes — and reusing the same model to grade its own answers is a known bias risk regardless. `llm_judge.py`'s `grade_answer`/`grade_faithfulness` now take the chat function as a parameter (matching every other harness runner's injected-dependency pattern) so a genuinely different local Ollama model judges instead, at zero added cost or rate-limit contention with the free-tier hosted model everything else uses.
+
+**Judge model picked, then re-picked on measured data.** First choice was `qwen3.5:latest` (9.7B, reasoned to be the stronger judge). Measured over 2 minutes per call on this hardware — mostly CPU-bound, only 2.2GB of the 6.6GB model fit in VRAM — which would make a real 40-call run take 1–3 hours and time out on nearly every call against the client's 120s timeout. Switched to `llama3.2:3b`, which completes two calls in 14s. The lesson generalizes: "stronger model" is not a fixed property — it's conditional on whether the available hardware can actually run it fast enough to be usable.
+
+**Corpus-coverage finding, cross-validated by two independent measurements.** 17/24 false refusals on `golden.json`'s answerable items (deterministic check), and correctness/faithfulness pass rates of 17.6%/29.4% (judge check) — two different measurement methods landing on the same root cause: `golden.json`'s 20 conceptual Kubernetes questions (HPA vs. Cluster Autoscaler, taints, Network Policies, Operators, etc.) were most likely written against broader Kubernetes documentation than this local corpus (6 narrow `true_data` files + a topically-mixed sampled pool) actually contains. Not a harness bug — the checks worked exactly as designed. Logged to BACKLOG with a recommendation to fix by report-grouping (split by `origin`, per the design doc's already-established "never blend label_type/origin" rule) rather than by expanding the corpus or rewriting `golden.json`, since the hand-written source items (grounded in the real corpus by construction) are very likely unaffected by this and the current blended metric hides that.
+
+---
+
 ## 2026-09-22 • Eval harness (slice 1) — routing and retrieval scoring, real baselines
 
 Built an in-process eval harness (`eval/harness/`, plan at `docs/eval-harness-plan.md`, design at `docs/eval-harness-design.md`) to replace the placeholder `eval/` scaffolding, which measured nothing this system actually does.
