@@ -1,6 +1,6 @@
 # Gap 1 implementation: production run instrumentation
 
-**Status:** In progress — the local development foundation is committed; PR 1 trace plumbing and run identity are implemented and verified locally. PRs 2–5 remain.
+**Status:** In progress — the local foundation and PRs 1–2 are committed, reviewed, and verified locally. PRs 3–5 remain.
 
 **Scope:** Close Gap 1 from the [evaluation-plane gap analysis](../evaluation-plane-gap-analysis.md#1-instrument-every-production-run-1)
 
@@ -73,12 +73,38 @@ PR 1 traces accepted, authenticated chat requests. Authentication and request-va
 
 `OTEL_EXPORTER_OTLP_TIMEOUT` limits each RPC attempt, not total shutdown time. The pinned SDK retries transient exporter failures, so shutdown during a Collector outage may exceed the five-second flush window. Collector-outage, backpressure, and deployment grace-period guarantees remain PR 5 checks. No durable run evidence or payload publication is implemented by this slice.
 
+### Implemented locally: PR 2 domain spans and typed dependency results
+
+This slice adds `cache.lookup`, `memory.load`, `planner`, `retrieval`, `embedding.create`, `qdrant.search`, `neo4j.search`, `llm.chat`, `tool.execute`, `responder`, `memory.persist`, and `cache.write` spans. Child spans record elapsed time and explicit operation outcomes; handled graph failures mark retrieval `partial`, disabled tools are `disabled`, and deliberate cache-write omissions are `skipped`. A successful response can therefore coexist with failed dependency spans when a best-effort fallback recovered the request.
+
+`RayLLMClient.chat_completion_result()` returns `LLMResult` with provider model, token usage, cached tokens, finish reason, request header ID, and completion ID. `chat_completion()` remains a string-returning compatibility wrapper. Planner, responder, and graph-search calls use the typed boundary. Missing provider metadata stays `None`, and malformed responses fail explicitly. One `llm.chat` span covers bounded retries and records retry count; it does not export prompts, answers, or exception messages.
+
+`retrieve_context()` normalizes backend hits into `RetrievedItem` records inside a `RetrievalResult`. It retains source, stable chunk/relationship ID, document/version identity where available, raw score, original source rank, content hash, and metadata. Source paths are hashed when used as fallback document identity; a filename alone is not assumed to be a unique document ID. Deduplication preserves deterministic vector-then-graph ordering, the first original rank, and the best duplicate score. Neo4j relationship IDs are valid within the current database, not an immutable cross-snapshot document identity.
+
+Structured records are available at the dependency boundary but are not yet retained in a run collector or published. `AgentState.documents` remains prompt-ready strings; PR 3 will record structured evidence before this flattening without putting evaluation data into graph checkpoints. Corpus/index snapshots, ACL decisions, token cost, tool approvals/schema versions, and durable payload references are still unavailable and are not invented.
+
+Local tests exercise real graph nodes, real model HTTP clients against the deterministic fake provider, and the real embedded Qdrant backend. Neo4j query execution and PostgreSQL persistence use controlled boundary doubles; live stack smoke checks cover service connectivity and request completion. The wrapper supports both the pinned Qdrant `search` API and newer host clients' `query_points`. Failed retrieval branches cancel and await sibling work before the parent span ends. The graph tool's JSON prompt formatting bug was also fixed under a regression test.
+
+PR 2 verification on 2026-09-27:
+
+| Check | Result |
+|---|---|
+| Full `pytest -q --tb=short` | 229 passed, 2 existing opt-in skips |
+| `pytest tests/observability -q --tb=short` | 71 passed |
+| Observability tests in the pinned API image | 71 passed |
+| `make local-check` | 18 passed, 2 existing opt-in skips |
+| Rebuilt local API stack | All eight services healthy |
+| Final `make local-smoke` | 4 passed |
+| Local Collector inspection | Child spans, embedding dimensions, and model token usage received over OTLP |
+
+A fresh read-only review found two issues, both fixed with failing-then-passing regression tests: planner tool names must be registry-allowlisted before export, and query/document embedding timeouts remain 5/60 seconds respectively for both pooled and temporary HTTP clients. Existing configuration, logging, and upstream-library deprecation warnings remain non-failing. No cloud deployment, credentials, GPU, scoring workers, or durable evidence publication were needed for these checks.
+
 ### Remaining Gap 1 delivery
 
 | Slice | Status | Next outcome |
 |---|---|---|
 | PR 1: Trace plumbing and run identity | Committed; verified locally | Run identity and root domain spans verified; domain child spans follow in PR 2. |
-| PR 2: Domain spans and typed dependency results | Not started | Span trees and retrieval/model metadata become testable. |
+| PR 2: Domain spans and typed dependency results | Committed; verified locally | Retain evidence in PR 3. |
 | PR 3: Evidence contract and collector | Not started | Runs produce reconstructable, versioned evidence. |
 | PR 4: Redacted payloads and durable publication | Not started | Evidence is safely stored and delivered with the selected guarantee. |
 | PR 5: Production deployment and controls | Not started | Privacy, durability, load, and operational controls are validated. |
@@ -104,8 +130,8 @@ The repository already has useful starting points:
 - `libs/observability/tracing.py` now provides idempotent provider initialization, OTLP/gRPC export, resource identity, sampling, optional console export, and shutdown flushing.
 - `libs/utils/ids.py` defines `generate_trace_id()`, but production request handling does not use it.
 - `services/api/app/routes/chat.py` now creates a distinct `run_id`, traces the streaming lifecycle, correlates every event, and persists messages inside the run. Domain child spans and durable evidence remain outstanding.
-- `services/api/app/agents/nodes/retriever.py` receives Qdrant hits, but converts them to strings and discards identifiers, ranks, and scores.
-- `services/api/app/clients/ray_llm.py` returns only generated text, so model identity, token usage, finish reason, and provider request identifiers are lost.
+- `services/api/app/agents/nodes/retriever.py` normalizes ranked, typed records before prompt formatting; PR 3 still needs to retain those records in the run collector.
+- `services/api/app/clients/ray_llm.py` exposes typed provider metadata alongside a compatible text wrapper; PR 3 still needs to aggregate repeated calls into run evidence.
 - `libs/observability/metrics.py` declares operational metrics, but they have no production call sites.
 
 This is enough to avoid starting from scratch, but it is not yet reconstructable production evidence.
@@ -494,11 +520,11 @@ Split the work into reviewable changes. Each pull request should leave the servi
 
 ### PR 2: Domain spans and typed dependency results
 
-- Add cache, memory, planner, retrieval, embedding, vector, graph, model, tool, persistence, and cache-write spans.
-- Introduce typed LLM results without breaking callers.
-- Normalize retrieval records and preserve rank, score, and stable identifiers.
+- [x] Add cache, memory, planner, retrieval, embedding, vector, graph, model, tool, persistence, and cache-write spans.
+- [x] Introduce typed LLM results without breaking callers.
+- [x] Normalize retrieval records and preserve rank, score, and stable identifiers.
 
-**Exit condition:** One integration test can assert the expected span tree and metadata without inspecting logs.
+**Exit condition met locally:** Real-graph integration tests assert direct-answer, retrieval, cache-hit, and tool span trees and provider metadata without inspecting logs. Implementation and owning tests are committed together; see the [completed commit plan](pr-02-commit-plan.md).
 
 ### PR 3: Evidence contract and collector
 

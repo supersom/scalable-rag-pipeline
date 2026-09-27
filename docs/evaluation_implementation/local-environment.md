@@ -122,7 +122,9 @@ Look for `agent.run`, its `run_id`, `run.status`, and `cache.hit`. Its trace ID 
 
 The local profile exports all root traces by default. `OTEL_TRACES_SAMPLER` supports `always_on`, `always_off`, `traceidratio`, and their `parentbased_` variants; `OTEL_TRACES_SAMPLER_ARG` controls the ratio. `OTEL_SERVICE_NAME` and `OTEL_SERVICE_VERSION` identify the API build. For host execution, console export is opt-in through `OTEL_CONSOLE_EXPORT_ENABLED`; leave it false when using OTLP. The exporter uses gRPC, with plaintext for local `http://` endpoints and TLS for `https://` endpoints.
 
-Raw query strings and captured header values are removed from HTTP telemetry. Prompts, answer bodies, user IDs, and exception messages are not attached to the domain span. This slice does not yet capture durable run evidence or retrieval/model/tool metadata.
+Raw query strings and captured header values are removed from HTTP telemetry. Prompts, answer bodies, user IDs, and exception messages are not attached to domain spans. Child spans now show cache, memory, planning, retrieval, embeddings, vector/graph search, model calls, tools, persistence, and cache writes. Look for `operation.status`, `operation.latency_ms`, retrieval result counts, provider token usage when available, and retry counts. Raw retrieved content and tool arguments/results remain out of spans; durable run evidence is still a later slice.
+
+The focused contract suite is `pytest tests/observability -q`. Its real-graph tests use the fake model service in-process and embedded Qdrant, so they need neither a GPU nor live service credentials. To confirm dependency compatibility, run the same tests inside the API image with the repository mounted read-only and pytest installed into a disposable container. Query embeddings keep their five-second per-operation timeout; document embeddings retain sixty seconds even when the HTTP client is pooled.
 
 `OTEL_EXPORTER_OTLP_TIMEOUT` is a timeout for each export RPC. SDK retries can extend shutdown when the Collector is unavailable; a strict shutdown deadline still needs resilience testing before production deployment.
 
