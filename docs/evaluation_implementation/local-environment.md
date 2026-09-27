@@ -1,0 +1,115 @@
+# Local environment for evaluation instrumentation
+
+The `eval-local` Docker Compose profile runs the API and every dependency needed to develop and test production-run instrumentation without an AWS account or GPU.
+
+## What runs locally
+
+| Service | Host endpoint | Purpose |
+|---|---|---|
+| API | `http://127.0.0.1:18000` | Containerized FastAPI service using repository-pinned dependencies |
+| Fake models | `http://127.0.0.1:8001` | Deterministic OpenAI-compatible chat and embedding responses |
+| PostgreSQL | `127.0.0.1:15432` | Chat history and future transactional outbox |
+| Redis | `127.0.0.1:16379` | Semantic-cache coordination |
+| Qdrant | `http://127.0.0.1:16333` | Vector retrieval and semantic cache |
+| Neo4j | `bolt://127.0.0.1:17687` | Graph retrieval |
+| Moto S3 | `http://127.0.0.1:14566` | Credential-free evidence payload storage |
+| OTLP gRPC | `http://127.0.0.1:14317` | Trace ingestion by the local Collector |
+| OTLP HTTP | `http://127.0.0.1:14318` | HTTP trace ingestion |
+| Collector health | `http://127.0.0.1:13134` | Collector readiness check |
+
+All published ports bind to loopback. The local services are not exposed to the LAN.
+
+The stack uses the separate Compose project name `scalable-rag-eval` and alternate host ports, so it can coexist with PostgreSQL, Redis, Qdrant, or Neo4j instances already running on their standard ports.
+
+## Start and verify the stack
+
+Validate the configuration and local contract tests:
+
+```bash
+make local-check
+```
+
+Build and start the stack:
+
+```bash
+make local-up
+```
+
+The command waits until the API, fake models, PostgreSQL, Redis, S3 emulator, and other Compose services are ready.
+
+Exercise the running stack:
+
+```bash
+make local-smoke
+```
+
+The smoke gate verifies:
+
+- The fake model service is reachable.
+- The OpenTelemetry Collector health endpoint is available.
+- The OpenTelemetry Collector accepts a completed span over OTLP/gRPC.
+- The `eval-traces` S3 bucket exists with versioning enabled.
+- The API liveness endpoint succeeds.
+- JWT authentication succeeds with the local-only key.
+- One streaming agent request returns the deterministic answer.
+
+Stop the stack:
+
+```bash
+make local-down
+```
+
+Compose preserves the PostgreSQL, Qdrant, and Neo4j named volumes unless they are explicitly removed. The Moto S3 service is intentionally ephemeral and recreates the versioned `eval-traces` bucket on startup.
+
+## Run an optional load test
+
+Load testing is separate from the correctness suite and is not installed in the API image. Install Locust in the development environment:
+
+```bash
+make load-test-install
+```
+
+With the local stack running, export a valid local JWT and start the Locust web interface:
+
+```bash
+export AUTH_TOKEN="<local-jwt>"
+make load-test
+```
+
+Then open `http://127.0.0.1:8089` and choose the simulated user count, spawn rate, and duration. By default the scenario in `scripts/load_test.py` targets `http://127.0.0.1:18000`; override it with `make load-test LOAD_TEST_HOST=http://...`.
+
+The scenario sends authenticated streaming chat requests at randomized one-to-five-second intervals, consumes each response stream, and records non-200 responses as failures. It measures traffic behavior and endpoint performance; it does not grade answer quality. Its fixed session identifier intentionally represents repeated turns in one shared conversation, so use distinct session IDs before interpreting it as independent-user traffic.
+
+## Fake model behavior
+
+The fake service implements:
+
+```text
+GET  /health
+POST /v1/chat/completions
+POST /api/embeddings
+```
+
+Chat responses include a stable request ID, model identifier, finish reason, and deterministic token counts. Planner requests return valid routing JSON. Normal generation requests return:
+
+```text
+This is a deterministic local response.
+```
+
+Embeddings are deterministic, normalized vectors with `EMBED_DIM` dimensions. They are intended to exercise storage, retrieval, tracing, and failure paths, not measure semantic quality.
+
+Send `x-fake-scenario: error` to either endpoint to receive a provider-style `503`. Send `x-fake-scenario: malformed` to the chat endpoint to test response validation.
+
+## Configuration
+
+The local profile reads [.env.example](../../.env.example). Its credentials and JWT secret are local-only placeholders.
+
+The containerized API uses service DNS names internally, while host tools use the alternate loopback ports above. Run the API through `make local-up` for reproducible dependency versions. Running it from an arbitrary host Python environment can introduce client/server version drift.
+
+To replace the fake models with another local or hosted provider, override `RAY_LLM_ENDPOINT`, `RAY_EMBED_ENDPOINT`, `LLM_MODEL_NAME`, `EMBED_MODEL_NAME`, and `EMBED_DIM` with a compatible endpoint contract.
+
+## Scope and limitations
+
+This environment proves application contracts and failure behavior. It does not reproduce AWS IAM, KMS, IRSA, managed queue authentication, EKS networking, multi-replica shutdown, or production load. Those remain staging checks after Gap 1 is implemented.
+
+The local stack deliberately excludes Kafka/SQS. Early Gap 1 tests will use an in-memory publisher. A local broker or outbox worker should be added only after the delivery guarantee is selected.
