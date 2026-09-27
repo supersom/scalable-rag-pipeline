@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     ] = "parentbased_always_on"
     OTEL_TRACES_SAMPLER_ARG: float = Field(default=1.0, ge=0.0, le=1.0)
     OTEL_EXPORTER_OTLP_TIMEOUT: float = Field(default=5.0, gt=0.0)
+    # Optional separate key for tenant-scoped identity pseudonyms. No raw user ID
+    # enters evidence when unset; durable storage/publication belongs to PR 4.
+    EVAL_IDENTITY_HASH_KEY: Optional[str] = None
+    AGENT_BUILD_SHA: Optional[str] = None  # supplied by build/deployment, never inferred from the working tree
     
     # Database (Aurora Postgres)
     DATABASE_URL: str  # e.g., postgresql+asyncpg://user:pass@host:5432/db
