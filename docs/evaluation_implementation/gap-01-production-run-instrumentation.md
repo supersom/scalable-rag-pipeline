@@ -1,6 +1,6 @@
 # Gap 1 implementation: production run instrumentation
 
-**Status:** In progress — the local foundation and PRs 1–2 are committed, reviewed, and verified locally. PRs 3–5 remain.
+**Status:** In progress — the local foundation and PRs 1–3 are committed and verified locally. PRs 4–5 remain.
 
 **Scope:** Close Gap 1 from the [evaluation-plane gap analysis](../evaluation-plane-gap-analysis.md#1-instrument-every-production-run-1)
 
@@ -81,7 +81,7 @@ This slice adds `cache.lookup`, `memory.load`, `planner`, `retrieval`, `embeddin
 
 `retrieve_context()` normalizes backend hits into `RetrievedItem` records inside a `RetrievalResult`. It retains source, stable chunk/relationship ID, document/version identity where available, raw score, original source rank, content hash, and metadata. Source paths are hashed when used as fallback document identity; a filename alone is not assumed to be a unique document ID. Deduplication preserves deterministic vector-then-graph ordering, the first original rank, and the best duplicate score. Neo4j relationship IDs are valid within the current database, not an immutable cross-snapshot document identity.
 
-Structured records are available at the dependency boundary but are not yet retained in a run collector or published. `AgentState.documents` remains prompt-ready strings; PR 3 will record structured evidence before this flattening without putting evaluation data into graph checkpoints. Corpus/index snapshots, ACL decisions, token cost, tool approvals/schema versions, and durable payload references are still unavailable and are not invented.
+PR 2 made structured records available at the dependency boundary; PR 3 now retains them in the run collector before flattening. `AgentState.documents` remains prompt-ready strings, without evaluation data in graph checkpoints. Records are not yet published. Corpus/index snapshots, ACL decisions, token cost, tool approvals/schema versions, and durable payload references are still unavailable and are not invented.
 
 Local tests exercise real graph nodes, real model HTTP clients against the deterministic fake provider, and the real embedded Qdrant backend. Neo4j query execution and PostgreSQL persistence use controlled boundary doubles; live stack smoke checks cover service connectivity and request completion. The wrapper supports both the pinned Qdrant `search` API and newer host clients' `query_points`. Failed retrieval branches cancel and await sibling work before the parent span ends. The graph tool's JSON prompt formatting bug was also fixed under a regression test.
 
@@ -99,13 +99,56 @@ PR 2 verification on 2026-09-27:
 
 A fresh read-only review found two issues, both fixed with failing-then-passing regression tests: planner tool names must be registry-allowlisted before export, and query/document embedding timeouts remain 5/60 seconds respectively for both pooled and temporary HTTP clients. Existing configuration, logging, and upstream-library deprecation warnings remain non-failing. No cloud deployment, credentials, GPU, scoring workers, or durable evidence publication were needed for these checks.
 
+### Implemented locally: PR 3 evidence contract and collector
+
+The API now builds a schema-version `1.0` metadata record for each accepted run. A request-scoped, lock-protected `RunEvidenceCollector` travels through LangGraph's `configurable` context, not `AgentState`. It appends repeated retrievals, model calls, tool steps, and dependency observations; records terminal timing once; rejects double finalization; and returns detached snapshots. Collection remains independent of OpenTelemetry sampling.
+
+The record joins run/session/trace identity with configuration fingerprints, ranked retrieval identities and scores, query/content hashes, model/provider metadata, tool argument/result hashes, safe dependency outcomes, and operational summaries. Completed retrieval branches survive sibling failure; graph fallback remains a partial outcome. Success, error, timeout, cache hit, and header/body disconnect paths finalize the same contract. A successful final response does not erase failed dependency observations.
+
+No raw prompts, answers, document text, tool arguments/results, user IDs, or exception messages are placed in this record. Optional `EVAL_IDENTITY_HASH_KEY` enables tenant-scoped HMAC user pseudonyms; without it the pseudonym is `null` with an explicit reason. This is a separate local/deployment secret, not a model-provider API key or the JWT signing secret. Hashes are identifiers, not encryption or a substitute for PR 4 privacy controls.
+
+Set `AGENT_BUILD_SHA` from the build/deployment to identify the complete code revision. Known model identifiers, embedding dimensions, graph source, prompt-template source, and tool registry metadata also enter the fingerprint. Without a build revision, it is only a partial configuration fingerprint: changes to tool implementations or external services need not change it. Unknown corpus/index/ACL versions and cost remain `null`; partial token totals carry `usage_complete=false`. Time to first output measures the first answer event, not provider token streaming or client receipt.
+
+`RunStreamingResponse.evidence` exposes the finalized record to server-side code and tests only. It is **not** added to NDJSON responses, logged, persisted, or sent to a queue. Payload references remain `null`. The fixture demonstrates metadata reconstruction and wire compatibility, not complete replay of production context. PR 4 must add encrypted payloads and durable publication before these records can power asynchronous production evaluation.
+
+Files responsible:
+
+| Area | Files |
+|---|---|
+| Versioned wire contract | `services/api/app/evaluation/models.py` |
+| Collector, keyed identities, context binding | `services/api/app/evaluation/context.py` |
+| Known configuration fingerprints | `services/api/app/evaluation/configuration.py`, `services/api/app/config.py` |
+| Request lifecycle and terminal record | `services/api/app/routes/chat.py` |
+| Sampling-independent operation observations | `libs/observability/tracing.py` |
+| Ranked evidence and failed-branch retention | `services/api/app/agents/nodes/retriever.py` |
+| Model metadata and call purpose | `services/api/app/clients/ray_llm.py`, planner/responder nodes |
+| Trajectory and handled tool outcomes | tool node, `services/api/app/tools/web_search.py`, `services/api/app/tools/sandbox.py` |
+| Contract, lifecycle, and real-graph coverage | `tests/observability/test_evidence_contract.py`, `test_evidence_lifecycle.py`, `test_domain_integration.py`, `test_model_metadata.py`, `fixtures/run-evidence-v1.json` |
+| Sampling and configured build identity | `tests/observability/test_evidence_observations.py`, `test_evidence_configuration.py` |
+| Failed-branch retention and node outcomes | `tests/observability/test_retrieval_evidence.py`, `test_agent_evidence.py` |
+
+PR 3 verification on 2026-09-27:
+
+| Check | Result |
+|---|---|
+| Full `pytest -q --tb=short` | 245 passed, 2 existing opt-in skips |
+| Observability tests in the pinned API image | 87 passed |
+| `make local-check` | 18 passed, 2 existing opt-in skips |
+| Rebuilt local stack | All eight services healthy |
+| `make local-smoke` | 4 passed |
+| Git whitespace validation | Clean |
+
+Tests cover fixture round trips, unknown schema/extra payload rejection, detached snapshots, concurrent appends and requests, unsampled failures, provider retries, build fingerprints, partial retrieval, and terminal disconnects. The fresh read-only review found no remaining Critical issues; metadata mirroring and build identity findings were reproduced with failing tests and fixed. Existing upstream deprecation warnings remain non-failing. No cloud credentials, model API keys, GPU, or deployment were required.
+
+PR 3 is packaged into six functionality commits plus documentation, with each staged snapshot independently tested. See the [completed PR 3 commit plan](pr-03-commit-plan.md) for hashes, boundaries, and verification counts. Tests and implementations land together; there are no intentionally red commits.
+
 ### Remaining Gap 1 delivery
 
 | Slice | Status | Next outcome |
 |---|---|---|
 | PR 1: Trace plumbing and run identity | Committed; verified locally | Run identity and root domain spans verified; domain child spans follow in PR 2. |
 | PR 2: Domain spans and typed dependency results | Committed; verified locally | Retain evidence in PR 3. |
-| PR 3: Evidence contract and collector | Not started | Runs produce reconstructable, versioned evidence. |
+| PR 3: Evidence contract and collector | Committed; verified locally | Metadata decisions are reconstructable; payload replay/delivery follows in PR 4. |
 | PR 4: Redacted payloads and durable publication | Not started | Evidence is safely stored and delivered with the selected guarantee. |
 | PR 5: Production deployment and controls | Not started | Privacy, durability, load, and operational controls are validated. |
 
@@ -129,9 +172,9 @@ The repository already has useful starting points:
 - `services/api/app/observability.py` now attaches FastAPI auto-instrumentation from `services/api/main.py`, sanitizes HTTP metadata, and exposes shutdown cleanup.
 - `libs/observability/tracing.py` now provides idempotent provider initialization, OTLP/gRPC export, resource identity, sampling, optional console export, and shutdown flushing.
 - `libs/utils/ids.py` defines `generate_trace_id()`, but production request handling does not use it.
-- `services/api/app/routes/chat.py` now creates a distinct `run_id`, traces the streaming lifecycle, correlates every event, and persists messages inside the run. Domain child spans and durable evidence remain outstanding.
-- `services/api/app/agents/nodes/retriever.py` normalizes ranked, typed records before prompt formatting; PR 3 still needs to retain those records in the run collector.
-- `services/api/app/clients/ray_llm.py` exposes typed provider metadata alongside a compatible text wrapper; PR 3 still needs to aggregate repeated calls into run evidence.
+- `services/api/app/routes/chat.py` now creates a distinct `run_id`, traces the streaming lifecycle and child operations, correlates every event, and persists messages inside the run. It finalizes metadata evidence; durable publication remains outstanding.
+- `services/api/app/agents/nodes/retriever.py` normalizes ranked, typed records before prompt formatting; PR 3 retains them in the run collector.
+- `services/api/app/clients/ray_llm.py` exposes typed provider metadata alongside a compatible text wrapper; PR 3 aggregates repeated calls into run evidence.
 - `libs/observability/metrics.py` declares operational metrics, but they have no production call sites.
 
 This is enough to avoid starting from scratch, but it is not yet reconstructable production evidence.
@@ -528,12 +571,12 @@ Split the work into reviewable changes. Each pull request should leave the servi
 
 ### PR 3: Evidence contract and collector
 
-- Add `RunEvidence` schema version `1.0`.
-- Add the request-scoped collector and pass it through LangGraph configuration.
-- Record configuration fingerprints, retrieval evidence, trajectory, operations, and partial failures.
-- Add fixture-based serialization and backward-compatibility tests.
+- [x] Add `RunEvidence` schema version `1.0`.
+- [x] Add the request-scoped collector and pass it through LangGraph configuration.
+- [x] Record configuration fingerprints, retrieval evidence, trajectory, operations, and partial failures.
+- [x] Add fixture-based serialization and backward-compatibility tests.
 
-**Exit condition:** A test can reconstruct the important decisions and dependencies of a run from the event and referenced fixtures.
+**Exit condition met locally for metadata:** Tests reconstruct important decisions and dependencies from the record and schema fixture. `retrieval` is an append-only list to support repeated calls rather than the singular illustrative model above. Payload references, full-context replay, storage, and delivery remain PR 4 work; this is not yet a durable audit record.
 
 ### PR 4: Redacted payloads and durable publication
 

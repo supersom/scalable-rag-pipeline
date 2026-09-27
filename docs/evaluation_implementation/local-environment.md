@@ -126,6 +126,8 @@ Raw query strings and captured header values are removed from HTTP telemetry. Pr
 
 The focused contract suite is `pytest tests/observability -q`. Its real-graph tests use the fake model service in-process and embedded Qdrant, so they need neither a GPU nor live service credentials. To confirm dependency compatibility, run the same tests inside the API image with the repository mounted read-only and pytest installed into a disposable container. Query embeddings keep their five-second per-operation timeout; document embeddings retain sixty seconds even when the HTTP client is pooled.
 
+PR 3 also collects schema-version `1.0` run metadata independently of span sampling. After the stream closes, route-level tests inspect `RunStreamingResponse.evidence`; this server-side property is not an HTTP endpoint or an NDJSON field. It contains hashes, ranked identities, typed outcomes, provider usage, trajectory, and configuration—not raw payloads. Records are in memory only, with no publisher or storage yet. Missing identity hashing keys and corpus/index versions are explicit; local model API keys are still unnecessary. See [PR 3 progress and limitations](gap-01-production-run-instrumentation.md#implemented-locally-pr-3-evidence-contract-and-collector).
+
 `OTEL_EXPORTER_OTLP_TIMEOUT` is a timeout for each export RPC. SDK retries can extend shutdown when the Collector is unavailable; a strict shutdown deadline still needs resilience testing before production deployment.
 
 ## Scope and limitations
