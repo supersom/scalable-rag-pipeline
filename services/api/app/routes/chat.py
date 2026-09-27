@@ -12,6 +12,9 @@ import anyio
 from opentelemetry import context, trace
 from opentelemetry.trace import Status, StatusCode
 from libs.observability.tracing import domain_span
+from services.api.app.evaluation.context import RunEvidenceCollector, bind_collector
+from services.api.app.evaluation.configuration import configuration_fingerprint
+from services.api.app.config import settings
 
 from fastapi import APIRouter, Depends, BackgroundTasks
 from fastapi.responses import StreamingResponse
@@ -34,9 +37,14 @@ tracer = trace.get_tracer(__name__)
 class RunStreamingResponse(StreamingResponse):
     """Close the run generator when ASGI disconnects during a body send."""
 
-    def __init__(self, *args, on_close, **kwargs):
+    def __init__(self, *args, on_close, evidence_collector=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.on_close = on_close
+        self.evidence_collector = evidence_collector
+
+    @property
+    def evidence(self):
+        return self.evidence_collector.event if self.evidence_collector is not None else None
 
     async def __call__(self, scope, receive, send):
         try:
@@ -97,15 +105,29 @@ async def chat_stream(
         attributes={"run_id": run_id, "cache.hit": False},
     )
     finished = False
+    error_type = None
+    trace_context = span.get_span_context()
+    collector = RunEvidenceCollector(
+        run_id=run_id, session_id=session_id,
+        trace_id=f"{trace_context.trace_id:032x}" if trace_context.is_valid else None,
+        input_text=req.message, user_id=user_id, tenant_id=user.get("tenant_id"),
+        identity_hash_key=settings.EVAL_IDENTITY_HASH_KEY, configuration=configuration_fingerprint(),
+    )
 
     def finish_run(outcome):
         nonlocal finished
         if not finished:
             finished = True
             span.set_attribute("run.status", outcome)
-            span.end()
+            try:
+                collector.finish(outcome, error_type=error_type)
+            finally:
+                span.end()
 
     def encode_event(**fields):
+        if fields.get("type") == "answer":
+            collector.mark_first_output()
+            collector.record_output(fields.get("content", ""))
         return json.dumps({**fields, "run_id": run_id, "session_id": session_id}) + "\n"
 
     async def stream_events() -> AsyncGenerator[str, None]:
@@ -134,7 +156,7 @@ async def chat_stream(
 
         async with aclosing(agent_app.astream(
             initial_state,
-            config={"configurable": {"llm": llm, "user_id": user_id}},
+            config={"configurable": {"llm": llm, "user_id": user_id, "evidence_collector": collector}},
         )) as graph_events:
             async for event in graph_events:
                 node_name = list(event.keys())[0]
@@ -169,13 +191,14 @@ async def chat_stream(
             persist_span.set_attribute("memory.message_count", 2)
 
     async def event_generator() -> AsyncGenerator[str, None]:
+        nonlocal error_type
         events = stream_events()
         outcome = "cancelled"
         try:
             while True:
                 # Attach only while advancing the generator. Holding a context token
                 # across yield can leak context or fail when ASGI closes another task.
-                with trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
+                with bind_collector(collector), trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
                     try:
                         event = await anext(events)
                     except StopAsyncIteration:
@@ -185,6 +208,7 @@ async def chat_stream(
         except (asyncio.CancelledError, GeneratorExit):
             raise
         except Exception as exc:
+            error_type = type(exc).__name__
             outcome = "timeout" if isinstance(exc, (TimeoutError, httpx.TimeoutException)) else "error"
             span.set_attribute("error.type", type(exc).__name__)
             span.set_status(Status(StatusCode.ERROR))
@@ -192,7 +216,7 @@ async def chat_stream(
             yield encode_event(type="error", content="An internal error occurred.")
         finally:
             try:
-                with trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
+                with bind_collector(collector), trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
                     await events.aclose()
             finally:
                 finish_run(outcome)
@@ -200,4 +224,5 @@ async def chat_stream(
     return RunStreamingResponse(
         event_generator(), media_type="application/x-ndjson", headers={"X-Run-ID": run_id},
         on_close=lambda: finish_run("cancelled"),
+        evidence_collector=collector,
     )

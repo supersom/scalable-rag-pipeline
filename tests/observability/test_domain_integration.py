@@ -67,13 +67,27 @@ def test_real_graph_span_tree_and_metadata_without_logs(route, monkeypatch, quer
             second = await chat.chat_stream(chat.ChatRequest(message=query), BackgroundTasks(),
                                             user={"id": "private-user"}, cache=SemanticCache(), memory=Memory(), llm=llm)
             cached = [json.loads(e) async for e in second.body_iterator]
-            return response.headers["X-Run-ID"], events, cached
+            assert hasattr(response, "evidence"), "Streaming response has no terminal evidence contract"
+            return response.headers["X-Run-ID"], events, cached, response.evidence, second.evidence
 
-    run_id, events, cached = asyncio.run(run())
+    run_id, events, cached, evidence, cached_evidence = asyncio.run(run())
+    assert evidence.run_id == run_id
+    assert evidence.status == cached_evidence.status == "success"
+    assert len(evidence.model_calls) == 2
+    assert {m.purpose for m in evidence.model_calls} == {"planner", "responder"}
+    assert evidence.operations.input_tokens > 0
+    assert evidence.operations.usage_complete is True
+    assert evidence.operations.time_to_first_output_ms is not None
+    assert evidence.configuration.prompt_hashes
+    assert "private" not in evidence.model_dump_json()
+    assert cached_evidence.operations.cache_hit is True
+    assert cached_evidence.operations.agent_steps == 0
+    assert cached_evidence.model_calls == []
     assert events[-1]["type"] == cached[-1]["type"] == "answer"
     assert next(e for e in events if e["type"] == "routing")["action"] == action
     spans = exporter.get_finished_spans()
     root = next(s for s in spans if s.name == "agent.run" and s.attributes["run_id"] == run_id)
+    assert evidence.trace_id == f"{root.context.trace_id:032x}"
     spans = [s for s in spans if s.context.trace_id == root.context.trace_id]
     names = [s.name for s in spans]
     for name in ("cache.lookup", "memory.load", "planner", "llm.chat", "responder", "memory.persist", "cache.write", "embedding.create"):
@@ -82,6 +96,8 @@ def test_real_graph_span_tree_and_metadata_without_logs(route, monkeypatch, quer
         assert "retrieval" in names and "qdrant.search" in names and "neo4j.search" in names
         retrieval = next(s for s in spans if s.name == "retrieval")
         assert retrieval.attributes["retrieval.result_count"] == 2
+        assert len(evidence.retrieval) == 1
+        assert [(r.retrieval_source, r.chunk_id, r.rank) for r in evidence.retrieval[0].items] == [("qdrant", "1", 1), ("neo4j", "r1", 1)]
         for name in ("embedding.create", "qdrant.search", "neo4j.search"):
             assert any(s.name == name and s.parent.span_id == retrieval.context.span_id for s in spans)
     else:
@@ -122,8 +138,10 @@ def test_real_tool_graph_preserves_parentage_and_outcome(route, monkeypatch):
             monkeypatch.setattr(responder, "llm_client", llm)
             response = await chat.chat_stream(chat.ChatRequest(message="2+6"), BackgroundTasks(),
                 user={"id": "private-user"}, cache=Cache(), memory=Memory(), llm=llm)
-            return [json.loads(e) async for e in response.body_iterator]
-    events = asyncio.run(run())
+            events = [json.loads(e) async for e in response.body_iterator]
+            assert hasattr(response, "evidence"), "Streaming response has no terminal evidence contract"
+            return events, response.evidence
+    events, evidence = asyncio.run(run())
     assert events[-1]["content"] == "8"
     spans = exporter.get_finished_spans()
     root = next(s for s in spans if s.name == "agent.run")
@@ -131,4 +149,9 @@ def test_real_tool_graph_preserves_parentage_and_outcome(route, monkeypatch):
     assert tool.parent.span_id == root.context.span_id
     assert tool.attributes["tool.name"] == "calculator"
     assert tool.attributes["operation.status"] == "success"
+    assert len(evidence.trajectory) == 1
+    assert evidence.trajectory[0].step == 1
+    assert evidence.trajectory[0].tool_name == "calculator"
+    assert evidence.trajectory[0].status == "success"
+    assert evidence.trajectory[0].arguments_ref is None
     assert not any(s.name == "retrieval" for s in spans)
