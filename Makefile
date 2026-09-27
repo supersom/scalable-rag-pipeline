@@ -1,6 +1,9 @@
 # Makefile
 
-.PHONY: help install dev ray-serve ray-stop up down deploy test infra
+LOCAL_COMPOSE = docker compose -p scalable-rag-eval --profile eval-local --env-file .env.example
+LOAD_TEST_HOST ?= http://127.0.0.1:18000
+
+.PHONY: help install dev ray-serve ray-stop up down local-up local-down local-check local-smoke load-test-install load-test deploy test infra
 
 help:
 	@echo "RAG Platform Commands:"
@@ -8,6 +11,12 @@ help:
 	@echo "  make dev        - Run FastAPI server locally"
 	@echo "  make up         - Start local DBs (Docker)"
 	@echo "  make down       - Stop local DBs"
+	@echo "  make local-up   - Start DBs, fake models, local S3, and OTel Collector"
+	@echo "  make local-down - Stop the complete local evaluation stack"
+	@echo "  make local-check - Validate the local Compose profile and run its contract tests"
+	@echo "  make local-smoke - Exercise the running local stack end to end"
+	@echo "  make load-test-install - Install the optional Locust dependency"
+	@echo "  make load-test  - Open Locust against the local API"
 	@echo "  make deploy     - Deploy to AWS EKS via Helm"
 	@echo "  make infra      - Apply Terraform"
 
@@ -21,6 +30,25 @@ up:
 
 down:
 	docker-compose down
+
+local-up:
+	$(LOCAL_COMPOSE) up -d --build --wait
+
+local-down:
+	$(LOCAL_COMPOSE) down
+
+local-check:
+	$(LOCAL_COMPOSE) config --quiet
+	pytest tests/local_env -q
+
+local-smoke:
+	RUN_LOCAL_STACK_TESTS=1 pytest tests/local_env/test_running_stack.py tests/local_env/test_otel_collector.py -q
+
+load-test-install:
+	pip install -r requirements-loadtest.txt
+
+load-test:
+	locust -f scripts/load_test.py --host $(LOAD_TEST_HOST)
 
 # Run the API locally (Hot Reload)
 # Exclude scripts/ (not imported by FastAPI) and services/models/ (Ray Serve files —

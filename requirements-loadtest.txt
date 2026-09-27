@@ -1,0 +1,2 @@
+# Optional dependency for scripts/load_test.py; not installed in the API image.
+locust==2.46.5
