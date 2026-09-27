@@ -5,10 +5,12 @@ import hashlib
 import json
 from datetime import datetime, timedelta
 from enum import StrEnum
+from types import MappingProxyType
+from collections.abc import Mapping
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from .models import RunEvidence
 
@@ -198,7 +200,21 @@ class SafeDependency(Contract):
     name: str | None = None
     status: Outcome
     latency_ms: FiniteNonnegative
-    attributes: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    attributes: Mapping[str, str | int | float | bool] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def freeze_attributes(self):
+        object.__setattr__(self, "attributes", MappingProxyType(dict(self.attributes)))
+        return self
+
+    @field_serializer("attributes")
+    def serialize_attributes(self, value: Mapping[str, str | int | float | bool]) -> dict:
+        return dict(value)
+
+    def __deepcopy__(self, memo):
+        # This model contains only immutable scalars and a copied read-only map.
+        # Returning itself keeps Pydantic's deep model_copy usable for envelopes.
+        return self
 
 
 class SafeOperations(Contract):

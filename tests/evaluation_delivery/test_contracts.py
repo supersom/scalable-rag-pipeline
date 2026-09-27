@@ -88,3 +88,23 @@ def test_safe_nested_metrics_reject_nonfinite_values(terminal_event):
         SafeRun(run_id=terminal_event.run_id, started_at=terminal_event.started_at,
                 completed_at=terminal_event.completed_at, status="success",
                 model_calls=({"ordinal": 1, "status": "made-up-status"},))
+
+
+def test_dependency_attributes_cannot_change_sealed_envelope(terminal_event):
+    from services.api.app.evaluation.delivery_models import ExportEnvelope, SafeDependency, SafeRun
+    attributes = {"attempts": 1}
+    dependency = SafeDependency(sequence=1, status="success", latency_ms=1,
+                                attributes=attributes)
+    safe = SafeRun(run_id=terminal_event.run_id, started_at=terminal_event.started_at,
+                   completed_at=terminal_event.completed_at, status="success",
+                   dependencies=(dependency,))
+    envelope = ExportEnvelope(run_id=terminal_event.run_id, safe_run=safe,
+                              redaction_policy_version="restricted-synthetic-v1",
+                              completeness="metadata_only")
+    original = envelope.canonical_bytes()
+    attributes["attempts"] = 2
+    with pytest.raises(TypeError):
+        dependency.attributes["attempts"] = 3
+    assert envelope.canonical_bytes() == original
+    assert ExportEnvelope.model_validate_json(original).canonical_bytes() == original
+    assert envelope.model_copy(deep=True).canonical_bytes() == original
