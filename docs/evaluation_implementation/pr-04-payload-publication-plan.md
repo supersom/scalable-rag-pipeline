@@ -1,222 +1,474 @@
-# PR 4: Payload Storage and Publication Plan
+# Safe Payload Storage and Publication Implementation Plan
 
-> **For agentic workers:** This is a decision-gated draft, not authorization to implement or enable capture. After the choices in Task 0 and the written design are approved, use `superpowers:executing-plans` and test-driven development. Pair each functionality module with its tests in a green commit.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** Policy choices and all three conversational design sections approved. The [written specification](pr-04-payload-publication-design.md) awaits user review; this planning draft is not executable. No PR 4 implementation or infrastructure changes made.
+**Status:** Written specification and implementation plan approved. User selected subagent-driven execution: fresh implementer/task reviewer per module, then independent whole-branch review. Workspace-isolation choice and execution baseline are pending. No PR 4 implementation, dependency installation, or infrastructure change has started.
 
-**Goal:** Turn PR 3's terminal in-memory records into safely stored, asynchronously deliverable evaluation evidence, with an explicit and tested delivery guarantee.
+**Goal:** Persist approved redacted evidence and publish committed runs reliably, while preserving answer availability and verifying the full delivery lifecycle locally.
 
-**Architecture:** Production captures evidence; storage and publication adapters move it; separate workers handle delivery/retries and later evaluation. Keep graders and broker calls off the response path. Add encrypted payload references only under an approved content policy.
+**Architecture:** A bounded API runtime admits terminal evidence without network waits on the response path, uploads redacted payloads, then atomically commits safe metadata and an outbox row. A separate worker publishes committed envelopes with leased retries and explicit deduplication. Retention maintenance coordinates with upload intents and removes expired versions without racing commits.
 
-**Tech stack:** Existing FastAPI, Pydantic, SQLAlchemy/asyncpg, boto3, PostgreSQL 15, Moto, pytest, Docker Compose. Proposed queue adapter: SQS; no Ray or GPU dependency for evidence delivery.
+**Tech Stack:** Existing Python 3.12 API image, FastAPI 0.109.0, Pydantic 2.9.2, SQLAlchemy 2.0.25/asyncpg 0.29.0, PostgreSQL 15, boto3 1.34.34, Moto 5.0.12, pytest, and Docker Compose. Add no GPU/model-provider/grader dependency.
 
-**Spec:** [PR 4 written design](pr-04-payload-publication-design.md), based on the [Gap 1 instrumentation design](gap-01-production-run-instrumentation.md#pr-4-redacted-payloads-and-durable-publication). The written design supersedes tentative interfaces/defaults below. After its approval, revise this draft into a single-path implementation plan and review that plan separately. This document refines PR 4, not PR 5 cloud deployment or the later scoring-worker implementation.
+**Spec:** [Approved PR 4 design](pr-04-payload-publication-design.md). Read it fully before executing any task; its privacy and delivery contracts apply to every task.
 
-## Starting point
+## Global Constraints
 
-- `evaluation/models.py` defines strict schema `1.0`; payload references are optional and presently empty.
-- `evaluation/context.py` finalizes detached, metadata-only snapshots, with no storage or publication hook.
-- `routes/chat.py` owns stream/disconnect finalization and exposes the record server-side.
-- `services/api/main.py` owns startup/shutdown and currently creates chat-history tables; it has no evidence worker or migration runner.
-- The local stack already has PostgreSQL and a versioned Moto `eval-traces` bucket. Moto currently installs S3 support only; there is no local evaluation queue.
-- `pipelines/jobs/sqs_ingestion_worker.py` is for document ingestion/Ray jobs. Do not repurpose it: evaluation delivery needs different messages, identities, retries, and ownership.
+- Default `EVAL_EVIDENCE_ENABLED=false` and `EVAL_CAPTURE_CONTENT=false`; preserve PR 3 schema `1.0`, detached snapshots, and existing NDJSON.
+- Fail-open evidence admission; `admitted` is non-durable, `committed` means the outbox transaction succeeded. S3/SQS waits never delay returning/streaming answers.
+- Upload encrypted redacted payloads before outbox commit; no raw tier, PostgreSQL prompt staging, queue-only transport, graders, replay executor, Opik, cloud provisioning, push, or deployment.
+- Content policy is `restricted-synthetic-v1`, local approved fixtures only. Production content mode is rejected; production metadata enablement requires valid configuration and separate operational approval.
+- Capture requires verified server tenant context; JWT adapter may expose a validated optional claim, never body/header/model-derived tenant identity. No new retrieval ACL enforcement is claimed.
+- Preserve independently safe partial evidence; unsafe strings, paths, raw identities, credentials, queue bodies, and exception messages never enter export/log/metric labels.
+- Content retention is 30 days from object creation; metadata retention is 90 days from run completion. Other artifact/copy retention is not implicitly approved.
+- Copy all engineering defaults from specification section 10: 64 KiB/payload; 1 MiB and 64 slots/run; active and pending pools each 32 runs/16 MiB; 2 runtime workers and 2 S3 executor slots; 20-second processing deadline with final 3 seconds reserved for commit; SDK connect/read 1/2 seconds and 2 attempts; 128 KiB queue body; delivery batch 10/concurrency 2; claim lease 60 seconds; 8 producer attempts with 1-second base/60-second cap; shutdown 10 seconds; intent lease 60 seconds/orphan grace 24 hours.
+- Reject invalid/non-positive/inconsistent limits and excessive nesting; never silently truncate replay evidence or claim general secret-detection coverage.
+- No `create_all` migration strategy for evidence tables; no dropping/recreating chat history. No database locks during remote upload/publish/delete IO.
+- One green commit per functionality module; tests and implementation land together. Red tests are run locally, never committed intentionally.
+- Preserve unrelated untracked docs: `docs/code-walkthrough.md`, `docs/helm-charts-notes.md`, `docs/kubernetes-notes.md`, `docs/kubernetes-service-conventions.md`.
+- If `.codegraph/` exists, use CodeGraph before locating/reading code. Use `apply_patch` for edits. Do not broaden destructive operations beyond isolated test resources.
 
-## Task 0: Approve policy and delivery semantics
+## Review Focus
 
-These are product/security decisions, not values to infer from local development defaults.
+1. A signed token without a usable tenant must still allow existing chat behavior but deny all content capture; Task 6 pins this.
+2. A secret/path in a known metadata field or approved attribute must not bypass string/value validation; Task 2 pins this.
+3. Unapproved retrieval/tool content flattened into a prompt must also deny derived model/answer capture; Task 6 pins this.
+4. Cancellation of an await must not free an executor slot while its blocking SDK call runs; Task 3 pins this, Task 7 checks shutdown integration.
+5. Orphan cleanup concurrent with an upload/commit must never delete an object that becomes a live reference; Tasks 4 and 8 pin this.
 
-| Decision | Approved choice | Consequence |
-|---|---|---|
-| Delivery | Transactional outbox | Committed records survive dispatcher restart; pre-commit failures can still lose evidence. |
-| Content | Encrypted, redacted replay content; no raw tier | Capture sanitized questions, answers, model context, and tool inputs/results. Replay uses sanitized content, not necessarily the exact original run. |
-| Retention | Redacted content: 30 days; run metadata: 90 days | User-selected engineering policy; organizational requirements and production enforcement still require validation. No other artifact retention is implicitly approved. |
-| API admission | Fail-open | Evidence-persistence failure does not block the answer; report losses explicitly. This is not audit-required response gating. |
-| Capture failure | Preserve independently validated safe evidence | Keep validated metadata and successfully stored safe payloads; mark unsafe, failed, or missing payloads unavailable with content-free reason codes. Replay may be incomplete. Never export questionable raw content. |
-| Content durability | Upload encrypted, redacted payloads before committing the outbox | Commit only verified versioned references and explicit unavailable states. No PostgreSQL content staging. Pre-commit crashes can lose evidence and leave orphaned objects requiring cleanup. |
-| Redaction approach | Restricted capture with versioned rules; no external DLP service in this slice | Only explicitly approved fields and content sources are eligible. Omit unknown/unapproved content. Validate with synthetic local fixtures; production content capture remains disabled pending security review. This is not a guarantee of detecting every secret. |
+---
 
-These choices were confirmed through six option-A responses, followed by separate approvals of the data flow and field/redaction design below. They do not authorize implementation, cloud deployment, or production capture enablement. The written specification must enumerate exact schemas, rules, and local fixture/source approvals; no arbitrary production source or tool is approved by these category-level choices.
+## Execution baseline and file map
 
-Two implementation approaches:
+Base documentation commit: `7c0e89e`; runtime baseline: PR 3 through `a7be2d0`. Record the actual execution HEAD/worktree status before starting; do not reset user changes. Existing shell sandbox may require approved escalation for read-only commands because its loopback setup fails; do not interpret that as a product/test failure.
 
-1. **Outbox:** API commits a metadata run record and outbox row in one PostgreSQL transaction; an external dispatcher publishes it. More database/migration work, but recoverable delivery after commit. Recommended when reliability matters.
-2. **Best-effort:** API submits to a bounded in-process dispatcher; it stores approved payloads and sends the metadata event. Lower coupling, but process crashes, admission overflow, or exhausted retries can lose samples. Acceptable only with measured loss and explicit consent.
+Run baseline `pytest -q`, `make local-check`, and, if already running, `make local-smoke`. Record counts and actual skip reasons. Do not install real model providers or use cloud credentials to make local tests pass. Live new tests remain explicitly opt-in; execution completion requires running them, not merely observing their skips.
 
-**Critical distinction:** An outbox does not prevent losing a run between sending the answer and committing the outbox transaction. The current route sends its answer before persistence completes. Do not label a post-stream outbox hook “every successful answer is audited.” Audit-required mode needs a separately approved persistence/response acknowledgement boundary and failure behavior; it may add bounded database latency and reduce availability. Best-effort mode must preserve the existing answer semantics and report losses.
+Before every commit, stage explicit owning files, export the index, run the focused and full default suite from that exported snapshot, and inspect the staged diff. This prevents future unstaged modules from making an intermediate commit appear green:
 
-- [x] Record approved delivery mode, fail-open response behavior, redacted capture scope, and retention durations in this document.
-- [x] Record capture-failure behavior: preserve independently validated safe evidence and explicitly mark unavailable payloads; do not drop safe evidence solely because another payload failed.
-- [x] Select encrypted, redacted object uploads before outbox commit; no PostgreSQL content staging. Record pre-commit loss and orphan-cleanup requirements.
-- [x] Select restricted, versioned redaction without an external DLP service; omit unapproved content and keep production content capture disabled pending security review.
-- [x] Approve the field/redaction design below, including eligible input/history/context/model fields, per-tool policy, and denial of unclassifiable content. Exact rules and schemas must be enumerated in the written specification.
-- [x] Select redacted component replay for the initial release; metadata-only delivery alone is not completion of the selected scope.
-- [ ] Review and approve the resulting written design before converting the backend-specific tasks below into an execution plan. The unselected transport path is not implemented.
+```bash
+pr4_check_dir=$(mktemp -d /tmp/pr4-commit-check.XXXXXX)
+git checkout-index --all --prefix="$pr4_check_dir/"
+cd "$pr4_check_dir"
+pytest -q --tb=short
+```
 
-### Design review progress
+Run `git diff --cached --check` and `git diff --cached --stat` back in the original checkout before committing. Live-PG/stack verification uses the same staged source and isolated resources when its owning task requires it. Record the commit and actual results; do not delete or reset the shared worktree to test a boundary.
 
-**Data flow approved:** Capture/redact eligible content immediately into bounded buffers; return/stream the answer without waiting for evidence storage. At terminal finalization, upload approved payloads, then atomically commit safe metadata, verified references, explicit unavailable states, and the outbox row. A standalone worker publishes committed envelopes with restart recovery. Pre-commit loss and orphaned uploads remain possible; production content capture stays disabled pending security review. This section was approved separately from the six policy choices; no implementation authorization is implied.
+New production code lives under `services/api/app/evaluation/` except the standalone worker/maintenance CLIs under `services/evaluation_delivery/`. Split policy, provenance, capture buffers, bounded IO, persistence, and delivery by responsibility. Use existing boto3/SQLAlchemy instead of adding another queue/store library.
 
-**Field/redaction design approved:**
+New isolated tests live under `tests/evaluation_delivery/`; fixtures are local to that subtree. Existing lifecycle/model/retrieval tests remain under `tests/observability/`. Orchestration contracts extend `tests/local_env/`. Production fixture allowlists are not inferred from arbitrary test dictionaries.
 
-- Question/answer: only the question text and answer text, not the entire request/response or arbitrary citation dictionaries.
-- Model calls: ordered message roles/content actually sent (including history and assembled context), requested model, temperature, and max tokens; successful response text. No headers, authentication values, provider response bodies, or unrelated chat history.
-- Retrieval: query and ranked chunk text from explicitly approved corpus sources. No unrestricted document metadata, filenames, or source paths. Unapproved sources make associated model-context capture unavailable rather than allowing flattened text to bypass source policy.
-- Tools: explicit per-tool input/result schemas and source approval, not automatic approval from registry membership. Unknown tools, extra fields, and unapproved tool IO remain unavailable; metadata may still record the safe trajectory. Sandbox code/results are not eligible by default.
-- Metadata: explicit field/value allowlist; validate or pseudonymize externally supplied identifiers. Do not treat arbitrary strings or dependency attribute dictionaries as safe merely because schema `1.0` accepts them.
-- Versioned rules deny credential-bearing fields and redact tested token/private-key patterns plus email/phone patterns with typed placeholders. Unsupported structures, policy errors, absent trusted tenant context, and over-budget payloads are omitted with fixed reason codes. Pattern coverage is limited; no general secret-detection guarantee. Local capture is limited to synthetic approved fixtures until production security review.
+### Shared contracts to maintain across tasks
 
-**Failure handling, retention, and testing approved:**
+Task 1 owns strict immutable data types: `EventIdentity(export_version, run_schema_version, run_id)`, `PayloadKind`, `PayloadSlot(kind, ordinal, item_ordinal=None)`, `UnavailableReason`, `DeliveryReason`, `RedactedPayload(slot, data, policy_version)`, `ManifestEntry(slot, state, reference=None, reason=None)`, `PayloadRef`, `SafeRun`, `ExportPolicy`, `PreparedExport`, `ExportEnvelope`, `DeliveryReceipt`, `PublishReceipt`, `UploadIntent`, `OutboxClaim`, `CapturedRun`, `CleanupClaim`, and `CleanupReport`.
 
-- Bound admission, capture bytes, upload concurrency, SDK waits/retries, and shutdown drain. On overflow or pre-commit failure, release buffers and record a content-free loss reason; never delay the answer for evidence admission. Persist safe partial evidence where possible; unsafe metadata is never exported merely to preserve a record.
-- Recover committed outbox rows after worker restart using expiring leases. Broker acknowledgement loss can cause redelivery with the same identity/hash; identical duplicates are harmless, conflicts quarantined. Exhausted producer retries are quarantined with observable age/count, not falsely marked delivered.
-- Measure content retention from object creation and run-metadata retention from run completion. Authorized reads reject expired content even if deletion is delayed. Scheduled cleanup removes expired object versions and delete markers; orphan cleanup must avoid active uploads and committed live references. Expired references remain historical facts, not promises of replay availability. Run metadata is deleted at 90 days; other artifact retention is not implicitly approved.
-- Test deterministic redaction and tenant denial, partial upload/database/broker failures, disconnect finalization, resource limits, duplicate delivery, and concurrent/restarted workers. Use synthetic fixtures, real local PostgreSQL, Moto S3/SQS, and fake models. Verify KMS request parameters with Stubber; cloud IAM/KMS enforcement and production lifecycle guarantees remain PR 5 staging checks.
+- `RedactedPayload.data` is canonical UTF-8 JSON bytes validated by Task 2; its constructor is not an alternative to policy admission. `PreparedExport` contains safe metadata plus eligible redacted payloads and unavailable slots, never raw content. `CapturedRun` holds the detached original event and its prepared export.
+- `PayloadSlot` uses positive ordinal/item ordinal; `model_request`/`model_response` carry invocation ordinal, and the safe metadata model-call projection includes that ordinal. Other slots map to retrieval/tool step ordinals. Input/output use ordinal 1.
+- `SafeRun` uses separate strict nested export models; do not inherit the original non-null/hash assumptions or use unrestricted dictionaries. Missing source digests/identities are nullable. Export HMAC digest fields are explicitly named as pseudonyms, not SHA-256 original hashes.
+- `ExportEnvelope` carries `export_version='1.0'`, `run_schema_version='1.0'`, server UUID, policy version, safe run projection, manifest, completeness, and canonical `export_hash`. It contains no payload bytes.
+- `DeliveryReceipt.status` is `disabled|admitted|dropped|failed|committed`; a fixed reason is optional. `PublishReceipt` carries acknowledgement ID. Claims carry identity/hash, immutable envelope bytes, expiry, and random lease token; upload/cleanup claims carry generated namespace, lease/state, not prompts.
+- `UnavailableReason` is exactly the payload reason enum in specification section 6. `DeliveryReason` additionally defines `active_capacity`, `pending_capacity`, `runtime_stopped`, `metadata_invalid`, `metadata_too_large`, `deadline_expired`, `database_unavailable`, `intent_failed`, `broker_transient`, `broker_denied`, `retry_exhausted`, `expired`, `identity_conflict`, and `cleanup_failed`. Reasons/labels are fixed enums, not exception-derived text.
+- `ExportPolicy` carries dedicated identity key privately, environment, configured metadata allowlists, synthetic fixture manifest, and resource limits. Keys are excluded from representations/serialization. It does not grant arbitrary source approval.
 
-## Global constraints
+## Task 1: Delivery contracts and disabled-safe configuration
 
-- Default `EVAL_EVIDENCE_ENABLED=false` and `EVAL_CAPTURE_CONTENT=false`; existing requests and NDJSON remain compatible when disabled.
-- No LLM judges, scorers, Opik dependency, cloud provisioning, production credentials, or GPU models in this slice.
-- No raw-content tier in the initial scope. Redaction happens before storage/export, never in a consumer after export.
-- Restricted capture requires an explicit versioned field/source allowlist, not merely a permissive free-text sanitizer. Unknown/unapproved content is unavailable. Synthetic fixtures establish tested behavior, not proof that arbitrary production text is safe.
-- No raw user IDs, content, credentials, exception messages, queue bodies, or object paths containing user-provided text in logs/metrics/spans.
-- Trusted tenant identity must come from authenticated server context. Missing tenant identity must not enable cross-tenant content capture or shared content lookup.
-- Bound capture bytes, pending run count, upload concurrency, SDK timeouts/retries, drain time, and queue message size. Reject/omit oversized payloads with an explicit reason; never silently truncate replay evidence.
-- Unknown corpus/index/ACL/cost values remain unavailable. Storage does not create missing provenance.
-- Keep schema `1.0` fixtures readable. Add delivery/payload envelopes outside the immutable run contract where possible; if an incompatible wire change is unavoidable, explicitly version and migrate it.
-- Preserve the four unrelated untracked documents; do not push or deploy during local implementation.
+**Commit:** `feat(evaluation): define evidence delivery contracts and configuration`
 
-## Review focus and required failure tests
+**Files:** Create `evaluation/delivery_models.py`, `evaluation/delivery_config.py`, `tests/evaluation_delivery/conftest.py`, `test_contracts.py`, `test_config.py` (production paths are prefixed `services/api/app/`). Modify `services/api/app/config.py` only to expose typed evidence settings.
 
-1. Crash before commit versus after commit: prove exactly which records recover; do not claim unconditional no-loss.
-2. Crash after broker acknowledgement but before marking delivered: expect a duplicate, with unchanged event identity and safe consumer deduplication.
-3. Failed/partial uploads: do not publish references to objects that were never stored; expose incompleteness and clean up orphaned versions.
-4. Tenant mismatch or missing identity: resolver denies access before reading objects; content capture fails closed.
-5. Header/body disconnect, full admission buffer, hanging SDK calls, and shutdown: finalize once, bound resources, preserve the selected answer/failure policy.
+**Interfaces:** `DeliveryConfig.from_settings(settings: Settings) -> DeliveryConfig`; `canonical_bytes(value: dict) -> bytes`; `ExportEnvelope.canonical_bytes() -> bytes`; all shared contracts above. `Settings` remains backward compatible with existing required DB/cache/security fields.
 
-## Task 1: Export policy and delivery contracts
+- [ ] Write strict-contract and disabled-default tests before imports succeed. Include literal canonical JSON, unknown/extra fields, naive timestamps, NaN, invalid UUID/ordinal/version, inconsistent stored/unavailable entries, and secret-key representation checks.
 
-**Proposed commit:** `feat(evaluation): define safe evidence delivery contracts`
+```python
+def test_canonical_encoding_is_order_independent():
+    from services.api.app.evaluation.delivery_models import canonical_bytes
+    assert canonical_bytes({'b': 2, 'a': 1}) == b'{"a":1,"b":2}'
 
-Files:
+def test_disabled_defaults_do_not_require_destinations():
+    from services.api.app.evaluation.delivery_config import DeliveryConfig
+    cfg = DeliveryConfig()
+    assert cfg.enabled is False and cfg.capture_content is False
+    assert cfg.payload_bytes == 65536 and cfg.pending_runs == 32
+```
 
-- Create `services/api/app/evaluation/delivery_models.py` — separate typed delivery receipt, payload reference, and completeness states.
-- Create `services/api/app/evaluation/redaction.py` — approved field policy and redacted serialization.
-- Modify `services/api/app/config.py` — typed enablement, content-policy, size, timeout, destinations, and encryption settings.
-- Create `tests/observability/test_evidence_redaction.py` and `test_evidence_delivery_config.py`.
+- [ ] Run `pytest tests/evaluation_delivery/test_contracts.py tests/evaluation_delivery/test_config.py -q`; verify failure is missing/new behavior, not unrelated settings import/network access.
+- [ ] Define strict frozen Pydantic models with `extra='forbid'`, finite numeric values, UTC timestamps, validated sizes/slot states, and canonical export hashing excluding only `export_hash`. Implement configuration in a separate model, then build it from existing `Settings` during lifespan, not at import-time network startup.
 
-**Interfaces:** `prepare_export(event: RunEvidence, policy: ExportPolicy) -> ExportEnvelope`; `PayloadRef` holds bucket/key/version, redacted-byte hash, size, and policy version; `DeliveryReceipt` distinguishes committed, dropped, disabled, and failed. Define `ExportPolicy` and `ExportEnvelope` in `delivery_models.py` so storage and publishers share one contract.
+```python
+def canonical_bytes(value):
+    import json
+    return json.dumps(value, sort_keys=True, separators=(',', ':'),
+                      ensure_ascii=False, allow_nan=False).encode('utf-8')
+```
 
-- [ ] Write failing tests for disabled defaults, forbidden/extra fields, secret-bearing nested values, untrusted identifiers, missing tenant, and enabled-but-incomplete configuration.
-- [ ] Use approved fixtures with literal expected redactions. In metadata-only mode, reject content regardless of field name. Do not call a handful of regexes complete DLP.
-- [ ] Implement the minimal policy serializer and configuration validator; startup fails when enabled destinations/encryption/policy are inconsistent.
-- [ ] Run `pytest tests/observability/test_evidence_redaction.py tests/observability/test_evidence_delivery_config.py -q`, then `pytest -q`; expect all tests to pass.
-- [ ] Commit implementation and tests together.
+- [ ] Pin all specification defaults and conditional validation: enabled metadata requires DB/queue/identity key; capture requires local synthetic mode/manifest/bucket/KMS endpoint configuration; reject identity key equal to JWT secret, unknown content policy, production content mode, deadline reserve >= deadline, and intent/claim leases shorter than their owned processing windows. A disabled runtime does not require/create S3/SQS clients.
+- [ ] Add a `terminal_event` fixture using `RunEvidenceCollector`, a server UUID, synthetic tenant/user/session, dedicated key, configured fake model names, and `.finish('success')`; fixtures set required settings environment before importing app modules and isolate Qdrant with its embedded client, matching existing observability fixtures. No remote connection during collection.
+- [ ] Run focused tests, `pytest tests/observability -q`, and `pytest -q`; inspect diff and commit only named files with implementation and tests together.
 
-## Task 2: Versioned encrypted payload adapter
+## Task 2: Restricted redaction and safe metadata projection
 
-**Proposed commit:** `feat(evaluation): store approved payloads by versioned reference`
+**Commit:** `feat(evaluation): redact approved synthetic evidence for export`
 
-Files:
+**Files:** Create `evaluation/redaction.py`, `evaluation/metadata_export.py`, `evaluation/provenance.py`, `tests/evaluation_delivery/test_redaction.py`, `test_metadata_export.py`, `test_provenance.py`, and `fixtures/restricted-synthetic-v1.json`; extend delivery test fixtures.
 
-- Create `services/api/app/evaluation/payloads.py` — `PayloadStore` protocol, disabled adapter, S3 writer, and authorized resolver.
-- Create `tests/observability/test_evidence_payloads.py`.
-- Modify `services/aws_emulator/init_s3.py` and `tests/local_env/test_aws_emulator.py` only for approved local bucket configuration.
+**Interfaces:** `SyntheticManifest.load(path: Path) -> SyntheticManifest`; `SourceProof` and `Provenance` in `provenance.py`; `Provenance.approved(policy: ExportPolicy) -> bool`; `redact_payload(slot: PayloadSlot, value: object, provenance: Provenance, policy: ExportPolicy) -> RedactedPayload | ManifestEntry`; `project_metadata(event: RunEvidence, policy: ExportPolicy, model_ordinals: tuple[int, ...]) -> SafeRun`; `prepare_export(event, policy, payloads: tuple[RedactedPayload, ...], unavailable: tuple[ManifestEntry, ...], model_ordinals=()) -> PreparedExport`; `seal_export(prepared: PreparedExport, entries: tuple[ManifestEntry, ...]) -> ExportEnvelope`.
 
-**Interfaces:** `await PayloadStore.put(run_id, tenant_partition, kind, redacted_bytes) -> PayloadRef`; `await PayloadStore.get(reference, authorized_tenant) -> bytes`. Accept only the approved redacted type from Task 1, not arbitrary request dictionaries. Object keys use environment, opaque tenant partition, date, run ID, and fixed payload kind; tool steps use validated ordinals.
+- [ ] Write literal redaction tests for approved synthetic input, nested credential keys, mixed-case/separator-normalized forbidden fields, unknown model message keys/roles, bearer/JWT/AWS tokens, private-key blocks (including unterminated blocks), assignments, email, +phone, overlaps, depth > 8, and payload/run byte limits.
 
-- [ ] Write failing tests for upload/read round trips, recorded version IDs, wrong tenant, unsafe key inputs, byte limits, upload denial/timeouts, and returned-content hash mismatch.
-- [ ] Use botocore `Stubber` to verify production `ServerSideEncryption="aws:kms"` and the configured dedicated `SSEKMSKeyId`; use Moto for actual object round trips/versioning. Emulator success is not proof of KMS or IAM enforcement.
-- [ ] Implement off-event-loop bounded boto3 calls with finite SDK timeouts/retries; cancelling an await must not leak unbounded background threads. Reuse owned clients and close them at shutdown.
-- [ ] Resolve references through an authorized client, not public or presigned URLs. Preserve version IDs so a retry/new object version does not change an already published reference.
-- [ ] Test deletion across all versions and delete markers, plus orphan cleanup. Production IAM/lifecycle enforcement is a PR 5 staging gate.
-- [ ] Run `pytest tests/observability/test_evidence_payloads.py tests/local_env/test_aws_emulator.py -q`, then `pytest -q`; commit green.
+```python
+def test_redaction_has_literal_expected_output(policy, approved_input):
+    from services.api.app.evaluation.delivery_models import PayloadSlot
+    from services.api.app.evaluation.redaction import redact_payload
+    out = redact_payload(PayloadSlot(kind='input', ordinal=1),
+        {'text': 'Contact alice@example.test; token=fixture-secret'},
+        approved_input, policy)
+    assert out.data == b'{"text":"Contact [REDACTED_EMAIL]; token=[REDACTED_SECRET]"}'
+```
 
-## Task 3: Approved admission backend
+- [ ] Define `policy`/`approved_input` fixtures from the checked-in manifest. Manifest fixtures explicitly enumerate synthetic tenant/case text digests, allowed history, template hashes, corpus collection/document/chunk/content identities, and calculator grammar. Include the literal text above as an approved synthetic case; tests adding another case must update the manifest, not silently set `safe=true`.
+- [ ] Run the three Task 2 test files red. Implement schema selection and source validation before text processing; deny unknown structures/fields and absent tenant. Restrict recursion depth before traversing user-controlled nested values.
 
-**Outbox branch — proposed commit:** `feat(evaluation): persist terminal runs with a transactional outbox`
+```python
+# Redaction ordering is part of restricted-synthetic-v1.
+for pattern, replacement in (
+    (private_key_pattern, '[REDACTED_PRIVATE_KEY]'),
+    (secret_pattern, '[REDACTED_SECRET]'),
+    (email_pattern, '[REDACTED_EMAIL]'),
+    (phone_pattern, '[REDACTED_PHONE]'),
+):
+    text = pattern.sub(replacement, text)
+```
 
-Files: create `services/api/app/evaluation/outbox.py`, `storage_models.py`, `migrate.py`, `migrations/001_evidence_outbox.sql`, `tests/observability/test_evidence_outbox.py`, and `tests/local_env/test_evidence_outbox_postgres.py`.
+The four compiled patterns are module constants defined in this task: bounded matching for PEM blocks; tested bearer/JWT/AWS token alternatives; email matching bounded to 254 characters; +phone bounded to 8–15 digits. Apply an assignment-label pattern separately with a replacement preserving the label and separator (`token=fixture-secret` becomes `token=[REDACTED_SECRET]`), before generic token substitutions. Define literal patterns and expected fixture outputs in the same policy commit. Detect an unmatched PEM opening before substitutions and return `redaction_failed`. No unbounded nested regex or claim of universal DLP. Calculator accepts at most 100 characters, numeric arithmetic punctuation, whitespace, and `sqrt`; result parses to a finite numeric value, error strings are denied.
 
-**Interfaces:** `await OutboxRepository.enqueue(event: RunEvidence) -> DeliveryReceipt`; `claim_batch(limit, lease_duration)`; `mark_delivered(row_id, lease_token, receipt)`; `schedule_retry(row_id, lease_token, error_class)`. Separate evidence database models from chat history; no opportunistic destructive schema recreation.
+- [ ] Implement domain-separated tenant HMAC metadata identifiers/source digests. Project only known typed fields, enums, configured fake model/collection names, validated hex build/config hashes, and the collector's per-key dependency attributes; map unknown errors to `OtherError`, arbitrary tool/purpose values to fixed unknown/null. Test secret/path strings in *known* fields and attributes, raw provider IDs, no-tenant hashes, cross-tenant pseudonyms, missing provenance, and unchanged original collector snapshots.
+- [ ] Define the exported metadata nested schemas in Task 1's models as needed without breaking their public interfaces; re-run contracts. Add `envelope` fixture by projecting `terminal_event`, sealing a metadata-only prepared export, and assert round-trip hash validation rejects tampering.
+- [ ] Run new policy tests, all delivery/observability tests and full pytest; commit green. Fixture manifests and policy version ship together.
 
-- [ ] Write failing tests for atomic run/outbox insertion, rollback, identical duplicate acceptance, conflicting duplicate rejection, and restart recovery against real local PostgreSQL.
-- [ ] Add a unique `(schema_version, run_id)` event identity and canonical export hash. Store retry state, UTC next-attempt time, claim lease/token, acknowledgement ID, and quarantined status separately from immutable run evidence.
-- [ ] Supply an idempotent, version-tracked migration command (`python -m services.api.app.evaluation.migrate`) with tests for reapplication, transactional failure, and concurrent startup. Local orchestration runs it before API/worker startup; production migrations use the approved deployment workflow rather than `create_all` as a migration strategy.
-- [ ] Implement short transactions for claiming/acknowledgement; do not hold database locks while uploading or calling SQS. Lease expiry permits restart recovery, and stale workers cannot overwrite newer claims.
-- [ ] Test two concurrent dispatchers, expired leases, delayed stale acknowledgements, and unavailable database admission.
-- [ ] Run the focused tests and full suite; commit only after the transaction/restart contract passes.
+## Task 3: Versioned payload storage and bounded SDK execution
 
-**Best-effort branch — alternative proposed commit:** `feat(evaluation): add bounded evidence dispatch admission`
+**Commit:** `feat(evaluation): store and resolve versioned redacted payloads`
 
-Files: create `services/api/app/evaluation/dispatch.py` and `tests/observability/test_evidence_dispatch.py` instead of outbox models/migration.
+**Files:** Create `evaluation/bounded_io.py`, `evaluation/payloads.py`, `tests/evaluation_delivery/test_bounded_io.py`, `test_payloads.py`, and `requirements-evaluation-test.txt`. Pin `pytest==9.0.3` (the inspected host version) and `moto[s3,sqs]==5.0.12` (matching the emulator) for repeatable host/container tests. Use `asyncio.run` rather than adding pytest-asyncio. Do not alter API pins without evidence of a missing runtime dependency.
 
-**Interfaces:** `submit(envelope) -> DeliveryReceipt` is non-blocking; `await drain(deadline)` is bounded. Enforce item and byte capacity, fixed worker concurrency, no unbounded `create_task`, and observable drop reasons.
+**Interfaces:** `BoundedIO(workers: int)` with `async call(fn, *, deadline: float)` and `async close(deadline: float)`; `PayloadStore.put(run_id: UUID, tenant_partition: str, payload: RedactedPayload, *, deadline: float) -> PayloadRef`; `get(reference: PayloadRef, authorized_tenant: str, *, deadline: float) -> bytes`; `delete_versions(keys: tuple[str, ...], *, deadline: float) -> int`; `list_versions(prefix: str, *, deadline: float) -> tuple[ObjectVersion, ...]`. All PayloadStore operations are async. Define strict `ObjectVersion` coordination metadata in `delivery_models.py` and `S3PayloadStore`/`DisabledPayloadStore` here. Deadlines use monotonic time; creation/expiry use an injected UTC clock.
 
-- [ ] Test overflow, maximum resident bytes, stopped workers, upload/queue timeouts, and expired shutdown deadline.
-- [ ] Implement explicit best-effort loss receipts and counters. Document crash loss; do not claim restart recovery.
-- [ ] Run focused tests and full suite; commit implementation with tests. Do not also implement the outbox branch.
+- [ ] Write Moto/Stubber tests for round trips, generated key namespace, exact version ID, dedicated KMS request, wrong/missing tenant before IO, manipulated bucket/key/version/policy, expired reads, hash/size mismatch, failed upload with no reference, and deletion of all versions/delete markers.
 
-**Selected content/outbox boundary:** Upload approved encrypted, redacted payloads to versioned object storage before enqueue. Then atomically commit safe metadata, verified references, explicit unavailable states, and the outbox row. Failed uploads do not prevent committing independently validated safe evidence. The delivery worker publishes committed envelopes without depending on API memory or uploading missing content later. PostgreSQL stores metadata/references, not staged prompts. A crash before commit can lose the run and leave uploaded object versions orphaned; cleanup must distinguish them from committed references and active uploads. The answer remains fail-open. This choice does not make the object uploads and database commit one atomic transaction.
+```python
+def test_wrong_tenant_is_denied_before_io(store, stored_ref, sdk_spy):
+    import asyncio
+    import pytest
+    from services.api.app.evaluation.payloads import PayloadAccessDenied
+    with pytest.raises(PayloadAccessDenied):
+        asyncio.run(store.get(stored_ref, 'tenant-b', deadline=100.0))
+    assert sdk_spy.get_calls == 0
+```
 
-## Task 4: Queue adapter and standalone delivery worker
+Define `PayloadAccessDenied` and content-free `PayloadStorageError` here. Fixture deadlines derive from an injected monotonic clock, not an already expired wall-clock constant; the fixture above uses clock value 0. `store`/`stored_ref`/`sdk_spy` use Moto or a finite fake client owned by the test, not real AWS. Fixture teardown closes executors/clients.
 
-**Proposed commit:** `feat(evaluation): publish evidence with bounded retries and recovery`
+- [ ] Write a thread-event test: occupy both executor slots, cancel one waiter, attempt a third call, assert it cannot start until a real SDK call exits. Use bounded test timeouts and release events in `finally`; assert fixed thread counts and no executor backlog growth.
+- [ ] Run both test files red. Implement a dedicated executor plus a non-unbounded admission semaphore. Release slots on underlying future completion, not waiter cancellation. Socket timeouts/retries remain finite; stop new work at close and report remaining bounded operations.
 
-Files: create `services/api/app/evaluation/publisher.py`, `services/evaluation_delivery/__init__.py`, `worker.py`, `tests/observability/test_evidence_publisher.py`, and `test_evidence_delivery_worker.py`.
+Install the pinned test requirements into the chosen local/test-container environment during execution (`python -m pip install -r requirements-evaluation-test.txt`); Moto is currently absent on the host. Unit tests are required, not skipped because Moto is missing. Set dummy AWS credentials and `AWS_EC2_METADATA_DISABLED=true` before creating test clients.
 
-**Interfaces:** `await RunEvidencePublisher.publish(envelope: ExportEnvelope) -> PublishReceipt`; `await worker.run_once() -> int`. Define `PublishReceipt` in `delivery_models.py`. Outbox mode consumes claimed rows; best-effort mode consumes admitted bounded envelopes. The worker delivers evidence only—it does not score runs.
+```python
+# The permit follows the blocking future, not the cancelled await.
+future = executor.submit(fn)
+future.add_done_callback(lambda _: loop.call_soon_threadsafe(permit.release))
+return await asyncio.shield(asyncio.wrap_future(future))
+```
 
-- [ ] Write failing tests for correct metadata-only queue bodies, stable identity/hash across retries, no secret-bearing logging, finite retry schedules, broker denial, and acknowledgement loss.
-- [ ] Publish only after required payload writes have succeeded. Attach storage failures to delivery completeness, not to the original agent outcome; never fabricate valid references.
-- [ ] On acknowledgement-before-DB-update crash, retry the same event identity. A test consumer stores `(schema_version, run_id)` transactionally and accepts identical redelivery; conflicting payloads are quarantined.
-- [ ] Distinguish producer failures from consumer failures: producer exhaustion stays in outbox quarantine (or is a measured drop in best-effort mode); SQS DLQ redrive handles received messages failing downstream processing.
-- [ ] Run focused tests and full suite; commit green. No “exactly once” claim based solely on broker FIFO settings.
+Acquire a permit within the caller's remaining deadline before this block; if submission fails synchronously, release it. Use a bounded shutdown path rather than `executor.shutdown(wait=True)` on the event loop.
 
-## Task 5: Capture and request lifecycle integration
+Completion callbacks must also handle an already-closed loop without emitting a thread exception or raw diagnostics; test a deliberately hung fake that finishes after the close deadline. Retain fixed executor accounting until real future completion, even when the loop no longer owns waiters.
 
-**Proposed commit:** `feat(api): hand terminal evidence to the approved delivery path`
+- [ ] Request S3 `aws:kms`/dedicated key on every write, require non-empty VersionId, record UTC creation+30-day expiry, validate reference authorization/prefix/expiry before reads, then verify exact bytes/hash. Preserve immutable references across retry/new versions.
+- [ ] Run Task 3 tests, `pytest tests/evaluation_delivery tests/observability -q`, full pytest, and pinned-container tests when the new test dependencies are available; commit green.
 
-Files: modify `evaluation/context.py`, `routes/chat.py`, `services/api/main.py`, and `libs/observability/metrics.py`; create `evaluation/runtime.py`, `tests/observability/test_evidence_delivery_lifecycle.py`; extend lifespan and existing integration tests.
+## Task 4: Migrations, upload intents, and transactional outbox
 
-**Interfaces:** `await EvidenceRuntime.submit(event, approved_payloads) -> DeliveryReceipt` follows the approved admission semantics; runtime start/close belongs to FastAPI lifespan. Best-effort submission admits to a bounded buffer without network IO; outbox admission awaits its bounded transaction. Extend generator and ASGI-close hooks together so pre-body disconnects still submit once; neither hook may hide a database write in a synchronous callback.
+**Commit:** `feat(evaluation): persist safe exports with leased outbox delivery`
 
-- [ ] Write failing tests for disabled parity, cached/normal/error/timeout/cancelled outcomes, header/body disconnect, exactly one submission, and admission failure under the chosen fail-open/fail-closed policy.
-- [ ] If content is approved, capture before flattening at retriever/model/tool boundaries, redact immediately, enforce byte budgets, and map references by repeated-call/step ordinal. Keep content buffers out of AgentState and release them promptly. Model-request capture must preserve ordered history/context and decoding settings if component replay is claimed.
-- [ ] Keep the finalized collector snapshot immutable. Build an export copy with payload references; retain original hashes separately from redacted-payload hashes. Use an explicitly versioned payload manifest for model-call/retrieval query references absent from schema `1.0`.
-- [ ] Add low-cardinality attempts/failures/drops counters, pending/oldest-age gauges, and latency/bytes histograms. Never use run/user/tenant IDs as metric labels. Evidence failure must not be presented as successful delivery.
-- [ ] In best-effort sampling mode, no broker or S3 wait in the request generator. In audit-required mode, implement only the explicitly approved durability/acknowledgement boundary and its timeout/availability consequences.
-- [ ] Run new lifecycle tests, all observability tests, full pytest, and the pinned API-container suite; commit implementation with tests.
+**Files:** Create `evaluation/storage_models.py`, `migrations/001_evidence_outbox.sql`, `evaluation/migrate.py`, `evaluation/outbox.py`, `tests/evaluation_delivery/test_migrations.py`, `test_outbox.py`, `test_outbox_postgres.py`; extend test fixtures for an opt-in real local PostgreSQL schema.
 
-## Task 6: Local orchestration, failure injection, and operating docs
+**Interfaces:** `async migrate(engine) -> tuple[int, ...]`; CLI `python -m services.api.app.evaluation.migrate`; `OutboxRepository(session_factory, clock)` exposes `begin_upload(run_id, namespace, lease_seconds) -> UploadIntent`, `enqueue(envelope: ExportEnvelope, intent: UploadIntent | None) -> DeliveryReceipt`, `claim_batch(limit, lease_seconds) -> tuple[OutboxClaim, ...]`, `mark_delivered(claim: OutboxClaim, receipt: PublishReceipt) -> bool`, `schedule_retry(claim, error_class: str, *, permanent: bool) -> bool`, `retry_quarantined(identity: EventIdentity) -> bool`, `claim_orphan(namespace, now) -> CleanupClaim | None`, `complete_cleanup(claim) -> bool`, `expire_runs(now, limit) -> int`. All repository operations are async. Define `EvidenceConflict` and safe persistence errors here.
 
-**Proposed commit:** `test(evaluation): verify local evidence delivery and restart behavior`
+- [ ] Write real-PG tests for transactional run/outbox/reference insertion and rollback, duplicate acceptance/conflict, expiry unchanged by duplicates, restart recovery, two dispatchers, stale token/lease updates, migration reapplication/checksum conflict/concurrent startup, and cleanup-owned intent denial.
 
-Files: modify `docker-compose.yml`, `.env.example`, `Makefile`, `services/aws_emulator/requirements.txt`; create `services/aws_emulator/init_eval_queue.py`, `tests/local_env/test_eval_queue.py`, `test_evidence_delivery_stack.py`; update `local-environment.md` and the Gap 1 progress document.
+```python
+async def duplicate_contract(repo, envelope):
+    a = await repo.enqueue(envelope, intent=None)
+    b = await repo.enqueue(envelope, intent=None)
+    assert a.status == b.status == 'committed'
+    claims = await repo.claim_batch(limit=10, lease_seconds=60)
+    assert len(claims) == 1
+    assert claims[0].envelope_bytes == envelope.canonical_bytes()
 
-- [ ] Add Moto SQS support and an idempotently initialized evaluation queue/DLQ using the existing emulator, without renaming the S3 module or weakening its health checks. Give evidence delivery its own worker service, not an API-embedded infinite consumer.
-- [ ] Keep host ports loopback-only, dummy AWS credentials, deterministic fake models, and existing ingestion resources untouched. Pin any added packages deliberately.
-- [ ] Add opt-in live tests that join authenticated run IDs, terminal metadata, queue messages, and versioned objects when content is approved. Metadata-only runs must explicitly retain empty payload references.
-- [ ] In outbox mode, restart the worker with pending committed rows; simulate broker outage and acknowledgement-before-mark crash; prove recovery and deduplication. In best-effort mode, quantify loss rather than expecting recovery.
-- [ ] Verify bounded overflow/shutdown and no answer-path quality graders. Test selected retention/deletion helpers, including object versions; cloud enforcement remains a staging check.
-- [ ] Run `make local-check`, `make local-smoke`, the new opt-in delivery tests, full pytest, pinned-container tests, and `git diff --check`. Record actual counts, not assumed future totals.
-- [ ] Document startup, migrations, delivery guarantee, redaction policy/version, failure counters, quarantine/retry procedures, deletion, and local-versus-cloud limitations; commit only the completed scope.
+def test_duplicate_identity(repo, envelope):
+    import asyncio
+    asyncio.run(duplicate_contract(repo, envelope))
+```
 
-## Completion gates
+Use `asyncio.run` wrappers or the project's chosen async pytest fixture style consistently. Real-PG fixtures require `RUN_EVAL_POSTGRES_TESTS=1` and `EVAL_TEST_DATABASE_URL`; allocate a generated isolated schema, track the exact name, and drop only that test schema at teardown. Never clear the shared chat/evidence tables. Ordinary pytest skips only these explicit live fixtures; unit tests must not silently switch to mocks when live mode is selected.
 
-- Approved policy and delivery/admission guarantee recorded, with explicit crash-loss boundaries.
-- Every supported terminal path attempts admission once; failures are observable and resources bounded.
-- Stored payloads are policy-approved and referenced by immutable versions; no raw payloads in telemetry/queue metadata.
-- Duplicates are harmless by explicit identity/hash checks; producer and consumer failure handling are distinguished.
-- Restart/failure tests prove the chosen guarantee, not a stronger one.
-- Production enablement remains off until IAM/KMS, tenant authorization, retention/deletion, load/SLOs, and deployment controls are validated in PR 5.
-- Metadata-only delivery does not satisfy full-payload replay; record that partial completion rather than checking all Gap 1 criteria.
+- [ ] Run unit tests red and the real-PG subset red with local PostgreSQL. Implement independent evidence declarative metadata and SQL migration tracking with advisory lock/checksums; migration SQL creates runs/outbox/references/upload-intents with uniqueness/foreign-key/expiry/claim indexes.
 
-## Source-backed transport constraints
+```sql
+SELECT id FROM evaluation_outbox
+WHERE state IN ('pending', 'leased') AND next_attempt_at <= now()
+  AND (lease_until IS NULL OR lease_until <= now())
+ORDER BY next_attempt_at, id
+FOR UPDATE SKIP LOCKED
+LIMIT :limit;
+```
 
-SQS standard queues permit duplicate and out-of-order delivery, so application deduplication is required. [AWS SQS standard queues](https://docs.aws.amazon.com/en_gb/AWSSimpleQueueService/latest/SQSDeveloperGuide/standard-queues.html)
+Use SQLAlchemy bound parameters in the implementation. The selection and lease-token update share one short transaction; expired leased rows are eligible for reclamation. Acknowledgement/retry predicates include token and lease validity. Run/outbox/ref insertion and intent closure are one transaction; intent commit predicates exclude expired/cleanup-owned states. Store canonical envelope bytes once; never reconstruct changing payloads for retries.
 
-S3 uploads can request a dedicated KMS key, and versioned buckets return object version IDs. Verify the exact request contract locally, then permissions/encryption in staging. [S3 PutObject API](https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html), [SSE-KMS configuration](https://docs.aws.amazon.com/AmazonS3/latest/userguide/specifying-kms-encryption.html)
+- [ ] Implement intent/cleanup exclusion under short transactions; begin_upload conflicts with existing cleanup markers. `claim_orphan` rejects any live intent/reference, inserts an exclusion marker for an absent intent, and returns cleanup ownership before remote deletion. DB unavailable means no cleanup permission.
+- [ ] Run focused tests, explicitly run real-PG tests, full pytest, and inspect SQL/diff. Commit migrations/repository/tests together; do not mark this module green based solely on mocked transaction tests.
 
-## Handoff
+## Task 5: Queue publisher and standalone delivery worker
 
-Review the [written specification](pr-04-payload-publication-design.md) before converting this draft into an executable plan. The selected path is fail-open transactional outbox delivery with encrypted redacted replay content, retained for 30 days, and run metadata retained for 90 days. Upload payloads before outbox commit; no PostgreSQL content staging. Capture failures preserve independently validated safe evidence while explicitly marking unavailable payloads. This does not authorize raw content export or claim audit-grade durability. The specification distinguishes non-durable runtime admission from durable outbox commit; revise the tentative interfaces and remove unselected transport branches only after specification approval. Retain the implementation/test commit boundaries above.
+**Commit:** `feat(evaluation): publish committed exports with restart-safe retries`
+
+**Files:** Create `evaluation/publisher.py`, `services/evaluation_delivery/__init__.py`, `worker.py`, `tests/evaluation_delivery/test_publisher.py`, `test_delivery_worker.py`, and `consumer_fixture.py` (test-only transactional dedup consumer).
+
+**Interfaces:** `RunEvidencePublisher.publish(envelope_bytes: bytes, *, deadline: float) -> PublishReceipt`; `DeliveryWorker(repo: OutboxRepository, publisher: RunEvidencePublisher, clock)` with `async run_once() -> int`, `async run(stop_event)`, `async close(deadline)`; CLI `python -m services.evaluation_delivery.worker`. `consumer_fixture.accept(engine, envelope_bytes) -> str` returns `accepted|duplicate|conflict|expired`, persisting test identities/hashes transactionally in its isolated schema. No real grading consumer is introduced.
+
+- [ ] Write tests for exact safe SQS body (no content), envelope/hash/size/expiry validation, safe error classification, denied broker, transient retry/backoff, exhausted/permanent quarantine, two workers, and acknowledgement-before-mark crash.
+
+```python
+async def acknowledgement_loss_contract(worker, repo, broker, clock):
+    repo.fail_next_ack = True  # Fake repository injection, not a production flag.
+    await worker.run_once()
+    clock.advance(61)
+    await worker.run_once()
+    assert broker.bodies[0] == broker.bodies[1]
+
+def test_acknowledgement_loss_redelivers_identical_bytes(worker, repo, broker, clock):
+    import asyncio
+    asyncio.run(acknowledgement_loss_contract(worker, repo, broker, clock))
+```
+
+Define finite repo/broker/clock fakes in this test file, with real-PG equivalents in Task 10. Test consumer accepts identical redelivery only once and rejects identity/hash conflicts; use separate consumer transaction state, not producer status as dedup proof.
+
+- [ ] Run tests red. Implement publisher with owned bounded SDK IO, configured SQS URL, 128 KiB body cap, envelope hash revalidation, and no raw logging. Implement worker as claim → finite send → token-checked ack or retry, with no database lock across send.
+
+```python
+receipt = await publisher.publish(claim.envelope_bytes, deadline=deadline)
+updated = await repo.mark_delivered(claim, receipt)
+# False means the lease is stale; it does not authorize a second mutable write.
+```
+
+Claim attempts/retry state are persisted; quarantine counts/age are distinct from consumer DLQ. Retry uses 8 attempts, capped jittered exponential delay, finite error classes, and identical bytes/hash. Worker CLI owns resources and handles signals by stopping claims then bounded draining. No Ray/document-ingestion worker reuse.
+
+- [ ] Test metadata expiry prevents publish even after a prior failure; expired payload references do not mutate the canonical envelope. Run delivery/observability/full tests; commit implementation with tests.
+
+## Task 6: Bounded capture, trusted tenant, and provenance hooks
+
+**Commit:** `feat(evaluation): capture approved content with tenant-scoped provenance`
+
+**Files:** Create `evaluation/capture.py`, `tests/evaluation_delivery/test_capture.py`, `test_capture_provenance.py`, `test_tenant_context.py`. Modify `auth/jwt.py`, `evaluation/context.py`, `clients/ray_llm.py`, `agents/nodes/planner.py`, `retriever.py`, `tool.py`, `responder.py`; extend existing observability tests for reverse completion order and disabled parity.
+
+**Interfaces:** `CapturePool(config, policy)` provides `open(run_id, tenant, fixture_case) -> CaptureSession | None`; `CaptureSession.record(slot, value, provenance) -> None`, `begin_model(provenance) -> int`, `finish_model(ordinal, metadata_index) -> None`, `detach(event: RunEvidence) -> CapturedRun`, `close() -> None`; `CapturePool` tracks/reserves bytes across sessions. A separate ContextVar carries session/provenance; expose `bind_capture(session, provenance)` context manager. `collector.record_model_call(...)` can return its metadata index without changing schema `1.0`.
+
+- [ ] Write tests before hooks: no tenant/invalid tenant denies content yet chat auth succeeds; forged request tenant ignored; signed local tenants differ; unknown/unapproved source denies flattened model request and derived model/answer output; independent safe input survives. Also test no capture allocation when disabled.
+
+```python
+def test_unapproved_context_denies_derived_capture(session, unknown_source):
+    from services.api.app.evaluation.delivery_models import PayloadSlot
+    session.record(PayloadSlot(kind='model_request', ordinal=1),
+        {'messages': [{'role': 'user', 'content': 'unapproved context'}],
+         'model': 'fake-local-llm', 'temperature': 0.0, 'max_tokens': 10},
+        unknown_source)
+    assert session.unavailable[0].reason == 'unapproved_source'
+```
+
+Expose immutable inspection properties `CaptureSession.unavailable` and `resident_bytes` for tests; no raw debug buffers. Add active run/count/byte, payload slot/count, oversize, nested structure, double detach, and late update tests. Reverse two model completions and assert request/response slots still point to the correct metadata indexes.
+
+- [ ] Run tests red. Extract optional valid JWT tenant using type/length/identifier validation after signature verification. Malformed optional tenant becomes null; no request authorization change, default tenant, or JWT key reuse.
+
+```python
+tenant = payload.get('tenant_id')
+tenant = tenant if isinstance(tenant, str) and tenant_pattern.fullmatch(tenant) else None
+# Add tenant_id to the existing verified user context; never inspect request.body.
+```
+
+Define `tenant_pattern` as a bounded opaque identifier pattern in the JWT adapter; do not expose arbitrary text as an identifier. Tests assert optional bad tenant does not turn an otherwise valid token into a capture-authorized identity.
+
+- [ ] Implement byte reservation *before* adding redacted copies, slot limit 64, 64 KiB payload/1 MiB run caps, independent global active cap, immediate redaction, prompt provenance propagation, and no raw sidecar copies. Release reservations exactly once at detach/close. Approved fixture selection comes from runtime manifest configuration, not user content flags.
+- [ ] At model invocation allocate ordinal before awaiting IO; capture actual messages/settings and successful response text, with model-call metadata index mapping at completion. Retrieval captures approved query/ranked items before formatting; responder checks context/template/filename proofs before assembling capture provenance. Denied context taints derived output; ordinary user response remains unchanged.
+- [ ] Capture only policy-approved calculator IO; all other tools produce explicit unavailable slots while preserving safe trajectory. Do not instrument unknown error text as content. Preserve PR 3 hashes/snapshots and observation ordering.
+- [ ] Run capture tests, all observability/model/retrieval/agent tests, full pytest, and pinned-container suite; commit hooks/policy tests together. No route/runtime enablement is required for these DI-tested hooks to be independently green.
+
+## Task 7: Non-blocking terminal admission and lifecycle integration
+
+**Commit:** `feat(api): persist terminal evidence through a bounded fail-open runtime`
+
+**Files:** Create `evaluation/runtime.py`, `evaluation/delivery_metrics.py`, `tests/evaluation_delivery/test_runtime.py`, `test_runtime_metrics.py`, `tests/observability/test_evidence_delivery_lifecycle.py`; modify `routes/chat.py`, `services/api/main.py`, and lifespan tests. Metrics live in the focused evaluation module rather than expanding unrelated legacy request counters.
+
+**Interfaces:** `EvidenceRuntime(config, policy, repo, store)` exposes `async start()`, `open_capture(run_id, tenant) -> CaptureSession | None`, `submit(captured: CapturedRun) -> DeliveryReceipt` (synchronous, no IO), `async close(deadline: float)`, `pending_count`, `pending_bytes`; internal `async process_one(captured) -> DeliveryReceipt`. `DeliveryMetrics(registry)` exposes `inc(component, outcome, reason)`, `pending(count, bytes, age)`, `quarantine(count, age)`, `observe(component, seconds, bytes)` with closed label validation.
+
+- [ ] Write tests for non-durable admission versus durable commit, pending count/bytes overflow, disabled runtime/no client allocation, partial uploads, failed intent creation, metadata-only fallback within the reserved deadline, commit failure/orphans, buffer release, shutdown, and fixed SDK/task counts.
+
+```python
+def test_submit_has_no_network_wait(runtime, captured_run, repo_spy, store_spy):
+    receipt = runtime.submit(captured_run)
+    assert receipt.status == 'admitted'
+    assert repo_spy.calls == store_spy.calls == []
+```
+
+`captured_run` fixture constructs `CapturedRun` from Task 6 session detach; fake clients use asyncio events to prove the answer/header can be sent while store/DB remain blocked. Do not assert wall-clock microseconds as the only non-blocking evidence.
+
+- [ ] Run tests red. Implement a byte/item-bounded queue and exactly two lifespan-owned processing tasks. Transfer buffers without copying; reject overflow with fixed loss reason and release owned reservations. Stop admission before bounded close; pending dropped work is counted, committed work belongs to outbox recovery.
+
+```python
+# Within process_one, never inside the response generator's send path.
+intent = await repo.begin_upload(run_id, namespace, lease_seconds=60)
+# Upload allowed payloads until the content deadline; failures become entries.
+envelope = seal_export(captured.prepared, tuple(entries))
+receipt = await repo.enqueue(envelope, intent=intent)
+```
+
+Generate namespace from verified tenant partition/run UUID; initialize explicit entries from prepared unavailable slots and map successful writes by slot. Use monotonic deadline `start+20`, stop content work at `start+17`, reserve DB commit time, and deny late/expired intent commits. Exceptions become fixed metadata/metric reasons, not request errors. `process_one` returns `committed` only after the DB transaction.
+
+- [ ] Integrate optional capture/session into the existing request collector configuration, attach ContextVars only during generator advancement/close, and detach/submit exactly once on normal/cache/error/timeout/cancel/header/body-close paths. Add no await to synchronous finalizer. In ASGI close/finally, the idempotent terminal helper finalizes then immediately submits; a lifecycle guard owns release on pre-body disconnect.
+- [ ] Start/close runtime in FastAPI lifespan and clean up partially started resources if startup fails. Existing request clients/chat history behavior remains unchanged; evidence schema migrations must already be applied. Default disabled mode allocates none of the new IO resources. Test slow upload/DB does not postpone answer delivery and runtime failure does not alter agent status.
+- [ ] Add attempts/omissions/drops/committed/upload/retry/delivered/quarantine/cleanup counters, pending/oldest-age/quarantine gauges, and processing/payload-byte histograms with only fixed component/outcome/reason labels. Use custom `CollectorRegistry` in tests; assert no run/tenant/user/path/secret labels or unsafe log messages. Worker/maintenance use the same metric API; no external metrics platform is required.
+
+Add optional injected `DeliveryMetrics` to the Task 5 publisher/worker in this commit, preserving existing constructor call sites when metrics are absent. Add metric tests for publish/retry/quarantine here; do not make Task 5 import a Task 7 file before that file exists. Task 8 maintenance receives the same optional metrics dependency.
+- [ ] Run runtime/lifecycle/lifespan tests, observability suite, full pytest, pinned API-container suite; commit green.
+
+## Task 8: Retention maintenance and safe operator commands
+
+**Commit:** `feat(evaluation): expire evidence and coordinate orphan cleanup`
+
+**Files:** Create `evaluation/retention.py`, `services/evaluation_delivery/maintenance.py`, `tests/evaluation_delivery/test_retention.py`, `test_maintenance_cli.py`; extend repository/storage/worker tests for cleanup/rerun coordination.
+
+**Interfaces:** `RetentionService(repo, store, clock).run_once(*, apply: bool, limit: int) -> CleanupReport`; maintenance CLI `python -m services.evaluation_delivery.maintenance cleanup --dry-run|--apply --limit N` and `retry --run-id UUID --export-version 1.0 --run-schema-version 1.0`. Neither command emits raw content; retry preserves stored bytes/hash and cannot revive expired metadata.
+
+- [ ] Write tests for reads at exactly the 30-day expiry, metadata at exactly 90 days, duplicate admission not extending retention, all versions/delete markers, failed delete/retry, empty bucket, paginated bounded work, active upload/commit race, absent intent marker, database unavailable, and dry-run no mutation.
+
+```python
+async def cleanup_race_contract(repo, retention, intent, envelope):
+    report = await retention.run_once(apply=True, limit=10)
+    assert report.deleted_versions == 0  # Live upload intent protects objects.
+    receipt = await repo.enqueue(envelope, intent=intent)
+    assert receipt.status == 'committed'
+
+def test_active_intent_prevents_orphan_delete(repo, retention, intent, envelope):
+    import asyncio
+    asyncio.run(cleanup_race_contract(repo, retention, intent, envelope))
+```
+
+Also test expired intent → cleanup claim → attempted enqueue is denied, then delete resumes after process restart. Use injected UTC clock and explicit synthetic namespaces; no recursive filesystem deletion or shared bucket-wide clearing.
+
+- [ ] Run tests red. Implement time checks using UTC creation/completion+approved durations, resolver fail-closed expiry, and safe orphan eligibility (24-hour grace, no live reference/intent, cleanup marker committed before IO). Delete remote versions outside DB locks; record completion afterwards. If DB coordination fails, defer and count failure.
+
+```python
+claim = await repo.claim_orphan(namespace, now)
+if claim is not None and apply:
+    deleted = await store.delete_versions(tuple(keys), deadline=deadline)
+    await repo.complete_cleanup(claim)
+```
+
+Only complete when every claimed version was resolved; partial deletion is resumable and not falsely completed. Dry-run uses read-only eligibility queries, not `claim_orphan`. Add read-only repository `inspect_cleanup(namespace, now) -> CleanupClaim | None` to support dry-run. Published metadata remains immutable; expiry does not change envelope hashes. Metadata expiry removes associated outbox/references even if quarantined.
+
+- [ ] Add explicit retry CLI with UUID/version validation and fixed safe output counts/status. Test conflicting identity, stale lease, missing/expired row, and no automatic requeue. Queue/trace/backup/dataset retention stays outside this command's scope.
+- [ ] Run retention/CLI/repository tests including live PostgreSQL, all delivery/observability/full suites; commit only after the race and dry-run tests pass.
+
+## Task 9: Local orchestration and queue initialization
+
+**Commit:** `feat(local): orchestrate evidence migrations and delivery workers`
+
+**Files:** Modify `docker-compose.yml`, `.env.example`, `Makefile`, `services/aws_emulator/requirements.txt`, `services/aws_emulator/entrypoint.sh`; create `services/aws_emulator/init_eval_queue.py`, `docker-compose.evaluation.yml`, `deploy/evaluation/restricted-synthetic-v1.json`, `tests/local_env/test_eval_queue.py`, and extend `test_local_configuration.py`/`test_aws_emulator.py`. The inspected entrypoint starts Moto then runs `init_s3`; keep that sequence and add evaluation queue initialization after S3 readiness. Mount the explicitly synthetic production-format fixture manifest; do not copy arbitrary private test data into images.
+
+**Interfaces:** `init_eval_queue.ensure_queues(client, queue_name, dlq_name) -> dict[str, str]`; module CLI prints safe queue initialization status. Make targets `local-evidence-up`, `local-evidence-down`, `local-evidence-check`, `local-evidence-smoke`. Existing `local-up/check/smoke` contracts remain valid.
+
+- [ ] Write emulator and Compose contracts for idempotent queue/DLQ creation/redrive configuration, explicit SQS installation, loopback ports, dummy credentials, migrations-before-start, separate worker command, synthetic manifest mount, evidence flags off by default, and unchanged document ingestion resources.
+
+```python
+def test_queue_initialization_is_idempotent(sqs):
+    from services.aws_emulator.init_eval_queue import ensure_queues
+    first = ensure_queues(sqs, 'eval-runs', 'eval-runs-dlq')
+    assert ensure_queues(sqs, 'eval-runs', 'eval-runs-dlq') == first
+    attrs = sqs.get_queue_attributes(QueueUrl=first['queue_url'],
+                                    AttributeNames=['RedrivePolicy'])['Attributes']
+    assert 'RedrivePolicy' in attrs
+```
+
+`sqs` fixture uses Moto 5.0.12, not a cloud client. Local queue retention uses emulator defaults solely for transport testing; no production queue-retention policy is implied. Keep the existing S3 bucket/version healthcheck intact, and add queue readiness for delivery startup without renaming the S3 service.
+
+- [ ] Run tests red. Pin `moto[server,s3,sqs]==5.0.12` in the emulator. Implement idempotent queue/DLQ initializer, finite client waits, and safe status outputs. Update only the existing startup owner after locating it; do not invent a second competing initializer.
+- [ ] Add an opt-in Compose override reusing API image for migration/worker, with service-completed-successfully dependency for migration, DB/emulator readiness, configured local queue URL, fake-model endpoints, dedicated dummy identity key and KMS request key. No test override sends real AWS credentials or selects production endpoints.
+
+```yaml
+evidence-migrate:
+  command: ["python", "-m", "services.api.app.evaluation.migrate"]
+evidence-delivery:
+  command: ["python", "-m", "services.evaluation_delivery.worker"]
+  depends_on:
+    evidence-migrate:
+      condition: service_completed_successfully
+```
+
+Complete service build/env/profiles by reusing the existing API build context and settings; do not duplicate model services. Enable flags only in the opt-in override. Mount `deploy/evaluation/restricted-synthetic-v1.json` into API/worker; generate hashes from the approved synthetic fixtures/templates, validate synchronization with Task 2 fixture tests.
+- [ ] Add Make commands using the existing project/env/profile plus `-f docker-compose.yml -f docker-compose.evaluation.yml`. Down must not remove persistent volumes. Add finite wait/health checks; do not make the default local-check depend on cloud or a running stack.
+- [ ] Run focused local contracts, both Compose configurations with `config --quiet`, `make local-check`, full pytest, rebuild/start opt-in stack, and existing local-smoke. Commit orchestration/tests green before acceptance-test commit.
+
+## Task 10: End-to-end acceptance and fault injection
+
+**Commit:** `test(evaluation): verify durable local evidence delivery and expiry`
+
+**Files:** Create `tests/evaluation_delivery/test_delivery_acceptance.py`, `test_restart_acceptance.py`, `test_retention_acceptance.py`; extend tests-only consumer fixture and signed-token fixtures. No product-only debug routes or failure switches.
+
+**Interfaces:** Opt-in `RUN_EVAL_DELIVERY_TESTS=1`; local API URL and test DB/S3/SQS endpoints supplied explicitly. Live fixtures fail when requested services are unreachable; they do not silently skip after opt-in. Synthetic tokens carry trusted tenant IDs and cases selected by local manifest, not body flags.
+
+- [ ] Write acceptance tests against the spec before enabling fault scenarios: join `X-Run-ID`, immutable safe run/outbox bytes, SQS envelope identity/hash, and exact versioned payload objects. Assert original NDJSON answer unchanged, sensitive sentinel removed only from evidence, tenant-B read denied, and expected completeness.
+
+```python
+def test_live_delivery_links_stored_versions(live_run):
+    assert live_run.header_run_id == live_run.envelope.run_id
+    assert live_run.db_export_bytes == live_run.queue_body
+    assert live_run.envelope.completeness == 'complete'
+    assert all(ref.version_id for ref in live_run.stored_references)
+    assert b'fixture-secret' not in live_run.exported_payload_bytes
+```
+
+`live_run` fixture posts an approved signed synthetic case, polls with a fixed deadline, reads producer state through a read-only test DB connection, consumes only its unique test queue namespace, and resolves objects with an authorized tenant. Do not drain another developer's queue or overwrite existing corpus fixtures.
+
+- [ ] Run new live tests before expected integration is complete and verify the observed failure. Make only scoped integration fixes supported by those failures; any spec change goes back to review.
+- [ ] Add real-PG/worker restart with pending committed records and broker outage. Inject acknowledgement-before-mark failure through a test-owned worker/repository wrapper, not a production flag; prove identical redelivery and transactional test-consumer dedup/conflict. Use container stop/start only for dedicated local evaluation worker, preserving DB volumes and ingestion services.
+- [ ] Add partial upload/DB admission failure, header/body disconnect, buffer overflow, slow SDK/shutdown, missing tenant/unapproved flattened source, failed delete/resume, and controlled-clock expiry acceptance. Clock injection is DI in test-owned runtime/maintenance components; do not add an API clock-control endpoint.
+- [ ] Run `RUN_EVAL_POSTGRES_TESTS=1 EVAL_TEST_DATABASE_URL=postgresql+asyncpg://ragadmin:changeme@127.0.0.1:15432/rag_db pytest tests/evaluation_delivery/test_outbox_postgres.py tests/evaluation_delivery/test_migrations.py -q` using the isolated schemas; the port/credentials match the inspected `.env.example`. Then run `make local-evidence-smoke`, `make local-smoke`, all delivery/observability tests and full pytest. Record exact counts/skips and which failures were exercised; no guessed future totals.
+- [ ] Run pinned API-container tests with a read-only checkout test mount and explicitly installed pinned test requirements; match the existing PR 3 verification approach. Inspect no unsafe logs/metric labels; commit acceptance tests and scoped fixes green.
+
+## Task 11: Operating docs and final verification
+
+**Commit:** `docs(evaluation): document safe evidence delivery and local verification`
+
+**Files:** Update `docs/evaluation_implementation/local-environment.md`, `gap-01-production-run-instrumentation.md`, this plan, and create `docs/evaluation_implementation/evidence-delivery-operations.md`. Do not edit unrelated docs.
+
+- [ ] Document disabled/default vs opt-in startup, signed synthetic tenant fixtures, configuration/limits, migration command, `admitted`/`committed` distinction, pre-commit loss, post-commit duplicate recovery/quarantine, exact retention/cleanup/retry commands, metric names, and resolver authorization. Explain synthetic policy limits and cloud IAM/KMS/retention/SLO gates; no audit-grade or universal-DLP claim.
+- [ ] Provide tested operator command examples, using actual local endpoints/environment established in Task 9:
+
+```bash
+make local-evidence-up
+make local-evidence-check
+make local-evidence-smoke
+docker compose -p scalable-rag-eval --profile eval-local --env-file .env.example -f docker-compose.yml -f docker-compose.evaluation.yml run --rm evidence-delivery python -m services.evaluation_delivery.maintenance cleanup --dry-run --limit 100
+```
+
+The apply/retry commands require explicit targets; never present bucket/database-wide resets as cleanup. Specify that queue/trace/backups/datasets need their own production retention policies.
+- [ ] Re-run full pytest, live PostgreSQL tests, default/opt-in local-check/smoke, live delivery/restart/retention acceptance, and pinned-container observability/delivery suite; run `git diff --check`. Record counts, skip reasons, exact image/commit, and local-versus-cloud evidence.
+- [ ] Perform final review using the user-selected execution method. Resolve correctness/security findings before claiming completion; no new authority for push/cloud actions follows from this plan.
+- [ ] Update checkboxes only for steps actually completed. Mark Gap 1's PR 4 local milestones, not PR 5 production gates, and explicitly describe incomplete replay provenance/cached cases. Commit docs separately and report the next production-hardening task.
+
+## Self-review coverage and execution handoff
+
+Spec coverage: sections 1–3 → scope/file map/Tasks 1, 6, 7, 9; section 4 → Tasks 4, 7; section 5 → Tasks 1–3, 6; sections 6–7 → Tasks 2, 6; section 8 → Task 3; section 9 → Tasks 4–5; section 10 → Tasks 1, 3, 6–7; section 11 → Tasks 3–4, 8; section 12 → Tasks 7, 9–10; section 13 → Tasks 10–11. All five Review Focus cases have owning tests. No unselected transport branch remains.
+
+The user approved this plan and selected **subagent-driven execution**: fresh implementation/review contexts per module plus final review. Follow the skill's per-plan ledger, preflight interface scan, sequential implementation dispatch, and specification/code-quality review gates. Resolve workspace isolation and verify the baseline before starting Task 1. Implementation approval does not authorize cloud deployment, a push, or merging a new branch into `dev`.

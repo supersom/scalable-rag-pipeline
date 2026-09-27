@@ -1,6 +1,6 @@
 # PR 4: Safe Payload Storage and Durable Publication
 
-**Status:** Written specification awaiting user review. The policy choices and three conversational design sections are approved; this document adds concrete contracts and proposed local limits for review. No PR 4 product code, dependencies, infrastructure, or production capture have been changed.
+**Status:** Written specification approved by the user. The policy choices, three conversational design sections, concrete contracts, and local engineering limits are approved for implementation planning. Implementation-plan review and execution-method selection are still required. No PR 4 product code, dependencies, infrastructure, or production capture have been changed.
 
 **Related documents:** [Gap 1 design](gap-01-production-run-instrumentation.md), [PR 4 planning draft](pr-04-payload-publication-plan.md), [local environment](local-environment.md).
 
