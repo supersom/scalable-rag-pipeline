@@ -6,6 +6,8 @@ from qdrant_client.http import models as qdrant_models
 from services.api.app.clients.ray_embed import embed_client
 from services.api.app.clients.qdrant import qdrant_client
 from services.api.app.config import settings
+from libs.observability.tracing import mark_failure
+from opentelemetry import trace
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +42,10 @@ class SemanticCache:
             
             # 2. Search in a specific 'cache' collection in Qdrant 
             # (or Redis Vector if configured)
-            results = await qdrant_client.client.search(
+            results = await qdrant_client.search(
                 collection_name="semantic_cache",
-                query_vector=vector,
+                vector=vector,
                 limit=1,
-                with_payload=True,
                 score_threshold=threshold # Only extremely similar queries
             )
             
@@ -53,7 +54,8 @@ class SemanticCache:
                 return results[0].payload["answer"]
             
         except Exception as e:
-            logger.warning(f"Semantic cache lookup failed: {e}")
+            mark_failure(trace.get_current_span(), e)
+            logger.warning("Semantic cache lookup failed (%s)", type(e).__name__)
             
         return None
 
@@ -80,6 +82,7 @@ class SemanticCache:
                 ]
             )
         except Exception as e:
-            logger.warning(f"Failed to write to semantic cache: {e}")
+            mark_failure(trace.get_current_span(), e)
+            logger.warning("Semantic cache write failed (%s)", type(e).__name__)
 
 semantic_cache = SemanticCache()

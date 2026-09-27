@@ -2,6 +2,7 @@
 from neo4j import GraphDatabase, AsyncGraphDatabase
 from services.api.app.config import settings
 import logging
+from libs.observability.tracing import domain_span
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +37,14 @@ class Neo4jClient:
         """
         Executes a Cypher query and returns the results.
         """
-        if not self._driver:
-            await self.connect()
-            
-        async with self._driver.session() as session:
-            result = await session.run(cypher_query, parameters or {})
-            return [record.data() async for record in result]
+        with domain_span("neo4j.search") as span:
+            if not self._driver:
+                self.connect()
+            async with self._driver.session() as session:
+                result = await session.run(cypher_query, parameters or {})
+                rows = [record.data() async for record in result]
+            span.set_attribute("retrieval.result_count", len(rows))
+            return rows
 
 # Global instance
 neo4j_client = Neo4jClient()

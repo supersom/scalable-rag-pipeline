@@ -1,62 +1,110 @@
-# services/api/app/agents/nodes/retriever.py
+"""Ranked retrieval records are normalized before prompt formatting."""
 import asyncio
-from typing import Dict, List
+import hashlib
+from dataclasses import dataclass, replace
+from typing import Literal
+
+from libs.observability.tracing import domain_span, failure_status, mark_failure
 from services.api.app.agents.state import AgentState
 from services.api.app.clients.qdrant import qdrant_client
 from services.api.app.clients.neo4j import neo4j_client
-from services.api.app.clients.ray_embed import embed_client # To be implemented
-import logging
+from services.api.app.clients.ray_embed import embed_client
 
-logger = logging.getLogger(__name__)
 
-async def retrieve_node(state: AgentState) -> Dict:
-    """
-    Executes Hybrid Retrieval:
-    1. Embeds the user query.
-    2. Runs Vector Search (Qdrant) AND Graph Search (Neo4j) concurrently.
-    3. Merges and deduplicates results.
-    """
-    query = state["current_query"]
-    logger.info(f"Retrieving context for: {query}")
+@dataclass(frozen=True)
+class RetrievedItem:
+    retrieval_source: Literal["qdrant", "neo4j"]
+    document_id: str | None
+    document_version: str | None
+    chunk_id: str | None
+    content: str
+    content_hash: str
+    score: float | None
+    rank: int
+    metadata: dict
 
-    # Step 1: Get Embedding for the query (Call Ray Serve)
-    # We await this because we need the vector for Qdrant
-    query_vector = await embed_client.embed_query(query)
 
-    # Step 2: Define the tasks for Parallel Execution
-    
-    # Task A: Vector Search (Semantic Similarity)
-    async def run_vector_search():
-        results = await qdrant_client.search(vector=query_vector, limit=5)
-        def get_filename(p):
-            return p.get('metadata', {}).get('filename') or p.get('filename', 'unknown')
-        return [f"{r.payload['text']} [Source: {get_filename(r.payload)}]" for r in results]
+@dataclass(frozen=True)
+class RetrievalResult:
+    items: list[RetrievedItem]
+    vector_status: str = "success"
+    graph_status: str = "success"
+    graph_error_type: str | None = None
 
-    # Task B: Graph Search (Structural Relationships)
-    # We use a keyword match or a pre-defined Cypher template here.
-    async def run_graph_search():
-        cypher = """
-        CALL db.index.fulltext.queryNodes("entity_index", $query) YIELD node, score
-        MATCH (node)-[r]->(neighbor)
-        RETURN node.name + ' ' + type(r) + ' ' + neighbor.name as text
-        LIMIT 5
-        """
-        # Note: Lucene syntax for fulltext search might need fuzzy matching (~).
+
+def _item(source, payload, rank, score=None, point_id=None):
+    metadata = {**payload, **(payload.get("metadata") or {})}
+    content = payload.get("text", "")
+    document_id = metadata.get("document_id")
+    if document_id is None and metadata.get("source_path"):
+        document_id = "sha256:" + hashlib.sha256(metadata["source_path"].encode()).hexdigest()
+    chunk_id = metadata.get("chunk_id") or payload.get("relationship_id") or point_id
+    return RetrievedItem(
+        source, str(document_id) if document_id is not None else None,
+        metadata.get("document_version") or metadata.get("content_hash"),
+        str(chunk_id) if chunk_id is not None else None,
+        content, hashlib.sha256(content.encode()).hexdigest(), score, rank, metadata,
+    )
+
+
+def _deduplicate(items):
+    ordered = {}
+    for item in items:
+        key = (item.retrieval_source, item.document_id, item.chunk_id, item.content_hash)
+        previous = ordered.get(key)
+        if previous is None:
+            ordered[key] = item
+        elif item.score is not None and (previous.score is None or item.score > previous.score):
+            ordered[key] = replace(previous, score=item.score)
+    return list(ordered.values())
+
+
+async def retrieve_context(query: str) -> RetrievalResult:
+    with domain_span("retrieval") as span:
+        query_vector = await embed_client.embed_query(query)
+        async def vector_search():
+            results = await qdrant_client.search(vector=query_vector, limit=5)
+            return [_item("qdrant", r.payload or {}, rank, r.score, r.id)
+                    for rank, r in enumerate(results, 1)]
+
+        async def graph_search():
+            try:
+                rows = await neo4j_client.query("""
+                    CALL db.index.fulltext.queryNodes("entity_index", $query) YIELD node, score
+                    MATCH (node)-[r]->(neighbor)
+                    RETURN node.name + ' ' + type(r) + ' ' + neighbor.name AS text,
+                           elementId(r) AS relationship_id, score
+                    ORDER BY score DESC, relationship_id
+                    LIMIT 5
+                """, {"query": query})
+                return [_item("neo4j", r, rank, r.get("score")) for rank, r in enumerate(rows, 1)], None
+            except Exception as exc:
+                return [], exc
+
+        tasks = [asyncio.create_task(vector_search()), asyncio.create_task(graph_search())]
         try:
-            results = await neo4j_client.query(cypher, {"query": query})
-            return [r['text'] for r in results]
-        except Exception as e:
-            logger.error(f"Graph search failed: {e}")
-            return []
+            vector_items, (graph_items, error) = await asyncio.gather(*tasks)
+        except BaseException:
+            # gather does not cancel siblings on failure; finish child work before
+            # closing retrieval so failures/disconnects cannot leave orphan spans.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        items = _deduplicate(vector_items + graph_items)
+        if error is not None:
+            mark_failure(span, error, status="partial")
+        span.set_attribute("retrieval.result_count", len(items))
+        span.set_attribute("retrieval.vector_status", "success")
+        span.set_attribute("retrieval.graph_status", failure_status(error) if error is not None else "success")
+        return RetrievalResult(items, graph_status=failure_status(error) if error is not None else "success",
+                               graph_error_type=type(error).__name__ if error is not None else None)
 
-    # Step 3: Run both in parallel!
-    vector_docs, graph_docs = await asyncio.gather(run_vector_search(), run_graph_search())
 
-    # Step 4: Merge and Deduplicate
-    # We prioritize Graph results for specific facts, Vector for general context.
-    combined_docs = list(set(vector_docs + graph_docs))
-    
-    logger.info(f"Retrieved {len(combined_docs)} documents.")
-
-    # Update State
-    return {"documents": combined_docs}
+async def retrieve_node(state: AgentState) -> dict:
+    result = await retrieve_context(state["current_query"])
+    return {"documents": [
+        f"{item.content} [Source: {item.metadata.get('filename', 'unknown')}]"
+        if item.retrieval_source == "qdrant" else item.content
+        for item in result.items
+    ]}
