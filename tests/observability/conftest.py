@@ -20,10 +20,14 @@ def route(monkeypatch):
     client_type = qdrant_client.AsyncQdrantClient
     monkeypatch.setattr(qdrant_client, "AsyncQdrantClient", lambda **kwargs: client_type(location=":memory:"))
     from services.api.app.routes import chat
+    from services.api.app.clients.qdrant import qdrant_client
+    monkeypatch.setattr(qdrant_client, "client", client_type(location=":memory:"))
 
     provider = TracerProvider()
     exporter = InMemorySpanExporter()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     monkeypatch.setattr(chat, "tracer", provider.get_tracer("test.chat"))
+    from libs.observability import tracing
+    monkeypatch.setattr(tracing, "domain_tracer", provider.get_tracer("test.domain"))
     yield chat, provider, exporter
     provider.shutdown()

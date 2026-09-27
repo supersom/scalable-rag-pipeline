@@ -1,6 +1,10 @@
 """Process-level OpenTelemetry configuration; payloads never belong in spans."""
 import asyncio
 import logging
+import time
+from contextlib import contextmanager
+import httpx
+from opentelemetry.trace import Status, StatusCode
 from threading import Lock
 from urllib.parse import urlparse
 from weakref import WeakSet
@@ -18,6 +22,36 @@ logger = logging.getLogger(__name__)
 _lock = Lock()
 _provider = None
 _closed = WeakSet()
+domain_tracer = trace.get_tracer("rag.domain")
+
+
+def failure_status(exc: BaseException) -> str:
+    if isinstance(exc, (asyncio.CancelledError, GeneratorExit)):
+        return "cancelled"
+    return "timeout" if isinstance(exc, (TimeoutError, httpx.TimeoutException)) else "error"
+
+
+def mark_failure(span, exc: BaseException, *, status: str | None = None):
+    """Record only an exception class, never its message or stack arguments."""
+    span.set_attribute("operation.status", status or failure_status(exc))
+    span.set_attribute("error.type", type(exc).__name__)
+    span.set_status(Status(StatusCode.ERROR))
+
+
+@contextmanager
+def domain_span(name: str, *, attributes=None):
+    """Safe child span; callers supply only small, non-content attributes."""
+    started = time.perf_counter()
+    with domain_tracer.start_as_current_span(name, attributes=attributes, record_exception=False,
+                                           set_status_on_exception=False) as span:
+        span.set_attribute("operation.status", "success")
+        try:
+            yield span
+        except BaseException as exc:
+            mark_failure(span, exc)
+            raise
+        finally:
+            span.set_attribute("operation.latency_ms", (time.perf_counter() - started) * 1000)
 
 
 def create_tracer_provider(
