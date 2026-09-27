@@ -2,19 +2,37 @@
 import asyncio
 import inspect
 import logging
+import time
+from datetime import datetime, timezone
 from services.api.app.agents.state import AgentState
 from services.api.app.tools.registry import TOOL_REGISTRY
-from libs.observability.tracing import domain_span
+from libs.observability.tracing import domain_span, failure_status, mark_failure
+from langchain_core.runnables import RunnableConfig
+from services.api.app.evaluation.context import bind_collector, collector_from_config, content_hash
 
 logger = logging.getLogger(__name__)
 
-async def tool_node(state: AgentState) -> dict:
+async def tool_node(state: AgentState, config: RunnableConfig = None) -> dict:
     name = state.get("tool_name", "")
-    with domain_span("tool.execute", attributes={"tool.name": name if name in TOOL_REGISTRY else "unknown"}) as span:
+    collector = collector_from_config(config)
+    started_at, started = datetime.now(timezone.utc), time.perf_counter()
+    with bind_collector(collector, purpose="graph_search" if name == "graph_search" else "tool"), domain_span("tool.execute", attributes={"tool.name": name if name in TOOL_REGISTRY else "unknown"}) as span:
         if name not in TOOL_REGISTRY:
-            from libs.observability.tracing import mark_failure
             mark_failure(span, ValueError(), status="invalid")
-        return await _execute(state)
+        result = None
+        try:
+            result = await _execute(state)
+            return result
+        except BaseException as exc:
+            mark_failure(span, exc)
+            raise
+        finally:
+            if collector is not None:
+                collector.record_tool_step(tool_name=name if name in TOOL_REGISTRY else "unknown", registered=name in TOOL_REGISTRY,
+                    arguments_hash=content_hash(state.get("tool_input", "")),
+                    result_hash=content_hash(result["documents"]) if result is not None else None,
+                    started_at=started_at, latency_ms=(time.perf_counter() - started) * 1000,
+                    status=span.attributes["operation.status"], error_type=span.attributes.get("error.type"))
 
 
 async def _execute(state: AgentState) -> dict:

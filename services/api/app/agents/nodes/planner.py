@@ -5,8 +5,10 @@ import logging
 from services.api.app.agents.state import AgentState
 from services.api.app.clients.ray_llm import llm_client
 from services.api.app.tools.registry import TOOL_REGISTRY
-from libs.observability.tracing import domain_span, mark_failure
+from libs.observability.tracing import domain_span, mark_failure, set_span_attribute
 from opentelemetry import trace
+from langchain_core.runnables import RunnableConfig
+from services.api.app.evaluation.context import bind_collector, collector_from_config
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +79,8 @@ def _extract_json(text: str) -> dict:
 
 SYSTEM_PROMPT = _build_system_prompt()
 
-async def planner_node(state: AgentState) -> dict:
-    with domain_span("planner") as span:
+async def planner_node(state: AgentState, config: RunnableConfig = None) -> dict:
+    with bind_collector(collector_from_config(config), purpose="planner"), domain_span("planner") as span:
         result = await _plan(state)
         span.set_attribute("planner.action", result["action"])
         if result["tool_name"] in TOOL_REGISTRY:
@@ -144,7 +146,7 @@ async def _plan(state: AgentState) -> dict:
 
     except Exception as e:
         mark_failure(trace.get_current_span(), e)
-        trace.get_current_span().set_attribute("planner.fallback", True)
+        set_span_attribute(trace.get_current_span(), "planner.fallback", True)
         logger.error("Planning failed (%s)", type(e).__name__)
         return {
             "action": "retrieve",

@@ -1,7 +1,7 @@
 # services/api/app/tools/web_search.py
 import httpx
 import os
-from libs.observability.tracing import mark_failure
+from libs.observability.tracing import mark_failure, set_span_attribute
 from opentelemetry import trace
 
 async def web_search_tool(query: str) -> str:
@@ -11,7 +11,7 @@ async def web_search_tool(query: str) -> str:
     """
     api_key = os.getenv("TAVILY_API_KEY") # Or SERPAPI_KEY
     if not api_key:
-        trace.get_current_span().set_attribute("operation.status", "disabled")
+        set_span_attribute(trace.get_current_span(), "operation.status", "disabled")
         return "Web search is disabled (API Key missing)."
 
     try:

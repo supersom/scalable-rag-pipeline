@@ -3,11 +3,13 @@ import logging
 from services.api.app.agents.state import AgentState
 from services.api.app.clients.ray_llm import llm_client
 from libs.observability.tracing import domain_span
+from langchain_core.runnables import RunnableConfig
+from services.api.app.evaluation.context import bind_collector, collector_from_config
 
 logger = logging.getLogger(__name__)
 
-async def generate_node(state: AgentState) -> dict:
-    with domain_span("responder", attributes={"response.type": state.get("action", "retrieve")}):
+async def generate_node(state: AgentState, config: RunnableConfig = None) -> dict:
+    with bind_collector(collector_from_config(config), purpose="responder"), domain_span("responder", attributes={"response.type": state.get("action", "retrieve")}):
         return await _generate(state)
 
 

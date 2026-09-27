@@ -1,7 +1,7 @@
 # services/api/app/tools/sandbox.py
 import httpx
 from services.api.app.config import settings
-from libs.observability.tracing import mark_failure
+from libs.observability.tracing import mark_failure, set_span_attribute
 from opentelemetry import trace
 
 # Helper to find the Sandbox Service in K8s
@@ -29,7 +29,7 @@ async def run_python_code(code: str) -> str:
                     mark_failure(trace.get_current_span(), RuntimeError())
                     return f"Execution Error:\n{data['output']}"
             else:
-                trace.get_current_span().set_attribute("http.response.status_code", response.status_code)
+                set_span_attribute(trace.get_current_span(), "http.response.status_code", response.status_code)
                 mark_failure(trace.get_current_span(), RuntimeError())
                 return f"Sandbox Error: Status {response.status_code}"
                 
