@@ -8,6 +8,7 @@ COPY services/api/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY services /app/services
+COPY libs /app/libs
 
 EXPOSE 8000
 

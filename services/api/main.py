@@ -11,6 +11,7 @@ from services.api.app.clients.ray_embed import embed_client
 from services.api.app.clients.ray_llm import llm_client
 from services.api.app.memory.postgres import Base, engine
 from services.api.app.routes import chat, health, upload
+from services.api.app.observability import setup_observability, shutdown_observability
 
 
 @asynccontextmanager
@@ -19,27 +20,29 @@ async def lifespan(app: FastAPI):
     Centralized Resource Management.
     Initialize all connection pools here.
     """
-    # 1. Startup
-    print("Initializing clients...")
-    neo4j_client.connect()
-    await redis_client.connect()
-    await llm_client.start()
-    await embed_client.start()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    await semantic_cache.ensure_collection()
-    
-    yield
-    
-    # 2. Shutdown
-    print("Closing clients...")
-    await neo4j_client.close()
-    await redis_client.close()
-    await llm_client.close()
-    await embed_client.close()
+    try:
+        print("Initializing clients...")
+        neo4j_client.connect()
+        await redis_client.connect()
+        await llm_client.start()
+        await embed_client.start()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await semantic_cache.ensure_collection()
+        yield
+    finally:
+        print("Closing clients...")
+        try:
+            await neo4j_client.close()
+            await redis_client.close()
+            await llm_client.close()
+            await embed_client.close()
+        finally:
+            await shutdown_observability(app)
 
 # FastAPI Application
 app = FastAPI(title="Enterprise RAG Platform", version="1.0.0", lifespan=lifespan)
+setup_observability(app)
 
 # Include Routes
 app.include_router(chat.router, prefix="/api/v1/chat", tags=["Chat"])

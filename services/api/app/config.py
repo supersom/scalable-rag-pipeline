@@ -1,5 +1,7 @@
 # services/api/app/config.py
 from pydantic_settings import BaseSettings
+from pydantic import Field
+from typing import Literal
 from typing import Optional
 
 class Settings(BaseSettings):
@@ -10,6 +12,18 @@ class Settings(BaseSettings):
     # General
     ENV: str = "prod"
     LOG_LEVEL: str = "INFO"
+
+    # OTLP/gRPC when an endpoint is set; console export is opt-in.
+    OTEL_SERVICE_NAME: str = "rag-api-service"
+    OTEL_SERVICE_VERSION: str = "unknown"
+    OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = None
+    OTEL_CONSOLE_EXPORT_ENABLED: bool = False
+    OTEL_TRACES_SAMPLER: Literal[
+        "always_on", "always_off", "traceidratio", "parentbased_always_on",
+        "parentbased_always_off", "parentbased_traceidratio",
+    ] = "parentbased_always_on"
+    OTEL_TRACES_SAMPLER_ARG: float = Field(default=1.0, ge=0.0, le=1.0)
+    OTEL_EXPORTER_OTLP_TIMEOUT: float = Field(default=5.0, gt=0.0)
     
     # Database (Aurora Postgres)
     DATABASE_URL: str  # e.g., postgresql+asyncpg://user:pass@host:5432/db

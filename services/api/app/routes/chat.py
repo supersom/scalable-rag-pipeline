@@ -2,7 +2,15 @@
 import uuid
 import json
 import logging
+import asyncio
+import time
+from contextlib import aclosing
 from typing import AsyncGenerator
+
+import httpx
+import anyio
+from opentelemetry import context, trace
+from opentelemetry.trace import Status, StatusCode
 
 from fastapi import APIRouter, Depends, BackgroundTasks
 from fastapi.responses import StreamingResponse
@@ -19,6 +27,25 @@ from services.api.app.tools.registry import TOOL_REGISTRY, NO_ANSWER_PHRASES
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
+
+
+class RunStreamingResponse(StreamingResponse):
+    """Close the run generator when ASGI disconnects during a body send."""
+
+    def __init__(self, *args, on_close, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.on_close = on_close
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            try:
+                with anyio.CancelScope(shield=True):
+                    await self.body_iterator.aclose()
+            finally:
+                self.on_close()
 
 def _is_successful_answer(text: str) -> bool:
     lower = text.lower()
@@ -58,126 +85,108 @@ async def chat_stream(
     Main Chat Endpoint (Streaming).
     Orchestrates the RAG flow: Cache -> History -> Agent -> Stream.
     """
-    # 1. Setup Session Context
+    # One run per accepted attempt, including cache hits and client retries.
+    run_id = str(uuid.uuid4())
     session_id = req.session_id or str(uuid.uuid4())
     user_id = user["id"]
-    
-    logger.info(f"Chat request for session {session_id} from user {user_id}")
-    
-    # 2. Semantic Cache Check (Fast Path)
-    # Check if we have answered a semantically identical question recently.
-    cached_ans = await cache.get_cached_response(req.message)
-    
-    if cached_ans:
-        logger.info(f"Cache hit for session {session_id}")
-        
-        # Generator for cached response
-        async def stream_cache():
-            yield json.dumps({
-                "type": "answer", 
-                "content": cached_ans,
-                "session_id": session_id
-            }) + "\n"
-        
-        # Async Background: Log interaction even if cached
-        background_tasks.add_task(memory.add_message, session_id, "user", req.message, user_id)
-        background_tasks.add_task(memory.add_message, session_id, "assistant", cached_ans, user_id)
-        
-        return StreamingResponse(stream_cache(), media_type="application/x-ndjson")
-
-    # 3. Load Conversation History (Context Window)
-    # Fetch last 6 turns to give the LLM context of the conversation
-    history_objs = await memory.get_history(session_id, limit=6)
-    history_dicts = [
-        {"role": msg.role, "content": msg.content} for msg in history_objs
-    ]
-    # Append current user message
-    history_dicts.append({"role": "user", "content": req.message})
-
-    # 4. Initialize Agent State (LangGraph)
-    initial_state = AgentState(
-        messages=history_dicts,
-        current_query=req.message,
-        action="retrieve",
-        tool_name="",
-        tool_input="",
-        documents=[],
-        plan=[]
+    parent_context = context.get_current()
+    started_at = time.time_ns()
+    span = tracer.start_span(
+        "agent.run", context=parent_context, start_time=started_at,
+        attributes={"run_id": run_id, "cache.hit": False},
     )
+    finished = False
 
-    # 5. Define Generator for Streaming Response
-    async def event_generator() -> AsyncGenerator[str, None]:
+    def finish_run(outcome):
+        nonlocal finished
+        if not finished:
+            finished = True
+            span.set_attribute("run.status", outcome)
+            span.end()
+
+    def encode_event(**fields):
+        return json.dumps({**fields, "run_id": run_id, "session_id": session_id}) + "\n"
+
+    async def stream_events() -> AsyncGenerator[str, None]:
         final_answer = ""
         is_cacheable = True  # default; overridden by planner output
 
-        try:
-            # Run the LangGraph
-            # We pass 'llm' and 'user_id' in the 'configurable' dict.
-            # This allows the Agent Nodes to access the injected client and user context
-            # via `config.get("configurable", {}).get("llm")` if refactored to support it.
-            async for event in agent_app.astream(
-                initial_state,
-                config={"configurable": {"llm": llm, "user_id": user_id}}
-            ):
+        cached_ans = await cache.get_cached_response(req.message)
+        trace.get_current_span().set_attribute("cache.hit", bool(cached_ans))
+        if cached_ans:
+            yield encode_event(type="answer", content=cached_ans)
+            # Include cached persistence in the run lifecycle, just like normal answers.
+            await memory.add_message(session_id, "user", req.message, user_id)
+            await memory.add_message(session_id, "assistant", cached_ans, user_id)
+            return
 
-                # event is a dict like {'retriever': {...state updates...}}
+        history_objs = await memory.get_history(session_id, limit=6)
+        history_dicts = [{"role": msg.role, "content": msg.content} for msg in history_objs]
+        history_dicts.append({"role": "user", "content": req.message})
+        initial_state = AgentState(
+            messages=history_dicts, current_query=req.message, action="retrieve",
+            tool_name="", tool_input="", documents=[], plan=[],
+        )
+
+        async with aclosing(agent_app.astream(
+            initial_state,
+            config={"configurable": {"llm": llm, "user_id": user_id}},
+        )) as graph_events:
+            async for event in graph_events:
                 node_name = list(event.keys())[0]
                 node_data = event[node_name]
 
-                # Capture planner decision to decide cacheability
                 if node_name == "planner":
                     action = node_data.get("action", "retrieve")
                     tool_name = node_data.get("tool_name", "")
                     if action == "tool_use" and tool_name:
-                        tool_entry = TOOL_REGISTRY.get(tool_name, {})
-                        is_cacheable = tool_entry.get("cacheable", True)
-                    # retrieve and direct_answer are always cacheable
-                    yield json.dumps({
-                        "type": "routing",
-                        "action": action,
-                        "tool": tool_name or None,
-                        "session_id": session_id,
-                    }) + "\n"
+                        is_cacheable = TOOL_REGISTRY.get(tool_name, {}).get("cacheable", True)
+                    yield encode_event(type="routing", action=action, tool=tool_name or None)
 
-                # Emit Status Update
-                yield json.dumps({
-                    "type": "status",
-                    "node": node_name,
-                    "session_id": session_id,
-                    "info": f"Completed step: {node_name}"
-                }) + "\n"
+                yield encode_event(type="status", node=node_name, info=f"Completed step: {node_name}")
 
-                # Capture Final Answer from Responder Node
-                if node_name == "responder":
-                    # The responder node appends the final AI message to state['messages']
-                    if "messages" in node_data and node_data["messages"]:
-                        ai_msg = node_data["messages"][-1]
-                        final_answer = ai_msg.get("content", "")
+                if node_name == "responder" and node_data.get("messages"):
+                    final_answer = node_data["messages"][-1].get("content", "")
+                    yield encode_event(type="answer", content=final_answer)
 
-                        # Stream the chunk
-                        yield json.dumps({
-                            "type": "answer",
-                            "content": final_answer,
-                            "session_id": session_id
-                        }) + "\n"
+        if final_answer:
+            await memory.add_message(session_id, "user", req.message, user_id)
+            await memory.add_message(session_id, "assistant", final_answer, user_id)
+            if is_cacheable and _is_successful_answer(final_answer):
+                await cache.set_cached_response(req.message, final_answer)
+            else:
+                logger.info("Skipping cache for run %s", run_id)
 
-            # 6. Post-Processing (Inside Generator Context)
-            if final_answer:
-                # We await these to ensure data consistency before closing the stream
-                await memory.add_message(session_id, "user", req.message, user_id)
-                await memory.add_message(session_id, "assistant", final_answer, user_id)
+    async def event_generator() -> AsyncGenerator[str, None]:
+        events = stream_events()
+        outcome = "cancelled"
+        try:
+            while True:
+                # Attach only while advancing the generator. Holding a context token
+                # across yield can leak context or fail when ASGI closes another task.
+                with trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
+                    try:
+                        event = await anext(events)
+                    except StopAsyncIteration:
+                        outcome = "success"
+                        break
+                yield event
+        except (asyncio.CancelledError, GeneratorExit):
+            raise
+        except Exception as exc:
+            outcome = "timeout" if isinstance(exc, (TimeoutError, httpx.TimeoutException)) else "error"
+            span.set_attribute("error.type", type(exc).__name__)
+            span.set_status(Status(StatusCode.ERROR))
+            logger.error("Chat run %s failed (%s)", run_id, type(exc).__name__)
+            yield encode_event(type="error", content="An internal error occurred.")
+        finally:
+            try:
+                with trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
+                    await events.aclose()
+            finally:
+                finish_run(outcome)
 
-                # Only cache stable, successful responses
-                if is_cacheable and _is_successful_answer(final_answer):
-                    await cache.set_cached_response(req.message, final_answer)
-                else:
-                    logger.info(f"Skipping cache: non-cacheable tool or unsuccessful answer (session {session_id})")
-                
-        except Exception as e:
-            logger.error(f"Error in chat stream: {e}", exc_info=True)
-            yield json.dumps({
-                "type": "error", 
-                "content": "An internal error occurred."
-            }) + "\n"
-
-    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+    return RunStreamingResponse(
+        event_generator(), media_type="application/x-ndjson", headers={"X-Run-ID": run_id},
+        on_close=lambda: finish_run("cancelled"),
+    )
