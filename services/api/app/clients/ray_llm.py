@@ -2,9 +2,12 @@
 import httpx
 import logging
 import backoff
+import time
 from typing import List, Dict, Optional
 from pydantic import BaseModel, ConfigDict, Field
-from libs.observability.tracing import domain_span
+from libs.observability.tracing import domain_span, failure_status, set_span_attribute
+from services.api.app.evaluation.context import current_collector, model_purpose, content_hash
+from services.api.app.evaluation.models import ModelCall
 from services.api.app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -24,7 +27,7 @@ class LLMResult(BaseModel):
 
 def _retry_observed(details):
     from opentelemetry import trace
-    trace.get_current_span().set_attribute("retry.count", details["tries"])
+    set_span_attribute(trace.get_current_span(), "retry.count", details["tries"])
 
 class RayLLMClient:
     """
@@ -65,11 +68,29 @@ class RayLLMClient:
         return await self.client.post(self.endpoint, json=payload)
 
     async def chat_completion_result(self, messages: List[Dict], temperature: float = 0.7, json_mode: bool = False, max_tokens: int = 1024) -> LLMResult:
+        started = time.perf_counter()
+        collector = current_collector.get()
+        result = failure = None
         with domain_span("llm.chat", attributes={
             "gen_ai.request.model": settings.LLM_MODEL_ID or settings.LLM_MODEL_NAME,
             "gen_ai.request.temperature": temperature, "retry.count": 0,
         }) as span:
-            return await self._completion(messages, temperature, max_tokens, span)
+            try:
+                result = await self._completion(messages, temperature, max_tokens, span)
+                return result
+            except BaseException as exc:
+                failure = exc
+                raise
+            finally:
+                if collector is not None:
+                    collector.record_model_call(ModelCall(
+                        purpose=model_purpose.get(), request_hash=content_hash({"messages": messages, "temperature": temperature, "max_tokens": max_tokens}),
+                        requested_model=settings.LLM_MODEL_ID or settings.LLM_MODEL_NAME,
+                        **(result.model_dump(exclude={"text"}) if result is not None else {}),
+                        status=failure_status(failure) if failure is not None else "success",
+                        error_type=type(failure).__name__ if failure is not None else None,
+                        retry_count=span.attributes.get("retry.count", 0), latency_ms=(time.perf_counter() - started) * 1000,
+                    ))
 
     async def _completion(self, messages, temperature, max_tokens, span):
         if not self.client:

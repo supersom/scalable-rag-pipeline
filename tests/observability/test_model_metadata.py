@@ -66,7 +66,11 @@ def test_malformed_provider_response_is_explicit_and_safe(route, body):
 @pytest.mark.parametrize("recover", [False, True])
 def test_transient_model_retries_are_bounded_and_observable(route, recover):
     from services.api.app.clients.ray_llm import RayLLMClient
+    from services.api.app.evaluation.context import RunEvidenceCollector, bind_collector
+    from services.api.app.evaluation.models import ConfigurationFingerprint
     _, _, exporter = route
+    collector = RunEvidenceCollector(run_id="r", session_id="s", input_text="q",
+                                     configuration=ConfigurationFingerprint())
     requests = []
     def respond(request):
         requests.append(request)
@@ -75,17 +79,26 @@ def test_transient_model_retries_are_bounded_and_observable(route, recover):
         return httpx.Response(200, json={"choices": [{"message": {"content": "answer"}}]})
     async def run():
         client = RayLLMClient()
-        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client.client:
-            if recover:
-                assert await client.chat_completion([]) == "answer"
-            else:
-                with pytest.raises(httpx.ReadTimeout): await client.chat_completion([])
+        with bind_collector(collector, purpose="planner"):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client.client:
+                if recover:
+                    assert await client.chat_completion([]) == "answer"
+                else:
+                    with pytest.raises(httpx.ReadTimeout): await client.chat_completion([])
     asyncio.run(run())
     assert len(requests) == 3
     [span] = exporter.get_finished_spans()
     assert span.attributes["retry.count"] == 2
     assert span.attributes["operation.status"] == ("success" if recover else "timeout")
     assert "private secret" not in str(span.attributes) + str(span.events)
+    evidence = collector.finish("success" if recover else "timeout")
+    assert len(evidence.model_calls) == 1
+    assert evidence.model_calls[0].purpose == "planner"
+    assert evidence.model_calls[0].retry_count == evidence.operations.retry_count == 2
+    assert evidence.model_calls[0].status == ("success" if recover else "timeout")
+    assert evidence.operations.input_tokens is None
+    assert evidence.operations.usage_complete is False
+    assert "private" not in evidence.model_dump_json()
 
 
 @pytest.mark.parametrize("vector", [None, [], [True], ["private secret"], [float("inf")]])
