@@ -184,6 +184,10 @@ class SafeModelCall(Contract):
     cached_tokens: NonnegativeInt | None = None
     status: Outcome
     latency_ms: FiniteNonnegative | None = None
+    provider_request_pseudonym: str | None = None
+    completion_pseudonym: str | None = None
+    error_class: str | None = None
+    retry_count: NonnegativeInt = 0
 
 
 class SafeToolStep(Contract):
@@ -193,6 +197,8 @@ class SafeToolStep(Contract):
     latency_ms: FiniteNonnegative
     arguments_digest_pseudonym: str | None = None
     result_digest_pseudonym: str | None = None
+    error_class: str | None = None
+    retry_count: NonnegativeInt = 0
 
 
 class SafeDependency(Contract):
@@ -200,6 +206,7 @@ class SafeDependency(Contract):
     name: str | None = None
     status: Outcome
     latency_ms: FiniteNonnegative
+    error_class: str | None = None
     attributes: Mapping[str, str | int | float | bool] = Field(default_factory=dict)
 
     @model_validator(mode="after")

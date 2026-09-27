@@ -1,0 +1,206 @@
+{
+  "policy_version": "restricted-synthetic-v1",
+  "calculator_grammar": "numeric-sqrt-v1",
+  "sources": [
+    {
+      "tenant_id": "synthetic-tenant",
+      "case_id": "literal",
+      "source_kind": "input",
+      "source_id": "literal",
+      "source_hash": "sha256:2b85e59d91f1cfda9c4da06384fba612794d9d381fa8a58e73078cf3b7bcf767",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant",
+      "case_id": "tokens",
+      "source_kind": "input",
+      "source_id": "tokens",
+      "source_hash": "sha256:f8015aa802bb502baf00111039893a930026125c69020d4da0b1dcd8115304e9",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant",
+      "case_id": "private",
+      "source_kind": "input",
+      "source_id": "private",
+      "source_hash": "sha256:1d890b37212c7b521e5a847b290853f47adef126500f697c7f65df77973a534f",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant",
+      "case_id": "broken",
+      "source_kind": "input",
+      "source_id": "broken",
+      "source_hash": "sha256:7173d01a801c68cf58fdee13efbbd75ec251c39acee72d6dcfbf6033d390395b",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant",
+      "case_id": "contacts",
+      "source_kind": "input",
+      "source_id": "contacts",
+      "source_hash": "sha256:dc01996fd58358c44501697c33e159d5b5fb6fecb836646b88dedd729c5da31f",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant",
+      "case_id": "overlap",
+      "source_kind": "input",
+      "source_id": "overlap",
+      "source_hash": "sha256:ef187439f9a7585a5781aa59b3cf73bbf676bffb7a7e6e536f5d842abdadcdd7",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant",
+      "case_id": "synthetic-question",
+      "source_kind": "input",
+      "source_id": "synthetic-question",
+      "source_hash": "sha256:82de269230c0befb56ea1794dde147608dcc3d96e894ba9689242fb59e3df100",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant",
+      "case_id": "history",
+      "source_kind": "history",
+      "source_id": "history",
+      "source_hash": "sha256:d1b891f4042b29d943c1b951ac78944f550523a4a5cf6ad0e81bfb2f59ba4ebc",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant",
+      "case_id": "template",
+      "source_kind": "template",
+      "source_id": "template",
+      "source_hash": "sha256:f60797a279cd5b5764d94a82fec2c9a03c59a5beefb59458b7807a93e2b009c0",
+      "template_id": "synthetic-system-v1",
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant",
+      "case_id": "chunk",
+      "source_kind": "retrieval_chunk",
+      "source_id": "chunk",
+      "source_hash": "sha256:6445a6b352d261e1f0a85b801dff8cb196b0f9877d9c98e5bf3922131a58d963",
+      "template_id": null,
+      "collection": "synthetic-documents",
+      "document_id": "synthetic-document-1"
+    },
+    {
+      "tenant_id": "synthetic-tenant-2",
+      "case_id": "literal",
+      "source_kind": "input",
+      "source_id": "literal",
+      "source_hash": "sha256:2b85e59d91f1cfda9c4da06384fba612794d9d381fa8a58e73078cf3b7bcf767",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant-2",
+      "case_id": "tokens",
+      "source_kind": "input",
+      "source_id": "tokens",
+      "source_hash": "sha256:f8015aa802bb502baf00111039893a930026125c69020d4da0b1dcd8115304e9",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant-2",
+      "case_id": "private",
+      "source_kind": "input",
+      "source_id": "private",
+      "source_hash": "sha256:1d890b37212c7b521e5a847b290853f47adef126500f697c7f65df77973a534f",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant-2",
+      "case_id": "broken",
+      "source_kind": "input",
+      "source_id": "broken",
+      "source_hash": "sha256:7173d01a801c68cf58fdee13efbbd75ec251c39acee72d6dcfbf6033d390395b",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant-2",
+      "case_id": "contacts",
+      "source_kind": "input",
+      "source_id": "contacts",
+      "source_hash": "sha256:dc01996fd58358c44501697c33e159d5b5fb6fecb836646b88dedd729c5da31f",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant-2",
+      "case_id": "overlap",
+      "source_kind": "input",
+      "source_id": "overlap",
+      "source_hash": "sha256:ef187439f9a7585a5781aa59b3cf73bbf676bffb7a7e6e536f5d842abdadcdd7",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant-2",
+      "case_id": "synthetic-question",
+      "source_kind": "input",
+      "source_id": "synthetic-question",
+      "source_hash": "sha256:82de269230c0befb56ea1794dde147608dcc3d96e894ba9689242fb59e3df100",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant-2",
+      "case_id": "history",
+      "source_kind": "history",
+      "source_id": "history",
+      "source_hash": "sha256:d1b891f4042b29d943c1b951ac78944f550523a4a5cf6ad0e81bfb2f59ba4ebc",
+      "template_id": null,
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant-2",
+      "case_id": "template",
+      "source_kind": "template",
+      "source_id": "template",
+      "source_hash": "sha256:f60797a279cd5b5764d94a82fec2c9a03c59a5beefb59458b7807a93e2b009c0",
+      "template_id": "synthetic-system-v1",
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant-2",
+      "case_id": "chunk",
+      "source_kind": "retrieval_chunk",
+      "source_id": "chunk",
+      "source_hash": "sha256:6445a6b352d261e1f0a85b801dff8cb196b0f9877d9c98e5bf3922131a58d963",
+      "template_id": null,
+      "collection": "synthetic-documents",
+      "document_id": "synthetic-document-1"
+    }
+  ]
+}
