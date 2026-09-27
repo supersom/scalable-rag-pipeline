@@ -61,7 +61,7 @@ New isolated tests live under `tests/evaluation_delivery/`; fixtures are local t
 
 ### Shared contracts to maintain across tasks
 
-Task 1 owns strict immutable data types: `EventIdentity(export_version, run_schema_version, run_id)`, `PayloadKind`, `PayloadSlot(kind, ordinal, item_ordinal=None)`, `UnavailableReason`, `DeliveryReason`, `RedactedPayload(slot, data, policy_version)`, `ManifestEntry(slot, state, reference=None, reason=None)`, `PayloadRef`, `SafeRun`, `ExportPolicy`, `PreparedExport`, `ExportEnvelope`, `DeliveryReceipt`, `PublishReceipt`, `UploadIntent`, `OutboxClaim`, `CapturedRun`, `CleanupClaim`, and `CleanupReport`.
+Task 1 owns strict immutable data types: `EventIdentity(export_version, run_schema_version, run_id)`, `PayloadKind`, `PayloadSlot(kind, ordinal, item_ordinal=None)`, `UnavailableReason`, `DeliveryReason`, `RedactedPayload(slot, data, policy_version)`, `ManifestEntry(slot, state, reference=None, reason=None)`, `PayloadRef`, `ObjectVersion`, `SafeRun`, `FixtureRecord`, `ExportPolicy`, `PreparedExport`, `ExportEnvelope`, `DeliveryReceipt`, `PublishReceipt`, `UploadIntent`, `OutboxClaim`, `CapturedRun`, `CleanupClaim`, and `CleanupReport`.
 
 - `RedactedPayload.data` is canonical UTF-8 JSON bytes validated by Task 2; its constructor is not an alternative to policy admission. `PreparedExport` contains safe metadata plus eligible redacted payloads and unavailable slots, never raw content. `CapturedRun` holds the detached original event and its prepared export.
 - `PayloadSlot` uses positive ordinal/item ordinal; `model_request`/`model_response` carry invocation ordinal, and the safe metadata model-call projection includes that ordinal. Other slots map to retrieval/tool step ordinals. Input/output use ordinal 1.
@@ -69,7 +69,7 @@ Task 1 owns strict immutable data types: `EventIdentity(export_version, run_sche
 - `ExportEnvelope` carries `export_version='1.0'`, `run_schema_version='1.0'`, server UUID, policy version, safe run projection, manifest, completeness, and canonical `export_hash`. It contains no payload bytes.
 - `DeliveryReceipt.status` is `disabled|admitted|dropped|failed|committed`; a fixed reason is optional. `PublishReceipt` carries acknowledgement ID. Claims carry identity/hash, immutable envelope bytes, expiry, and random lease token; upload/cleanup claims carry generated namespace, lease/state, not prompts.
 - `UnavailableReason` is exactly the payload reason enum in specification section 6. `DeliveryReason` additionally defines `active_capacity`, `pending_capacity`, `runtime_stopped`, `metadata_invalid`, `metadata_too_large`, `deadline_expired`, `database_unavailable`, `intent_failed`, `broker_transient`, `broker_denied`, `retry_exhausted`, `expired`, `identity_conflict`, and `cleanup_failed`. Reasons/labels are fixed enums, not exception-derived text.
-- `ExportPolicy` carries dedicated identity key privately, environment, configured metadata allowlists, synthetic fixture manifest, and resource limits. Keys are excluded from representations/serialization. It does not grant arbitrary source approval.
+- `ExportPolicy` carries dedicated identity key privately, environment, configured metadata allowlists, `synthetic_sources: tuple[FixtureRecord, ...]`, and resource limits. `FixtureRecord` contains a trusted tenant/case/source kind, source identity/hash, and approved template/corpus identifiers; Task 2 loads these records from the manifest at startup. Keys are excluded from representations/serialization. It does not grant arbitrary source approval or depend on Task 2's loader class.
 
 ## Task 1: Delivery contracts and disabled-safe configuration
 
@@ -111,7 +111,7 @@ def canonical_bytes(value):
 
 **Commit:** `feat(evaluation): redact approved synthetic evidence for export`
 
-**Files:** Create `evaluation/redaction.py`, `evaluation/metadata_export.py`, `evaluation/provenance.py`, `tests/evaluation_delivery/test_redaction.py`, `test_metadata_export.py`, `test_provenance.py`, and `fixtures/restricted-synthetic-v1.json`; extend delivery test fixtures.
+**Files:** Create `evaluation/redaction.py`, `evaluation/metadata_export.py`, `evaluation/provenance.py`, `tests/evaluation_delivery/test_redaction.py`, `test_metadata_export.py`, `test_provenance.py`, and `deploy/evaluation/restricted-synthetic-v1.json`; extend delivery test fixtures. Keep one checked-in fixture manifest, shared by tests and the opt-in local stack.
 
 **Interfaces:** `SyntheticManifest.load(path: Path) -> SyntheticManifest`; `SourceProof` and `Provenance` in `provenance.py`; `Provenance.approved(policy: ExportPolicy) -> bool`; `redact_payload(slot: PayloadSlot, value: object, provenance: Provenance, policy: ExportPolicy) -> RedactedPayload | ManifestEntry`; `project_metadata(event: RunEvidence, policy: ExportPolicy, model_ordinals: tuple[int, ...]) -> SafeRun`; `prepare_export(event, policy, payloads: tuple[RedactedPayload, ...], unavailable: tuple[ManifestEntry, ...], model_ordinals=()) -> PreparedExport`; `seal_export(prepared: PreparedExport, entries: tuple[ManifestEntry, ...]) -> ExportEnvelope`.
 
@@ -153,7 +153,7 @@ The four compiled patterns are module constants defined in this task: bounded ma
 
 **Files:** Create `evaluation/bounded_io.py`, `evaluation/payloads.py`, `tests/evaluation_delivery/test_bounded_io.py`, `test_payloads.py`, and `requirements-evaluation-test.txt`. Pin `pytest==9.0.3` (the inspected host version) and `moto[s3,sqs]==5.0.12` (matching the emulator) for repeatable host/container tests. Use `asyncio.run` rather than adding pytest-asyncio. Do not alter API pins without evidence of a missing runtime dependency.
 
-**Interfaces:** `BoundedIO(workers: int)` with `async call(fn, *, deadline: float)` and `async close(deadline: float)`; `PayloadStore.put(run_id: UUID, tenant_partition: str, payload: RedactedPayload, *, deadline: float) -> PayloadRef`; `get(reference: PayloadRef, authorized_tenant: str, *, deadline: float) -> bytes`; `delete_versions(keys: tuple[str, ...], *, deadline: float) -> int`; `list_versions(prefix: str, *, deadline: float) -> tuple[ObjectVersion, ...]`. All PayloadStore operations are async. Define strict `ObjectVersion` coordination metadata in `delivery_models.py` and `S3PayloadStore`/`DisabledPayloadStore` here. Deadlines use monotonic time; creation/expiry use an injected UTC clock.
+**Interfaces:** `BoundedIO(workers: int)` with `async call(fn, *, deadline: float)` and `async close(deadline: float)`; `PayloadStore.put(run_id: UUID, tenant_partition: str, payload: RedactedPayload, *, deadline: float) -> PayloadRef`; `get(reference: PayloadRef, authorized_tenant: str, *, deadline: float) -> bytes`; `delete_versions(versions: tuple[ObjectVersion, ...], *, deadline: float) -> int`; `list_versions(prefix: str, *, deadline: float) -> tuple[ObjectVersion, ...]`. All PayloadStore operations are async. `ObjectVersion` includes key, version ID, and delete-marker flag so cleanup can delete exact versions; define it in `delivery_models.py` and `S3PayloadStore`/`DisabledPayloadStore` here. Deadlines use monotonic time; creation/expiry use an injected UTC clock.
 
 - [ ] Write Moto/Stubber tests for round trips, generated key namespace, exact version ID, dedicated KMS request, wrong/missing tenant before IO, manipulated bucket/key/version/policy, expired reads, hash/size mismatch, failed upload with no reference, and deletion of all versions/delete markers.
 
@@ -194,7 +194,7 @@ Completion callbacks must also handle an already-closed loop without emitting a 
 
 **Files:** Create `evaluation/storage_models.py`, `migrations/001_evidence_outbox.sql`, `evaluation/migrate.py`, `evaluation/outbox.py`, `tests/evaluation_delivery/test_migrations.py`, `test_outbox.py`, `test_outbox_postgres.py`; extend test fixtures for an opt-in real local PostgreSQL schema.
 
-**Interfaces:** `async migrate(engine) -> tuple[int, ...]`; CLI `python -m services.api.app.evaluation.migrate`; `OutboxRepository(session_factory, clock)` exposes `begin_upload(run_id, namespace, lease_seconds) -> UploadIntent`, `enqueue(envelope: ExportEnvelope, intent: UploadIntent | None) -> DeliveryReceipt`, `claim_batch(limit, lease_seconds) -> tuple[OutboxClaim, ...]`, `mark_delivered(claim: OutboxClaim, receipt: PublishReceipt) -> bool`, `schedule_retry(claim, error_class: str, *, permanent: bool) -> bool`, `retry_quarantined(identity: EventIdentity) -> bool`, `claim_orphan(namespace, now) -> CleanupClaim | None`, `complete_cleanup(claim) -> bool`, `expire_runs(now, limit) -> int`. All repository operations are async. Define `EvidenceConflict` and safe persistence errors here.
+**Interfaces:** `async migrate(engine) -> tuple[int, ...]`; CLI `python -m services.api.app.evaluation.migrate`; `OutboxRepository(session_factory, clock)` exposes `begin_upload(run_id, namespace, lease_seconds) -> UploadIntent`, `enqueue(envelope: ExportEnvelope, intent: UploadIntent | None) -> DeliveryReceipt`, `claim_batch(limit, lease_seconds) -> tuple[OutboxClaim, ...]`, `mark_delivered(claim: OutboxClaim, receipt: PublishReceipt) -> bool`, `schedule_retry(claim, error_class: str, *, permanent: bool) -> bool`, `retry_quarantined(identity: EventIdentity) -> bool`, `inspect_cleanup(namespace, now) -> CleanupClaim | None`, `claim_orphan(namespace, now) -> CleanupClaim | None`, `complete_cleanup(claim) -> bool`, `expire_runs(now, limit) -> int`. All repository operations are async. Define `EvidenceConflict` and safe persistence errors here.
 
 - [ ] Write real-PG tests for transactional run/outbox/reference insertion and rollback, duplicate acceptance/conflict, expiry unchanged by duplicates, restart recovery, two dispatchers, stale token/lease updates, migration reapplication/checksum conflict/concurrent startup, and cleanup-owned intent denial.
 
@@ -371,7 +371,8 @@ Also test expired intent → cleanup claim → attempted enqueue is denied, then
 ```python
 claim = await repo.claim_orphan(namespace, now)
 if claim is not None and apply:
-    deleted = await store.delete_versions(tuple(keys), deadline=deadline)
+    versions = await store.list_versions(claim.namespace, deadline=deadline)
+    deleted = await store.delete_versions(versions, deadline=deadline)
     await repo.complete_cleanup(claim)
 ```
 
@@ -384,7 +385,7 @@ Only complete when every claimed version was resolved; partial deletion is resum
 
 **Commit:** `feat(local): orchestrate evidence migrations and delivery workers`
 
-**Files:** Modify `docker-compose.yml`, `.env.example`, `Makefile`, `services/aws_emulator/requirements.txt`, `services/aws_emulator/entrypoint.sh`; create `services/aws_emulator/init_eval_queue.py`, `docker-compose.evaluation.yml`, `deploy/evaluation/restricted-synthetic-v1.json`, `tests/local_env/test_eval_queue.py`, and extend `test_local_configuration.py`/`test_aws_emulator.py`. The inspected entrypoint starts Moto then runs `init_s3`; keep that sequence and add evaluation queue initialization after S3 readiness. Mount the explicitly synthetic production-format fixture manifest; do not copy arbitrary private test data into images.
+**Files:** Modify `docker-compose.yml`, `.env.example`, `Makefile`, `services/aws_emulator/requirements.txt`, `services/aws_emulator/entrypoint.sh`; create `services/aws_emulator/init_eval_queue.py`, `docker-compose.evaluation.yml`, `tests/local_env/test_eval_queue.py`, and extend `test_local_configuration.py`/`test_aws_emulator.py`. The inspected entrypoint starts Moto then runs `init_s3`; keep that sequence and add evaluation queue initialization after S3 readiness. Mount the single synthetic fixture manifest created in Task 2; do not copy arbitrary private test data into images.
 
 **Interfaces:** `init_eval_queue.ensure_queues(client, queue_name, dlq_name) -> dict[str, str]`; module CLI prints safe queue initialization status. Make targets `local-evidence-up`, `local-evidence-down`, `local-evidence-check`, `local-evidence-smoke`. Existing `local-up/check/smoke` contracts remain valid.
 
