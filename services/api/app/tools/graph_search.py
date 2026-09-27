@@ -2,6 +2,8 @@
 from services.api.app.clients.neo4j import neo4j_client
 from services.api.app.clients.ray_llm import llm_client
 import json
+from libs.observability.tracing import mark_failure
+from opentelemetry import trace
 
 SYSTEM_PROMPT = """
 You are a Knowledge Graph Helper.
@@ -22,14 +24,14 @@ async def search_graph_tool(question: str) -> str:
     """
     try:
         # 1. Extract Entities (No Code Generation)
-        response_text = await llm_client.chat_completion(
+        response = await llm_client.chat_completion_result(
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT.format(question=question)}
+                {"role": "system", "content": SYSTEM_PROMPT.replace("{question}", question)}
             ],
             temperature=0.0,
             json_mode=True
         )
-        data = json.loads(response_text)
+        data = json.loads(response.text)
         entities = data.get("entities", [])
         
         if not entities:
@@ -53,4 +55,5 @@ async def search_graph_tool(question: str) -> str:
         return str(results)
         
     except Exception as e:
+        mark_failure(trace.get_current_span(), e)
         return f"Graph search error: {str(e)}"

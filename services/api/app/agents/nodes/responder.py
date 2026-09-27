@@ -2,10 +2,16 @@
 import logging
 from services.api.app.agents.state import AgentState
 from services.api.app.clients.ray_llm import llm_client
+from libs.observability.tracing import domain_span
 
 logger = logging.getLogger(__name__)
 
 async def generate_node(state: AgentState) -> dict:
+    with domain_span("responder", attributes={"response.type": state.get("action", "retrieve")}):
+        return await _generate(state)
+
+
+async def _generate(state: AgentState) -> dict:
     """
     Synthesizes the final answer using retrieved documents or tool output.
     """
@@ -41,13 +47,13 @@ Instructions:
 2. If the answer is not in the context, say "I don't have that information in my documents."
 3. Be concise and professional."""
     
-    logger.info(f"Responder Node: generating answer for query: {query!r} with {len(documents)} docs")
-    answer = await llm_client.chat_completion(
+    logger.info("Responder Node: generating answer with %d docs", len(documents))
+    answer = await llm_client.chat_completion_result(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3
     )
     logger.info("Responder Node: answer generated")
 
     return {
-        "messages": [{"role": "assistant", "content": answer}]
+        "messages": [{"role": "assistant", "content": answer.text}]
     }

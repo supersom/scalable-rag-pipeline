@@ -5,6 +5,8 @@ import logging
 from services.api.app.agents.state import AgentState
 from services.api.app.clients.ray_llm import llm_client
 from services.api.app.tools.registry import TOOL_REGISTRY
+from libs.observability.tracing import domain_span, mark_failure
+from opentelemetry import trace
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,15 @@ def _extract_json(text: str) -> dict:
 SYSTEM_PROMPT = _build_system_prompt()
 
 async def planner_node(state: AgentState) -> dict:
+    with domain_span("planner") as span:
+        result = await _plan(state)
+        span.set_attribute("planner.action", result["action"])
+        if result["tool_name"] in TOOL_REGISTRY:
+            span.set_attribute("tool.name", result["tool_name"])
+        return result
+
+
+async def _plan(state: AgentState) -> dict:
     """
     Decides the path through the LangGraph.
     """
@@ -88,7 +99,7 @@ async def planner_node(state: AgentState) -> dict:
 
     # Call LLM to plan
     try:
-        response_text = await llm_client.chat_completion(
+        response = await llm_client.chat_completion_result(
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_query}
@@ -98,7 +109,7 @@ async def planner_node(state: AgentState) -> dict:
         )
         
         # _extract_json strips markdown fences and returns the first JSON object
-        plan = _extract_json(response_text)
+        plan = _extract_json(response.text)
 
         action = plan.get("action", "retrieve")
         tool_name = plan.get("tool_name") or ""
@@ -132,7 +143,9 @@ async def planner_node(state: AgentState) -> dict:
         }
 
     except Exception as e:
-        logger.error(f"Planning failed: {e}")
+        mark_failure(trace.get_current_span(), e)
+        trace.get_current_span().set_attribute("planner.fallback", True)
+        logger.error("Planning failed (%s)", type(e).__name__)
         return {
             "action": "retrieve",
             "tool_name": "",

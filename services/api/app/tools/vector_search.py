@@ -1,6 +1,8 @@
 # services/api/app/tools/vector_search.py
 from services.api.app.clients.qdrant import qdrant_client
 from services.api.app.clients.ray_embed import embed_client
+from libs.observability.tracing import mark_failure
+from opentelemetry import trace
 
 async def search_vector_tool(query: str) -> str:
     """
@@ -28,4 +30,5 @@ async def search_vector_tool(query: str) -> str:
         return formatted
         
     except Exception as e:
+        mark_failure(trace.get_current_span(), e)
         return f"Search Error: {str(e)}"

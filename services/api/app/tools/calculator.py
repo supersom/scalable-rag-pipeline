@@ -1,5 +1,7 @@
 # services/api/app/tools/calculator.py
 from simpleeval import simple_eval
+from libs.observability.tracing import mark_failure
+from opentelemetry import trace
 
 def calculate(expression: str) -> str:
     """
@@ -8,6 +10,7 @@ def calculate(expression: str) -> str:
     """
     # 1. Length limit to prevent ReDoS or memory exhaustion
     if len(expression) > 100:
+        mark_failure(trace.get_current_span(), ValueError(), status="invalid")
         return "Error: Expression too long."
 
     try:
@@ -16,4 +19,5 @@ def calculate(expression: str) -> str:
         result = simple_eval(expression)
         return str(result)
     except Exception as e:
+        mark_failure(trace.get_current_span(), e)
         return f"Error: {str(e)}"
