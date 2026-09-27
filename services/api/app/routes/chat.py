@@ -11,6 +11,7 @@ import httpx
 import anyio
 from opentelemetry import context, trace
 from opentelemetry.trace import Status, StatusCode
+from libs.observability.tracing import domain_span
 
 from fastapi import APIRouter, Depends, BackgroundTasks
 from fastapi.responses import StreamingResponse
@@ -111,16 +112,19 @@ async def chat_stream(
         final_answer = ""
         is_cacheable = True  # default; overridden by planner output
 
-        cached_ans = await cache.get_cached_response(req.message)
+        with domain_span("cache.lookup") as lookup:
+            cached_ans = await cache.get_cached_response(req.message)
+            lookup.set_attribute("cache.hit", bool(cached_ans))
         trace.get_current_span().set_attribute("cache.hit", bool(cached_ans))
         if cached_ans:
             yield encode_event(type="answer", content=cached_ans)
             # Include cached persistence in the run lifecycle, just like normal answers.
-            await memory.add_message(session_id, "user", req.message, user_id)
-            await memory.add_message(session_id, "assistant", cached_ans, user_id)
+            await persist(cached_ans)
             return
 
-        history_objs = await memory.get_history(session_id, limit=6)
+        with domain_span("memory.load") as load:
+            history_objs = await memory.get_history(session_id, limit=6)
+            load.set_attribute("memory.message_count", len(history_objs))
         history_dicts = [{"role": msg.role, "content": msg.content} for msg in history_objs]
         history_dicts.append({"role": "user", "content": req.message})
         initial_state = AgentState(
@@ -150,12 +154,19 @@ async def chat_stream(
                     yield encode_event(type="answer", content=final_answer)
 
         if final_answer:
+            await persist(final_answer)
+            with domain_span("cache.write") as write:
+                if is_cacheable and _is_successful_answer(final_answer):
+                    await cache.set_cached_response(req.message, final_answer)
+                else:
+                    write.set_attribute("operation.status", "skipped")
+                    write.set_attribute("cache.skip_reason", "tool_not_cacheable" if not is_cacheable else "abstention")
+
+    async def persist(answer):
+        with domain_span("memory.persist") as persist_span:
             await memory.add_message(session_id, "user", req.message, user_id)
-            await memory.add_message(session_id, "assistant", final_answer, user_id)
-            if is_cacheable and _is_successful_answer(final_answer):
-                await cache.set_cached_response(req.message, final_answer)
-            else:
-                logger.info("Skipping cache for run %s", run_id)
+            await memory.add_message(session_id, "assistant", answer, user_id)
+            persist_span.set_attribute("memory.message_count", 2)
 
     async def event_generator() -> AsyncGenerator[str, None]:
         events = stream_events()

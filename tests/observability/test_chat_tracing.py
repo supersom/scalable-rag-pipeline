@@ -61,6 +61,10 @@ async def consume(response):
     return [json.loads(event) async for event in response.body_iterator]
 
 
+def run_spans(exporter):
+    return [s for s in exporter.get_finished_spans() if s.name == "agent.run"]
+
+
 @pytest.mark.parametrize("cached", [False, True])
 def test_one_run_id_and_span_cover_every_event_and_cache_lookup(route, monkeypatch, cached):
     chat, _, exporter = route
@@ -76,12 +80,14 @@ def test_one_run_id_and_span_cover_every_event_and_cache_lookup(route, monkeypat
     UUID(run_id)
     assert events and all(e["run_id"] == run_id for e in events)
     assert all(e["session_id"] == "conversation-1" for e in events)
-    [span] = exporter.get_finished_spans()
+    [span] = run_spans(exporter)
     assert span.name == "agent.run"
     assert span.attributes["run_id"] == run_id
     assert span.attributes["run.status"] == "success"
     assert span.attributes["cache.hit"] is cached
-    assert cache.seen_spans[0].span_id == span.context.span_id
+    lookup = next(s for s in exporter.get_finished_spans() if s.name == "cache.lookup")
+    assert cache.seen_spans[0].span_id == lookup.context.span_id
+    assert lookup.parent.span_id == span.context.span_id
     assert len(memory.writes) == 2
     assert "private" not in str(span.attributes) + str(span.events)
 
@@ -106,7 +112,7 @@ def test_dependency_failures_finish_one_safe_span_and_correlated_error(route, mo
         return await consume(await response_for(chat, cache, memory))
 
     events = asyncio.run(run())
-    [span] = exporter.get_finished_spans()
+    [span] = run_spans(exporter)
     assert events[-1]["type"] == "error"
     assert events[-1]["run_id"] == span.attributes["run_id"]
     assert events[-1]["session_id"] == "conversation-1"
@@ -124,12 +130,12 @@ def test_stream_close_from_another_task_finishes_cancelled_without_context_leak(
         response = await response_for(chat, Cache(), Memory())
         await anext(response.body_iterator)
         assert not trace.get_current_span().get_span_context().is_valid
-        assert exporter.get_finished_spans() == ()
+        assert run_spans(exporter) == []
         await asyncio.create_task(response.body_iterator.aclose())
         assert not trace.get_current_span().get_span_context().is_valid
 
     asyncio.run(run())
-    [span] = exporter.get_finished_spans()
+    [span] = run_spans(exporter)
     assert span.attributes["run.status"] == "cancelled"
 
 
@@ -152,7 +158,7 @@ def test_cancellation_during_dependency_wait_propagates_and_finishes_span(route,
             await task
 
     asyncio.run(run())
-    [span] = exporter.get_finished_spans()
+    [span] = run_spans(exporter)
     assert span.attributes["run.status"] == "cancelled"
 
 
@@ -213,10 +219,10 @@ def test_asgi_client_disconnect_closes_run_span(route, monkeypatch, disconnect_o
             await sent_answer.wait()
             return {"type": "http.disconnect"}
         await asyncio.wait_for(response({"type": "http", "asgi": {"spec_version": "2.0"}}, receive, send), 2)
-        assert len(exporter.get_finished_spans()) == 1  # before loop shutdown/GC
+        assert len(run_spans(exporter)) == 1  # before loop shutdown/GC
 
     asyncio.run(run())
-    [span] = exporter.get_finished_spans()
+    [span] = run_spans(exporter)
     assert span.attributes["run.status"] == "cancelled"
 
 
@@ -232,7 +238,7 @@ def test_concurrent_streams_do_not_share_run_context(route, monkeypatch):
         return await asyncio.gather(*(one(cache) for cache in caches))
     results = asyncio.run(run())
     assert results[0][0]["run_id"] != results[1][0]["run_id"]
-    assert len(exporter.get_finished_spans()) == 2
+    assert len(run_spans(exporter)) == 2
     assert caches[0].seen_spans[0].trace_id != caches[1].seen_spans[0].trace_id
 
 
@@ -252,5 +258,5 @@ def test_disconnect_closes_underlying_graph_before_finishing_run(route, monkeypa
         await anext(response.body_iterator)
         await response.body_iterator.aclose()
         assert closed == [True]
-        assert len(exporter.get_finished_spans()) == 1
+        assert len(run_spans(exporter)) == 1
     asyncio.run(run())
