@@ -27,6 +27,40 @@ class Settings(BaseSettings):
     # Optional separate key for tenant-scoped identity pseudonyms. No raw user ID
     # enters evidence when unset; durable storage/publication belongs to PR 4.
     EVAL_IDENTITY_HASH_KEY: Optional[str] = None
+    EVAL_EVIDENCE_ENABLED: bool = False
+    EVAL_CAPTURE_CONTENT: bool = False
+    EVAL_QUEUE_URL: Optional[str] = None
+    EVAL_CONTENT_POLICY: Optional[str] = None
+    EVAL_FIXTURE_MANIFEST: Optional[str] = None
+    EVAL_S3_BUCKET: Optional[str] = None
+    EVAL_KMS_KEY_ID: Optional[str] = None
+    EVAL_S3_ENDPOINT_URL: Optional[str] = None
+    EVAL_PAYLOAD_BYTES: int = 65536
+    EVAL_RUN_BYTES: int = 1048576
+    EVAL_PAYLOAD_SLOTS: int = 64
+    EVAL_ACTIVE_RUNS: int = 32
+    EVAL_ACTIVE_BYTES: int = 16777216
+    EVAL_PENDING_RUNS: int = 32
+    EVAL_PENDING_BYTES: int = 16777216
+    EVAL_RUNTIME_WORKERS: int = 2
+    EVAL_S3_WORKERS: int = 2
+    EVAL_DEADLINE_SECONDS: float = 20
+    EVAL_COMMIT_RESERVE_SECONDS: float = 3
+    EVAL_SDK_CONNECT_TIMEOUT_SECONDS: float = 1
+    EVAL_SDK_READ_TIMEOUT_SECONDS: float = 2
+    EVAL_SDK_ATTEMPTS: int = 2
+    EVAL_QUEUE_BODY_BYTES: int = 131072
+    EVAL_DELIVERY_BATCH: int = 10
+    EVAL_SEND_WORKERS: int = 2
+    EVAL_CLAIM_LEASE_SECONDS: float = 60
+    EVAL_PRODUCER_ATTEMPTS: int = 8
+    EVAL_BACKOFF_BASE_SECONDS: float = 1
+    EVAL_BACKOFF_CAP_SECONDS: float = 60
+    EVAL_SHUTDOWN_DRAIN_SECONDS: float = 10
+    EVAL_INTENT_LEASE_SECONDS: float = 60
+    EVAL_ORPHAN_GRACE_SECONDS: float = 86400
+    EVAL_CONTENT_RETENTION_DAYS: int = 30
+    EVAL_METADATA_RETENTION_DAYS: int = 90
     AGENT_BUILD_SHA: Optional[str] = None  # supplied by build/deployment, never inferred from the working tree
     
     # Database (Aurora Postgres)
