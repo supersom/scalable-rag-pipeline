@@ -9,6 +9,10 @@ from services.api.app.agents.state import AgentState
 from services.api.app.clients.qdrant import qdrant_client
 from services.api.app.clients.neo4j import neo4j_client
 from services.api.app.clients.ray_embed import embed_client
+from services.api.app.config import settings
+from langchain_core.runnables import RunnableConfig
+from services.api.app.evaluation.context import bind_collector, collector_from_config, current_collector, content_hash
+from services.api.app.evaluation.models import RetrievalEvidence, RetrievedEvidence
 
 
 @dataclass(frozen=True)
@@ -61,7 +65,11 @@ def _deduplicate(items):
 
 async def retrieve_context(query: str) -> RetrievalResult:
     with domain_span("retrieval") as span:
-        query_vector = await embed_client.embed_query(query)
+        try:
+            query_vector = await embed_client.embed_query(query)
+        except BaseException as exc:
+            _record_evidence(query, RetrievalResult([], vector_status=failure_status(exc), graph_status="skipped"))
+            raise
         async def vector_search():
             results = await qdrant_client.search(vector=query_vector, limit=5)
             return [_item("qdrant", r.payload or {}, rank, r.score, r.id)
@@ -89,7 +97,15 @@ async def retrieve_context(query: str) -> RetrievalResult:
             # closing retrieval so failures/disconnects cannot leave orphan spans.
             for task in tasks:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            vector, graph = await asyncio.gather(*tasks, return_exceptions=True)
+            vector_items = vector if isinstance(vector, list) else []
+            graph_items, graph_error = graph if isinstance(graph, tuple) else ([], graph)
+            _record_evidence(query, RetrievalResult(
+                _deduplicate(vector_items + graph_items),
+                vector_status="success" if isinstance(vector, list) else failure_status(vector),
+                graph_status=failure_status(graph_error) if graph_error is not None else "success",
+                graph_error_type=type(graph_error).__name__ if graph_error is not None else None,
+            ))
             raise
         items = _deduplicate(vector_items + graph_items)
         if error is not None:
@@ -97,12 +113,28 @@ async def retrieve_context(query: str) -> RetrievalResult:
         span.set_attribute("retrieval.result_count", len(items))
         span.set_attribute("retrieval.vector_status", "success")
         span.set_attribute("retrieval.graph_status", failure_status(error) if error is not None else "success")
-        return RetrievalResult(items, graph_status=failure_status(error) if error is not None else "success",
-                               graph_error_type=type(error).__name__ if error is not None else None)
+        result = RetrievalResult(items, graph_status=failure_status(error) if error is not None else "success",
+                                 graph_error_type=type(error).__name__ if error is not None else None)
+        _record_evidence(query, result)
+        return result
 
 
-async def retrieve_node(state: AgentState) -> dict:
-    result = await retrieve_context(state["current_query"])
+def _record_evidence(query, result):
+    collector = current_collector.get()
+    if collector is not None:
+        collector.record_retrieval(RetrievalEvidence(
+            query_hash=content_hash(query), collection=settings.QDRANT_COLLECTION,
+            vector_status=result.vector_status, graph_status=result.graph_status,
+            graph_error_type=result.graph_error_type,
+            items=[RetrievedEvidence(retrieval_source=i.retrieval_source, document_id=i.document_id,
+                document_version=i.document_version, chunk_id=i.chunk_id, rank=i.rank,
+                score=i.score, content_hash=i.content_hash) for i in result.items],
+        ))
+
+
+async def retrieve_node(state: AgentState, config: RunnableConfig = None) -> dict:
+    with bind_collector(collector_from_config(config)):
+        result = await retrieve_context(state["current_query"])
     return {"documents": [
         f"{item.content} [Source: {item.metadata.get('filename', 'unknown')}]"
         if item.retrieval_source == "qdrant" else item.content
