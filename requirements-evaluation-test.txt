@@ -1,0 +1,3 @@
+# Opt-in test-only dependencies for evaluation delivery tests; not installed in the API image.
+pytest==9.0.3
+moto[s3,sqs]==5.0.12

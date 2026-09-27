@@ -68,6 +68,37 @@ def rich_event():
 
 
 @pytest.fixture
+def aws_env(monkeypatch):
+    for name, value in {
+        'AWS_ACCESS_KEY_ID': 'synthetic-access-key', 'AWS_SECRET_ACCESS_KEY': 'synthetic-secret-key',
+        'AWS_SESSION_TOKEN': 'synthetic-session-token', 'AWS_DEFAULT_REGION': 'us-east-1',
+        'AWS_EC2_METADATA_DISABLED': 'true',
+    }.items():
+        monkeypatch.setenv(name, value)
+    for name in ('AWS_PROFILE', 'AWS_ENDPOINT_URL', 'AWS_ENDPOINT_URL_S3'):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture
+def evidence_bucket():
+    return 'synthetic-evidence-bucket'
+
+
+@pytest.fixture
+def s3_client(aws_env, evidence_bucket):
+    import boto3
+    from moto import mock_aws
+    with mock_aws():
+        client = boto3.client('s3', region_name='us-east-1')
+        client.create_bucket(Bucket=evidence_bucket)
+        client.put_bucket_versioning(Bucket=evidence_bucket, VersioningConfiguration={'Status': 'Enabled'})
+        try:
+            yield client
+        finally:
+            client.close()
+
+
+@pytest.fixture
 def terminal_event(monkeypatch):
     for name, value in {
         "DATABASE_URL": "postgresql+asyncpg://test:test@localhost/test",
