@@ -108,6 +108,24 @@ The containerized API uses service DNS names internally, while host tools use th
 
 To replace the fake models with another local or hosted provider, override `RAY_LLM_ENDPOINT`, `RAY_EMBED_ENDPOINT`, `LLM_MODEL_NAME`, `EMBED_MODEL_NAME`, and `EMBED_DIM` with a compatible endpoint contract.
 
+## Inspect API traces
+
+The API now sends HTTP and `agent.run` spans to the local Collector. Every accepted chat request returns an `X-Run-ID` response header, and each NDJSON event includes the same `run_id` plus its conversation `session_id`. `make local-smoke` checks those identifiers alongside the deterministic answer.
+
+Inspect exported spans after making a request:
+
+```bash
+docker compose -p scalable-rag-eval --profile eval-local --env-file .env.example logs --since 1m otel-collector
+```
+
+Look for `agent.run`, its `run_id`, `run.status`, and `cache.hit`. Its trace ID and parent ID join it to the HTTP server span. Export is batched, so allow several seconds for spans to appear. The Collector's debug exporter is a local inspection aid, not durable trace storage.
+
+The local profile exports all root traces by default. `OTEL_TRACES_SAMPLER` supports `always_on`, `always_off`, `traceidratio`, and their `parentbased_` variants; `OTEL_TRACES_SAMPLER_ARG` controls the ratio. `OTEL_SERVICE_NAME` and `OTEL_SERVICE_VERSION` identify the API build. For host execution, console export is opt-in through `OTEL_CONSOLE_EXPORT_ENABLED`; leave it false when using OTLP. The exporter uses gRPC, with plaintext for local `http://` endpoints and TLS for `https://` endpoints.
+
+Raw query strings and captured header values are removed from HTTP telemetry. Prompts, answer bodies, user IDs, and exception messages are not attached to the domain span. This slice does not yet capture durable run evidence or retrieval/model/tool metadata.
+
+`OTEL_EXPORTER_OTLP_TIMEOUT` is a timeout for each export RPC. SDK retries can extend shutdown when the Collector is unavailable; a strict shutdown deadline still needs resilience testing before production deployment.
+
 ## Scope and limitations
 
 This environment proves application contracts and failure behavior. It does not reproduce AWS IAM, KMS, IRSA, managed queue authentication, EKS networking, multi-replica shutdown, or production load. Those remain staging checks after Gap 1 is implemented.

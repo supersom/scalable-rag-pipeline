@@ -1,6 +1,6 @@
 # Gap 1 implementation: production run instrumentation
 
-**Status:** In progress — the local development foundation is complete; production instrumentation PRs 1–5 remain.
+**Status:** In progress — the local development foundation is committed; PR 1 trace plumbing and run identity are implemented and verified locally. PRs 2–5 remain.
 
 **Scope:** Close Gap 1 from the [evaluation-plane gap analysis](../evaluation-plane-gap-analysis.md#1-instrument-every-production-run-1)
 
@@ -40,11 +40,44 @@ The skipped tests in the first two commands are the opt-in live-stack and OTLP e
 
 This foundation validates application contracts and failure paths locally. It deliberately does not emulate AWS IAM, KMS, IRSA, managed queue authentication, EKS networking, multi-replica shutdown, or production load. Those remain staging and production-readiness checks.
 
+### Implemented locally: PR 1 trace plumbing and run identity
+
+As of 2026-09-27:
+
+- [x] Initialize the process tracer provider and FastAPI instrumentation once during application creation.
+- [x] Export through a bounded background OTLP/gRPC batch processor when an endpoint is configured; keep console export opt-in.
+- [x] Configure service name, version, environment, sampler, sampling ratio, and per-RPC export timeout.
+- [x] Flush and shut down tracing during application lifespan cleanup, including failed startup.
+- [x] Assign `run_id` before cache lookup, return it in `X-Run-ID`, and include it with `session_id` in every NDJSON event.
+- [x] Create an `agent.run` span under the HTTP server span for each accepted chat attempt.
+- [x] Finalize success, cache hit, propagated error, timeout, and cancellation paths exactly once.
+- [x] Close spans and graph iterators promptly on disconnect, including disconnect during response headers before the first body chunk.
+- [x] Keep raw prompts, answers, user IDs, and exception messages out of the domain span. Replace HTTP URL/query fields with route templates and redact captured header values.
+- [x] Add the missing FastAPI instrumentation dependency and copy `libs/` into the API image. Pin setuptools because the pinned instrumentation still imports `pkg_resources`.
+- [x] Extend the local smoke contract to verify stream/header identifier consistency.
+
+Verification:
+
+| Check | Result |
+|---|---|
+| `pytest tests/observability -q` | 38 passed |
+| Focused tests inside the pinned API image | 38 passed |
+| `pytest -q` | 196 passed, 2 skipped |
+| `make local-check` | 18 passed, 2 skipped |
+| `make local-smoke` | 4 passed |
+| Local Collector inspection | API resource, HTTP parent span, and correlated `agent.run` received over OTLP |
+
+The focused tests cover actual ASGI disconnects during headers and body sends, cancellation while awaiting a dependency, concurrent streams, safe HTTP/domain attributes, real OTLP/gRPC delivery, sampling, idempotent setup, and shutdown flush. The ordinary-suite skips remain the two opt-in live-stack checks. Runtime checks used fake models and local dependencies without cloud credentials or a GPU. Existing configuration/logging and pinned upstream packages emit deprecation warnings; these do not fail the checks.
+
+PR 1 traces accepted, authenticated chat requests. Authentication and request-validation rejections receive HTTP instrumentation but do not start an agent run. Sampling can suppress trace export while response run identifiers remain present. Errors swallowed by existing dependency clients or graph nodes are not reclassified here; typed dependency outcomes belong to PR 2. Cache/history failures now return correlated NDJSON errors after the streaming response begins. Cache-hit persistence is awaited inside the run, so its failures and disconnects are covered too.
+
+`OTEL_EXPORTER_OTLP_TIMEOUT` limits each RPC attempt, not total shutdown time. The pinned SDK retries transient exporter failures, so shutdown during a Collector outage may exceed the five-second flush window. Collector-outage, backpressure, and deployment grace-period guarantees remain PR 5 checks. No durable run evidence or payload publication is implemented by this slice.
+
 ### Remaining Gap 1 delivery
 
 | Slice | Status | Next outcome |
 |---|---|---|
-| PR 1: Trace plumbing and run identity | Not started | Every request receives a `run_id` and an `agent.run` root span. |
+| PR 1: Trace plumbing and run identity | Committed; verified locally | Run identity and root domain spans verified; domain child spans follow in PR 2. |
 | PR 2: Domain spans and typed dependency results | Not started | Span trees and retrieval/model metadata become testable. |
 | PR 3: Evidence contract and collector | Not started | Runs produce reconstructable, versioned evidence. |
 | PR 4: Redacted payloads and durable publication | Not started | Evidence is safely stored and delivered with the selected guarantee. |
@@ -67,10 +100,10 @@ Traces are not the system of record for large prompts, retrieved documents, or t
 
 The repository already has useful starting points:
 
-- `services/api/app/observability.py` defines `setup_observability()` and FastAPI auto-instrumentation, but nothing calls it.
-- `libs/observability/tracing.py` creates an OpenTelemetry tracer provider, but exports spans only to the console.
+- `services/api/app/observability.py` now attaches FastAPI auto-instrumentation from `services/api/main.py`, sanitizes HTTP metadata, and exposes shutdown cleanup.
+- `libs/observability/tracing.py` now provides idempotent provider initialization, OTLP/gRPC export, resource identity, sampling, optional console export, and shutdown flushing.
 - `libs/utils/ids.py` defines `generate_trace_id()`, but production request handling does not use it.
-- `services/api/app/routes/chat.py` creates a conversation `session_id`, streams graph-node status, and persists messages.
+- `services/api/app/routes/chat.py` now creates a distinct `run_id`, traces the streaming lifecycle, correlates every event, and persists messages inside the run. Domain child spans and durable evidence remain outstanding.
 - `services/api/app/agents/nodes/retriever.py` receives Qdrant hits, but converts them to strings and discards identifiers, ranks, and scores.
 - `services/api/app/clients/ray_llm.py` returns only generated text, so model identity, token usage, finish reason, and provider request identifiers are lost.
 - `libs/observability/metrics.py` declares operational metrics, but they have no production call sites.
@@ -452,12 +485,12 @@ Split the work into reviewable changes. Each pull request should leave the servi
 
 ### PR 1: Trace plumbing and run identity
 
-- Initialize OpenTelemetry from `services/api/main.py`.
-- Add OTLP export, resource attributes, sampling, and shutdown flush.
-- Generate `run_id` and return it in every stream event.
-- Create the `agent.run` span and cover cache-hit, success, error, cancellation, and timeout paths.
+- [x] Initialize OpenTelemetry from `services/api/main.py`.
+- [x] Add OTLP export, resource attributes, sampling, and shutdown flush.
+- [x] Generate `run_id` and return it in every stream event.
+- [x] Create the `agent.run` span and cover cache-hit, success, error, cancellation, and timeout paths.
 
-**Exit condition:** Every request has a `run_id` and a root domain span in local integration tests.
+**Exit condition met locally:** Each accepted chat attempt has a `run_id` and a root domain span in integration tests, including requests disconnected before the first body chunk. Sampling controls whether the trace is exported. Implementation and tests are committed together in reviewable tracing-provider, API-lifecycle, and local-integration slices.
 
 ### PR 2: Domain spans and typed dependency results
 
@@ -534,8 +567,8 @@ Split the work into reviewable changes. Each pull request should leave the servi
 
 Gap 1 is closed when all of the following are true:
 
-- [ ] Every request attempt receives a stable, unique `run_id` before cache lookup.
-- [ ] Every NDJSON response event includes `run_id` and `session_id`.
+- [x] Every accepted chat request attempt receives a stable, unique `run_id` before cache lookup.
+- [x] Every NDJSON response event includes `run_id` and `session_id`.
 - [ ] Every run has one `agent.run` span and the expected child spans for work that actually occurred.
 - [ ] Every terminal path attempts exactly one versioned `RunEvidence` event.
 - [ ] Cache hits, errors, cancellations, and timeouts are represented explicitly.
