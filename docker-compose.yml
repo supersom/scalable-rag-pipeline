@@ -144,6 +144,10 @@ services:
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-local-dev-only-change-me}
       JWT_ALGORITHM: HS256
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-rag-api-service}
+      OTEL_SERVICE_VERSION: ${OTEL_SERVICE_VERSION:-local-dev}
+      OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_always_on}
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
     ports:
       - "${LOCAL_BIND_ADDRESS:-127.0.0.1}:${API_LOCAL_PORT:-18000}:8000"
     healthcheck:

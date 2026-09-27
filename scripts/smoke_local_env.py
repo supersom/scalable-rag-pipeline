@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from uuid import UUID
 
 import boto3
 import httpx
@@ -57,6 +58,16 @@ def main() -> None:
     )
     response.raise_for_status()
     events = [json.loads(line) for line in response.text.splitlines() if line]
+    run_id = response.headers.get("X-Run-ID")
+    if not run_id:
+        raise RuntimeError("stream returned no run ID header")
+    UUID(run_id)
+    if not events or any(
+        event.get("run_id") != run_id
+        or event.get("session_id") != "local-environment-smoke"
+        for event in events
+    ):
+        raise RuntimeError("stream events have missing or inconsistent run/session IDs")
     if any(event.get("type") == "error" for event in events):
         raise RuntimeError(f"stream returned an error event: {events!r}")
     if not any(
