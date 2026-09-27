@@ -3,6 +3,7 @@ import asyncio
 import logging
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 import httpx
 from opentelemetry.trace import Status, StatusCode
 from threading import Lock
@@ -23,6 +24,28 @@ _lock = Lock()
 _provider = None
 _closed = WeakSet()
 domain_tracer = trace.get_tracer("rag.domain")
+operation_observer = ContextVar("operation_observer", default=None)
+_active_operation = ContextVar("active_domain_operation", default=None)
+
+
+class ObservedSpan:
+    """Keep tiny operation metadata even when the SDK samples a span out."""
+    def __init__(self, span, attributes):
+        self._span = span
+        self.attributes = dict(attributes or {})
+
+    def set_attribute(self, key, value):
+        self.attributes[key] = value
+        self._span.set_attribute(key, value)
+
+    def __getattr__(self, name):
+        return getattr(self._span, name)
+
+
+def set_span_attribute(span, key, value):
+    active = _active_operation.get()
+    target = active if active is not None and span is active._span else span
+    target.set_attribute(key, value)
 
 
 def failure_status(exc: BaseException) -> str:
@@ -33,8 +56,8 @@ def failure_status(exc: BaseException) -> str:
 
 def mark_failure(span, exc: BaseException, *, status: str | None = None):
     """Record only an exception class, never its message or stack arguments."""
-    span.set_attribute("operation.status", status or failure_status(exc))
-    span.set_attribute("error.type", type(exc).__name__)
+    set_span_attribute(span, "operation.status", status or failure_status(exc))
+    set_span_attribute(span, "error.type", type(exc).__name__)
     span.set_status(Status(StatusCode.ERROR))
 
 
@@ -43,7 +66,9 @@ def domain_span(name: str, *, attributes=None):
     """Safe child span; callers supply only small, non-content attributes."""
     started = time.perf_counter()
     with domain_tracer.start_as_current_span(name, attributes=attributes, record_exception=False,
-                                           set_status_on_exception=False) as span:
+                                           set_status_on_exception=False) as sdk_span:
+        span = ObservedSpan(sdk_span, attributes)
+        token = _active_operation.set(span)
         span.set_attribute("operation.status", "success")
         try:
             yield span
@@ -52,6 +77,15 @@ def domain_span(name: str, *, attributes=None):
             raise
         finally:
             span.set_attribute("operation.latency_ms", (time.perf_counter() - started) * 1000)
+            try:
+                observer = operation_observer.get()
+                if observer is not None:
+                    observer(name, dict(span.attributes))
+            except Exception as exc:
+                sdk_span.set_attribute("evidence.capture_failed", True)
+                logger.warning("Evidence observation failed (%s)", type(exc).__name__)
+            finally:
+                _active_operation.reset(token)
 
 
 def create_tracer_provider(

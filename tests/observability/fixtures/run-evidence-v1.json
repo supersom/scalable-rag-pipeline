@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "run_id": "fixture-run",
+  "session_id": "fixture-session",
+  "trace_id": "11111111111111111111111111111111",
+  "started_at": "2026-09-27T00:00:00Z",
+  "completed_at": "2026-09-27T00:00:01Z",
+  "status": "success",
+  "configuration": {"generation_model": "fixture-model", "embedding_model": "fixture-embed"},
+  "input_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "model_calls": [{"purpose": "responder", "request_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "model": "fixture-model", "input_tokens": 12, "output_tokens": 4}],
+  "retrieval": [{"query_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "collection": "fixture-corpus", "items": [{"retrieval_source": "qdrant", "document_id": "doc-1", "chunk_id": "chunk-7", "rank": 1, "score": 0.9, "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}], "vector_status": "success", "graph_status": "success"}],
+  "trajectory": [{"step": 1, "tool_name": "calculator", "status": "success", "started_at": "2026-09-27T00:00:00Z", "latency_ms": 1.0}],
+  "operations": {"latency_ms": 1000.0, "input_tokens": 12, "output_tokens": 4, "cache_hit": false, "agent_steps": 3},
+  "unavailable": ["payloads_not_stored"]
+}
