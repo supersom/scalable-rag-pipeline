@@ -9,8 +9,8 @@ from .provenance import Provenance
 private_key_pattern = re.compile(r'-----BEGIN ([A-Z ]{0,32}PRIVATE KEY)-----[\s\S]{0,65536}?-----END \1-----')
 private_key_opening = re.compile(r'-----BEGIN [A-Z ]{0,32}PRIVATE KEY-----')
 assignment_pattern = re.compile(r'(?i)\b((?:password|token|api[_-]?key)\s{0,8}[:=]\s{0,8})(?:"[^"\r\n]{0,4096}"|\x27[^\x27\r\n]{0,4096}\x27|[^\s;,]{1,4096})')
-secret_pattern = re.compile(r'(?i)\bBearer[ \t]{1,8}[A-Za-z0-9._~+/=-]{1,4096}|\b[A-Za-z0-9_-]{2,2048}\.[A-Za-z0-9_-]{2,2048}\.[A-Za-z0-9_-]{2,2048}\b|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b')
-email_pattern = re.compile(r'(?<![\w.+-])[A-Za-z0-9.!#$%&\x27*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,123}[A-Za-z0-9])?\.[A-Za-z]{2,63}(?![\w.-])')
+secret_pattern = re.compile(r'(?i)\bBearer[ \t]{1,8}[A-Za-z0-9._~+/=-]{1,4096}|\beyJ[A-Za-z0-9_-]{0,1021}\.[A-Za-z0-9_-]{1,4096}\.[A-Za-z0-9_-]{1,1024}\b|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b')
+email_pattern = re.compile(r'(?<![\w.+-])[A-Za-z0-9.!#$%&\x27*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,187}[A-Za-z0-9])?\.[A-Za-z]{2,63}(?![\w.-])')
 phone_pattern = re.compile(r'(?<![\w+])\+(?:[0-9][ ().-]{0,2}){7,14}[0-9](?![0-9 ().-]*[0-9])')
 FORBIDDEN = {'authorization', 'cookie', 'setcookie', 'password', 'secret', 'token', 'accesstoken', 'refreshtoken', 'apikey', 'privatekey'}
 
@@ -76,7 +76,10 @@ def redact_payload(slot: PayloadSlot, value: object, provenance: Provenance, pol
             raise ValueError('unmatched private key')
         text = assignment_pattern.sub(lambda m: m[1] + '[REDACTED_SECRET]', text)
         text = secret_pattern.sub('[REDACTED_SECRET]', text)
-        text = email_pattern.sub('[REDACTED_EMAIL]', text)
+        # A matched address longer than 254 chars cannot be a valid email address (RFC 5321
+        # local+domain limit); the total-length bound must apply to the whole match, not to
+        # a single component, so it is checked here rather than folded into the domain group.
+        text = email_pattern.sub(lambda m: '[REDACTED_EMAIL]' if len(m[0]) <= 254 else m[0], text)
         return phone_pattern.sub('[REDACTED_PHONE]', text)
 
     try:

@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from services.api.app.evaluation.delivery_models import PayloadSlot
@@ -66,6 +68,31 @@ def test_bearer_jwt_aws_tokens_redacted(policy, provenance_for):
                         b'and jwt [REDACTED_SECRET] for testing"}')
 
 
+@pytest.mark.parametrize('text', [
+    'bob@mail.example.test',
+    'see docs.python.org for details',
+    'call server-a.internal.example.net now',
+])
+def test_dotted_hostnames_not_treated_as_jwt(policy, approved_input, text):
+    # The JWT alternative only matches base64url text that begins with the "eyJ" literal
+    # (the near-universal encoding of a JSON header's leading '{"'), so plain dotted
+    # hostnames/domains must never be treated as bearer tokens.
+    out = redact_payload(PayloadSlot(kind='output', ordinal=1), {'text': text}, approved_input, policy)
+    assert b'REDACTED_SECRET' not in out.data
+
+
+def test_jwt_pattern_is_bounded_against_adversarial_input(policy, approved_input):
+    # A run of hyphens used to make the old generic dot-separated-run alternative back-track
+    # catastrophically (~4.4s measured for this exact input). It should process quickly and
+    # leave the text untouched (nothing here looks like a real secret).
+    adversarial = 'a-' * 32000
+    started = time.perf_counter()
+    out = redact_payload(PayloadSlot(kind='output', ordinal=1), {'text': adversarial}, approved_input, policy)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 1.0
+    assert out.data == ('{"text":"' + adversarial + '"}').encode()
+
+
 def test_private_key_block_redacted(policy, provenance_for):
     out = redact_payload(PayloadSlot(kind='input', ordinal=1),
         {'text': 'Key:\n-----BEGIN RSA PRIVATE KEY-----\nABCD1234\n-----END RSA PRIVATE KEY-----\nDone'},
@@ -110,6 +137,17 @@ def test_email_pattern_bounded_to_254_characters(policy, approved_input):
     assert out.data == ('{"text":"' + oversized_email + '"}').encode()
 
 
+def test_email_with_short_local_and_long_domain_still_redacted(policy, approved_input):
+    # The 254-char bound applies to the whole address, not to the domain component alone: a
+    # short local part leaves room for a much longer domain and the total can still be well
+    # under 254 chars. Regression test for a prior fix that capped the domain quantifier
+    # directly and silently stopped matching addresses shaped like this one.
+    text = 'a@x' + 'b' * 150 + 'y.io'
+    assert len(text) == 157
+    out = redact_payload(PayloadSlot(kind='output', ordinal=1), {'text': text}, approved_input, policy)
+    assert out.data == b'{"text":"[REDACTED_EMAIL]"}'
+
+
 def test_overlap_assignment_precedes_email(policy, provenance_for):
     out = redact_payload(PayloadSlot(kind='input', ordinal=1),
         {'text': 'token=alice@example.test'}, provenance_for('overlap'), policy)
@@ -119,6 +157,34 @@ def test_overlap_assignment_precedes_email(policy, provenance_for):
 def test_structure_depth_boundary():
     assert _structure({'text': _nested(7)}) is True
     assert _structure({'text': _nested(8)}) is False
+
+
+@pytest.mark.parametrize('key', [
+    'api_key', 'Api-Key', 'API_KEY', 'apiKey',
+    'access_token', 'ACCESS-TOKEN', 'Access.Token',
+    'refresh_token', 'Refresh-Token',
+    'set-cookie', 'Set_Cookie', 'SETCOOKIE',
+    'private-key', 'Private_Key',
+    'password', 'PASSWORD',
+    'secret', 'SECRET',
+    'authorization', 'Authorization',
+    'token', 'TOKEN',
+])
+def test_structure_denies_forbidden_key_variants_directly(key):
+    # Exercises _structure's own normalization/denial directly, independent of any calling
+    # shape check, so this fails if FORBIDDEN or the normalization logic regresses even
+    # though the specific slot shapes used elsewhere would also reject the same input for
+    # an unrelated reason (extra key, wrong type, etc).
+    assert _structure({'safe': 'value', key: 'x'}) is False
+
+
+def test_structure_denies_deeply_nested_forbidden_key_directly():
+    assert _structure({'a': {'b': {'c': {'api_key': 'x'}}}}) is False
+    assert _structure({'a': {'b': {'token': 'x'}}}) is False
+
+
+def test_structure_allows_clean_nested_structure_directly():
+    assert _structure({'a': {'b': {'c': 'ok'}}, 'd': [1, 2.5, 'three', True, None]}) is True
 
 
 def test_redact_payload_denies_excessive_depth(policy, approved_input):

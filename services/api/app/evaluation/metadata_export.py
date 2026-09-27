@@ -9,7 +9,6 @@ from .delivery_models import (ExportEnvelope, ManifestEntry, PreparedExport, Saf
                               SafeRetrievalItem, SafeRun, SafeToolStep)
 
 HEX = re.compile(r'^(?:sha256:)?[a-f0-9]{64}$')
-USER_HMAC = re.compile(r'^hmac-sha256:[a-f0-9]{64}$')
 ERRORS = {'TimeoutError', 'CancelledError', 'ValueError', 'ConnectionError', 'RuntimeError'}
 OUTCOMES = {'success', 'error', 'timeout', 'cancelled', 'partial', 'disabled', 'invalid', 'skipped'}
 KNOWN_UNAVAILABLE = {'payloads_not_stored', 'corpus_index_acl_versions_not_configured',
@@ -77,8 +76,10 @@ def project_metadata(event, policy, model_ordinals=()) -> SafeRun:
         trace_id=event.trace_id if event.trace_id and re.fullmatch(r'[a-f0-9]{32}', event.trace_id) else None,
         tenant_partition=identity('tenant', event.tenant_id), session_pseudonym=identity('session', event.session_id),
         input_digest_pseudonym=digest('input_digest', event.input_hash), output_digest_pseudonym=digest('output_digest', event.output_hash),
-        user_pseudonym=event.user_id_hash if event.tenant_id and policy.identity_key
-            and isinstance(event.user_id_hash, str) and USER_HMAC.fullmatch(event.user_id_hash) else None,
+        # event.user_id_hash is already an HMAC, but nothing here proves it was derived with
+        # this policy's identity_key rather than some other key: exporting it unverified would
+        # be a silent cross-key leak risk, so it stays null until a verifiable key binding
+        # (e.g. a shared key fingerprint) exists. See Task 2 review notes.
         error_class=_error(event.error_type),
         configuration=configuration,
         retrieval=tuple(SafeRetrieval(collection=_allowed(r.collection, policy.allowed_collections),

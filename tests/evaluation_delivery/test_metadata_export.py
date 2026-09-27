@@ -18,10 +18,16 @@ def test_projection_pseudonymizes_identifiers(terminal_event, policy):
     assert safe.session_pseudonym.startswith('hmac-sha256:')
 
 
-def test_user_pseudonym_passthrough_when_validly_derived(terminal_event, policy):
-    safe = project_metadata(terminal_event, policy, ())
+def test_user_pseudonym_always_null_even_when_collector_hash_looks_valid(terminal_event, policy):
+    # terminal_event.user_id_hash is a well-formed hmac-sha256 hex string computed with the
+    # SAME key string the policy fixture happens to use, but project_metadata has no way to
+    # prove that binding in general (the collector and the export policy are configured
+    # independently in production). Exporting it on format + non-empty-key alone would let a
+    # pseudonym computed with a *different* key pass through undetected, so it must stay null
+    # until a verifiable key-fingerprint binding exists (see Task 2 review notes).
     assert terminal_event.user_id_hash is not None
-    assert safe.user_pseudonym == terminal_event.user_id_hash
+    safe = project_metadata(terminal_event, policy, ())
+    assert safe.user_pseudonym is None
 
 
 def test_user_pseudonym_null_when_not_derived(policy):
