@@ -13,6 +13,9 @@ from opentelemetry import context, trace
 from opentelemetry.trace import Status, StatusCode
 from libs.observability.tracing import domain_span
 from services.api.app.evaluation.context import RunEvidenceCollector, bind_collector
+from services.api.app.evaluation.capture import bind_capture
+from services.api.app.evaluation.delivery_models import PayloadSlot
+from services.api.app.evaluation.runtime import active_runtime
 from services.api.app.evaluation.configuration import configuration_fingerprint
 from services.api.app.config import settings
 
@@ -113,6 +116,18 @@ async def chat_stream(
         input_text=req.message, user_id=user_id, tenant_id=user.get("tenant_id"),
         identity_hash_key=settings.EVAL_IDENTITY_HASH_KEY, configuration=configuration_fingerprint(),
     )
+    # Evidence delivery is fail-open: None when disabled, and no failure here may affect the chat.
+    evidence = active_runtime()
+    capture = None
+    if evidence is not None:
+        try:
+            capture = evidence.open_capture(run_id, user.get("tenant_id"))
+            if capture is not None:
+                capture.record(PayloadSlot(kind="input", ordinal=1), {"text": req.message}, capture.source(req.message))
+        except Exception:
+            if capture is not None:
+                capture.close()
+            capture = None
 
     def finish_run(outcome):
         nonlocal finished
@@ -120,9 +135,19 @@ async def chat_stream(
             finished = True
             span.set_attribute("run.status", outcome)
             try:
-                collector.finish(outcome, error_type=error_type)
+                event = collector.finish(outcome, error_type=error_type)
+                if evidence is not None:
+                    # Synchronous hand-off only: no IO or await on this terminal path.
+                    try:
+                        evidence.admit(capture, event)
+                    except Exception:
+                        logger.warning("Evidence admission failed")
             finally:
-                span.end()
+                try:
+                    if capture is not None:
+                        capture.close()
+                finally:
+                    span.end()
 
     def encode_event(**fields):
         if fields.get("type") == "answer":
@@ -198,7 +223,7 @@ async def chat_stream(
             while True:
                 # Attach only while advancing the generator. Holding a context token
                 # across yield can leak context or fail when ASGI closes another task.
-                with bind_collector(collector), trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
+                with bind_collector(collector), bind_capture(capture), trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
                     try:
                         event = await anext(events)
                     except StopAsyncIteration:
@@ -216,7 +241,7 @@ async def chat_stream(
             yield encode_event(type="error", content="An internal error occurred.")
         finally:
             try:
-                with bind_collector(collector), trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
+                with bind_collector(collector), bind_capture(capture), trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
                     await events.aclose()
             finally:
                 finish_run(outcome)

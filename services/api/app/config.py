@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     EVAL_QUEUE_URL: Optional[str] = None
     EVAL_CONTENT_POLICY: Optional[str] = None
     EVAL_FIXTURE_MANIFEST: Optional[str] = None
+    EVAL_FIXTURE_CASE: Optional[str] = None  # trusted local synthetic case; never taken from requests
     EVAL_S3_BUCKET: Optional[str] = None
     EVAL_KMS_KEY_ID: Optional[str] = None
     EVAL_S3_ENDPOINT_URL: Optional[str] = None

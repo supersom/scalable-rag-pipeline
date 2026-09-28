@@ -11,7 +11,7 @@ def config(**limits):
     return DeliveryConfig(enabled=True, capture_content=True, environment='local',
         database_url='postgresql://local/test', queue_url='http://localhost/queue',
         identity_key='evidence-only', content_policy='restricted-synthetic-v1',
-        fixture_manifest='local-fixture.json', bucket='local-bucket', kms_key_id='local-key',
+        fixture_manifest='local-fixture.json', fixture_case='literal', bucket='local-bucket', kms_key_id='local-key',
         s3_endpoint_url='http://localhost:5000', **limits)
 
 

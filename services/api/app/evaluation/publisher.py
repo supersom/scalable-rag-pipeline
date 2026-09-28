@@ -103,7 +103,7 @@ class _RetryingCredentialClient:
 
 class RunEvidencePublisher:
     def __init__(self, client: Any, *, queue_url: str, io: BoundedIO, max_body_bytes: int,
-                 owns_client: bool = False) -> None:
+                 owns_client: bool = False, metrics: Any = None, monotonic: Callable[[], float] = time.monotonic) -> None:
         if not queue_url or max_body_bytes <= 0:
             raise ValueError("publisher requires a queue URL and a positive body cap")
         self._client = client
@@ -111,10 +111,12 @@ class RunEvidencePublisher:
         self._io = io
         self.max_body_bytes = max_body_bytes
         self._owns_client = owns_client
+        self._metrics = metrics  # optional DeliveryMetrics; absent keeps the publisher metric-free
+        self._monotonic = monotonic
 
     @classmethod
-    def from_config(cls, config: DeliveryConfig, *,
-                    monotonic: Callable[[], float] = time.monotonic) -> "RunEvidencePublisher":
+    def from_config(cls, config: DeliveryConfig, *, monotonic: Callable[[], float] = time.monotonic,
+                    metrics: Any = None) -> "RunEvidencePublisher":
         parts = urlsplit(config.queue_url or "")
         if parts.scheme not in ("http", "https") or not parts.netloc:
             raise ValueError("publisher requires an http(s) queue URL")
@@ -138,9 +140,23 @@ class RunEvidencePublisher:
             client = _RetryingCredentialClient(build_client)
         return cls(client, queue_url=config.queue_url,
                    io=BoundedIO(config.send_workers, clock=monotonic, thread_name_prefix="evidence-sqs"),
-                   max_body_bytes=config.queue_body_bytes, owns_client=True)
+                   max_body_bytes=config.queue_body_bytes, owns_client=True, metrics=metrics, monotonic=monotonic)
 
     async def publish(self, envelope_bytes: bytes, *, deadline: float) -> PublishReceipt:
+        started = self._monotonic()
+        if self._metrics is not None:
+            self._metrics.inc("publisher", "attempted")
+        try:
+            receipt = await self._publish(envelope_bytes, deadline=deadline)
+        except PublishError as error:
+            if self._metrics is not None:
+                self._metrics.inc("publisher", "failed", error.reason)
+            raise
+        if self._metrics is not None:
+            self._metrics.observe("publisher", max(0.0, self._monotonic() - started), len(envelope_bytes))
+        return receipt
+
+    async def _publish(self, envelope_bytes: bytes, *, deadline: float) -> PublishReceipt:
         if isinstance(envelope_bytes, bytes) and len(envelope_bytes) > self.max_body_bytes:
             raise PublishError(DeliveryReason.metadata_too_large, permanent=True)
         envelope = parse_envelope(envelope_bytes)

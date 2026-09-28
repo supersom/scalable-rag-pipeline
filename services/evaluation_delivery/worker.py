@@ -32,7 +32,7 @@ def utc_now() -> datetime:
 class DeliveryWorker:
     def __init__(self, repo, publisher, clock: Callable[[], datetime], *, batch: int = 10, send_workers: int = 2,
                  lease_seconds: float = 60, send_timeout_seconds: float = 6, ack_reserve_seconds: float = 5,
-                 poll_seconds: float = 1, monotonic: Callable[[], float] = time.monotonic) -> None:
+                 poll_seconds: float = 1, monotonic: Callable[[], float] = time.monotonic, metrics=None) -> None:
         if min(batch, send_workers, lease_seconds, send_timeout_seconds, poll_seconds) <= 0 or ack_reserve_seconds < 0:
             raise ValueError("delivery worker limits must be positive")
         if ack_reserve_seconds >= lease_seconds:
@@ -47,6 +47,7 @@ class DeliveryWorker:
         self._ack_reserve = ack_reserve_seconds
         self._poll = poll_seconds
         self._monotonic = monotonic
+        self._metrics = metrics  # optional DeliveryMetrics; fixed component/outcome/reason labels only
         self._closing = False
         self._closed = asyncio.Event()
         self._cycles: set[asyncio.Task] = set()
@@ -97,6 +98,7 @@ class DeliveryWorker:
             claims = await self._repo.claim_batch(self._batch, self._lease_seconds)
         except EvidencePersistenceError:
             logger.warning("evidence delivery claim failed reason=%s", DeliveryReason.database_unavailable.value)
+            self._count("failed", DeliveryReason.database_unavailable)
             return 0
         slots = asyncio.Semaphore(self._send_workers)
 
@@ -152,9 +154,16 @@ class DeliveryWorker:
         if not marked:
             # A stale lease authorizes no further write; the newer claimant owns the row.
             logger.info("evidence delivery acknowledgement stale")
+            return
+        self._count("delivered")
+
+    def _count(self, outcome: str, reason: DeliveryReason | None = None) -> None:
+        if self._metrics is not None:
+            self._metrics.inc("worker", outcome, reason)
 
     async def _retry(self, claim: OutboxClaim, reason: DeliveryReason, *, permanent: bool) -> None:
         logger.warning("evidence delivery failed reason=%s permanent=%s", reason.value, permanent)
+        self._count("quarantined" if permanent else "retried", reason)
         try:
             await self._repo.schedule_retry(claim, reason.value, permanent=permanent)
         except EvidencePersistenceError:

@@ -16,6 +16,8 @@ class DeliveryConfig(BaseModel):
     jwt_secret: str | None = Field(default=None, repr=False, exclude=True)
     content_policy: str | None = None
     fixture_manifest: str | None = None
+    # Server-owned synthetic case; never selectable by request body, header, or client flag.
+    fixture_case: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
     bucket: str | None = None
     kms_key_id: str | None = None
     s3_endpoint_url: str | None = None
@@ -79,6 +81,8 @@ class DeliveryConfig(BaseModel):
                 raise ValueError("content capture requires synthetic policy")
             if not all((self.fixture_manifest, self.bucket, self.kms_key_id, self.s3_endpoint_url)):
                 raise ValueError("content capture requires manifest, bucket, KMS key and endpoint")
+            if not self.fixture_case:
+                raise ValueError("content capture requires a server-selected fixture case")
         return self
 
     @classmethod
@@ -93,6 +97,7 @@ class DeliveryConfig(BaseModel):
             jwt_secret=settings.JWT_SECRET_KEY,
             content_policy=settings.EVAL_CONTENT_POLICY,
             fixture_manifest=settings.EVAL_FIXTURE_MANIFEST,
+            fixture_case=settings.EVAL_FIXTURE_CASE,
             bucket=settings.EVAL_S3_BUCKET,
             kms_key_id=settings.EVAL_KMS_KEY_ID,
             s3_endpoint_url=settings.EVAL_S3_ENDPOINT_URL,

@@ -35,8 +35,8 @@ def test_content_requires_local_synthetic_destinations():
                        fixture_manifest="fixtures.json", bucket="evidence", kms_key_id="local-kms",
                        s3_endpoint_url="http://localhost:5000")
     cfg = DeliveryConfig(**base, environment="local", content_policy="restricted-synthetic-v1",
-                         fixture_manifest="fixtures.json", bucket="evidence", kms_key_id="local-kms",
-                         s3_endpoint_url="http://localhost:5000")
+                         fixture_manifest="fixtures.json", fixture_case="literal", bucket="evidence",
+                         kms_key_id="local-kms", s3_endpoint_url="http://localhost:5000")
     assert cfg.capture_content
 
 
@@ -67,3 +67,26 @@ def test_claim_lease_covers_send_budget_plus_acknowledgement_reserve():
                       {"ack_reserve_seconds": 0}):
         with pytest.raises(ValidationError):
             DeliveryConfig(**overrides)
+
+
+def test_content_capture_requires_a_bounded_server_fixture_case():
+    from services.api.app.evaluation.delivery_config import DeliveryConfig
+    base = dict(enabled=True, capture_content=True, environment="local", database_url="postgresql://local/db",
+                queue_url="http://localhost/q", identity_key="dedicated-key", content_policy="restricted-synthetic-v1",
+                fixture_manifest="fixtures.json", bucket="evidence", kms_key_id="local-kms",
+                s3_endpoint_url="http://localhost:5000")
+    for case in (None, "", "x" * 129, "../escape", "case with spaces"):
+        with pytest.raises(ValidationError):
+            DeliveryConfig(**base, fixture_case=case)
+    assert DeliveryConfig(**base, fixture_case="literal").fixture_case == "literal"
+    assert DeliveryConfig().fixture_case is None
+
+
+def test_fixture_case_comes_only_from_server_settings(monkeypatch):
+    for name, value in {"DATABASE_URL": "postgresql+asyncpg://local/db", "REDIS_URL": "redis://localhost",
+                        "NEO4J_PASSWORD": "synthetic", "S3_BUCKET_NAME": "documents",
+                        "JWT_SECRET_KEY": "jwt-secret", "EVAL_FIXTURE_CASE": "literal"}.items():
+        monkeypatch.setenv(name, value)
+    from services.api.app.config import Settings
+    from services.api.app.evaluation.delivery_config import DeliveryConfig
+    assert DeliveryConfig.from_settings(Settings()).fixture_case == "literal"
