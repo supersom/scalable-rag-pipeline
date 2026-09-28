@@ -550,3 +550,95 @@ def test_concurrent_begin_upload_and_orphan_claim_are_exclusive(repo_factory, cl
             if not granted_upload:
                 assert isinstance(upload, EvidenceConflict)
     asyncio.run(scenario())
+
+
+# --- Retention discovery (read-only) --------------------------------------------------
+
+ALL_INTENT_COLUMNS = "SELECT * FROM evaluation_upload_intents ORDER BY namespace"
+
+
+def test_cleanup_candidates_cover_only_resolvable_namespaces(repo, clock):
+    async def scenario():
+        runs = {name: uuid4() for name in ("open", "early", "expired", "claimed", "done")}
+        ns = {name: namespace_for(run_id) for name, run_id in runs.items()}
+        for name in ("expired", "claimed", "done"):
+            await repo.begin_upload(runs[name], ns[name], lease_seconds=60)
+        clock.advance(seconds=60, hours=24, microseconds=-1)
+        await repo.begin_upload(runs["early"], ns["early"], lease_seconds=60)
+        assert await repo.cleanup_candidates(clock(), 10) == ()  # one microsecond inside the grace period
+        clock.advance(microseconds=1)  # exactly intent expiry + grace
+        assert await repo.cleanup_candidates(clock(), 10) == tuple(sorted([ns["expired"], ns["claimed"], ns["done"]]))
+        claimed = await repo.claim_orphan(ns["claimed"], clock())
+        done = await repo.claim_orphan(ns["done"], clock())
+        assert await repo.complete_cleanup(done)
+        await repo.begin_upload(runs["open"], ns["open"], lease_seconds=60)
+        # A held cleanup lease, a completed cleanup, and open intents are not candidates.
+        assert await repo.cleanup_candidates(clock(), 10) == (ns["expired"],)
+        clock.now = claimed.expires_at  # a lapsed, incomplete cleanup is resumable
+        assert ns["claimed"] in await repo.cleanup_candidates(clock(), 10)
+    asyncio.run(scenario())
+
+
+def test_cleanup_candidates_skip_namespaces_with_live_references(repo, envelope, clock):
+    async def scenario():
+        run_id = uuid4()
+        intent = await repo.begin_upload(run_id, namespace_for(run_id), lease_seconds=60)
+        stored = make_envelope(envelope, run_id=run_id, refs=2, created=clock())
+        assert (await repo.enqueue(stored, intent=intent)).status == "committed"
+        expiry = stored.manifest[0].reference.expires_at
+        clock.now = expiry - timedelta(microseconds=1)
+        assert await repo.cleanup_candidates(clock(), 10) == ()
+        clock.now = expiry
+        assert await repo.cleanup_candidates(clock(), 10) == (intent.namespace,)
+    asyncio.run(scenario())
+
+
+def test_cleanup_candidates_include_swept_child_markers(repo, pg_engine, clock):
+    async def scenario():
+        run_id = uuid4()
+        child = namespace_for(run_id)
+        await repo.begin_upload(run_id, child, lease_seconds=60)
+        clock.advance(seconds=60, hours=24)
+        parent = await repo.claim_orphan(TENANT_PREFIX, clock())
+        assert await repo.complete_cleanup(parent)
+        # The parent sweep left the child cleanup-owned without token or completion stamp.
+        assert await rows(pg_engine, "SELECT state, cleanup_token, cleanup_completed_at FROM "
+                                     "evaluation_upload_intents WHERE namespace = :ns", ns=child) == [
+            ("cleanup_owned", None, None)]
+        assert await repo.cleanup_candidates(clock(), 10) == (child,)
+        claim = await repo.claim_orphan(child, clock())
+        assert claim is not None and await repo.complete_cleanup(claim)
+        assert await repo.cleanup_candidates(clock(), 10) == ()
+    asyncio.run(scenario())
+
+
+def test_cleanup_candidates_paginate_by_keyset_without_mutation(repo, pg_engine, clock):
+    async def scenario():
+        namespaces = sorted(namespace_for(uuid4()) for _ in range(5))
+        for namespace in namespaces:
+            await repo.begin_upload(uuid4(), namespace, lease_seconds=60)
+        clock.advance(seconds=60, hours=24)
+        before = await rows(pg_engine, ALL_INTENT_COLUMNS)
+        first = await repo.cleanup_candidates(clock(), 2)
+        second = await repo.cleanup_candidates(clock(), 2, after=first[-1])
+        third = await repo.cleanup_candidates(clock(), 2, after=second[-1])
+        assert first + second + third == tuple(namespaces) and len(third) == 1
+        assert await rows(pg_engine, ALL_INTENT_COLUMNS) == before
+        with pytest.raises(ValueError):
+            await repo.cleanup_candidates(clock(), 0)
+    asyncio.run(scenario())
+
+
+def test_count_expired_runs_is_bounded_read_only_and_exact_at_expiry(repo, pg_engine, envelope, clock):
+    async def scenario():
+        for _ in range(3):
+            assert (await repo.enqueue(make_envelope(envelope), intent=None)).status == "committed"
+        expiry = envelope.safe_run.completed_at + timedelta(days=90)
+        assert await repo.count_expired_runs(expiry - timedelta(microseconds=1), 10) == 0
+        assert await repo.count_expired_runs(expiry, 10) == 3
+        assert await repo.count_expired_runs(expiry, 2) == 2
+        assert await count(pg_engine, "evaluation_runs") == 3
+        assert await repo.expire_runs(expiry, 10) == 3
+        with pytest.raises(ValueError):
+            await repo.count_expired_runs(expiry, 0)
+    asyncio.run(scenario())

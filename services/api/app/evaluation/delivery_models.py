@@ -365,3 +365,11 @@ class CleanupReport(Contract):
     versions_examined: NonnegativeInt = 0
     versions_deleted: NonnegativeInt = 0
     failures: NonnegativeInt = 0
+    runs_expired: NonnegativeInt = 0
+    namespaces_examined: NonnegativeInt = 0
+    namespaces_eligible: NonnegativeInt = 0
+    namespaces_cleaned: NonnegativeInt = 0
+
+    @property
+    def deleted_versions(self) -> int:
+        return self.versions_deleted

@@ -201,6 +201,25 @@ WHERE namespace = :namespace AND state = 'cleanup_owned' AND cleanup_token = :to
   AND cleanup_lease_until > :now
 """)
 
+# Discovery only: claim_orphan re-checks every condition under the coordination lock. Rows swept to
+# cleanup_owned by a parent claim carry no token or completion stamp, so they stay candidates until a
+# claim of their own records completion. Namespaces with a live reference of their own are skipped
+# here so they cannot occupy every page until their content expires.
+_CLEANUP_CANDIDATES_SQL = text("""
+SELECT i.namespace FROM evaluation_upload_intents AS i
+WHERE i.cleanup_completed_at IS NULL AND i.namespace > :after
+  AND ((i.state IN ('open', 'closed') AND i.expires_at <= :grace_cutoff)
+       OR (i.state = 'cleanup_owned' AND (i.cleanup_token IS NULL OR i.cleanup_lease_until <= :now)))
+  AND NOT EXISTS (SELECT 1 FROM evaluation_payload_refs AS p
+                  WHERE p.namespace = i.namespace AND p.expires_at > :now)
+ORDER BY i.namespace
+LIMIT :limit
+""")
+
+_COUNT_EXPIRED_SQL = text("""
+SELECT count(*) FROM (SELECT 1 FROM evaluation_runs WHERE expires_at <= :now LIMIT :limit) AS due
+""")
+
 _EXPIRE_SQL = text("""
 DELETE FROM evaluation_runs WHERE id IN (
   SELECT id FROM evaluation_runs WHERE expires_at <= :now
@@ -467,6 +486,16 @@ class OutboxRepository:
             await session.execute(_EXCLUDE_OVERLAPS_SQL, params)
         return claim
 
+    async def cleanup_candidates(self, now: datetime, limit: int, *, after: str | None = None) -> tuple[str, ...]:
+        """Read-only, keyset-paginated namespaces whose cleanup may be claimable; grants nothing."""
+        if limit <= 0:
+            raise ValueError("candidate limit must be positive")
+        now = _utc(now)
+        async with self._transaction() as session:
+            result = await session.execute(_CLEANUP_CANDIDATES_SQL, {
+                "now": now, "grace_cutoff": now - self._grace, "after": after or "", "limit": limit})
+            return tuple(row.namespace for row in result.all())
+
     async def complete_cleanup(self, claim: CleanupClaim) -> bool:
         now = self._now()
         async with self._transaction() as session:
@@ -475,6 +504,13 @@ class OutboxRepository:
         return result.rowcount == 1
 
     # --- retention --------------------------------------------------------------------
+
+    async def count_expired_runs(self, now: datetime, limit: int) -> int:
+        """Read-only dry-run counterpart of ``expire_runs``: how many it would delete, at most ``limit``."""
+        if limit <= 0:
+            raise ValueError("expiry limit must be positive")
+        async with self._transaction() as session:
+            return (await session.execute(_COUNT_EXPIRED_SQL, {"now": _utc(now), "limit": limit})).scalar()
 
     async def expire_runs(self, now: datetime, limit: int) -> int:
         """Delete runs past metadata expiry; outbox rows and references cascade, even if quarantined."""
