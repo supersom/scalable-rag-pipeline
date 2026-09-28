@@ -145,3 +145,35 @@ def test_envelope_hash_tamper_rejected(envelope):
     tampered['redaction_policy_version'] = 'other-version'
     with pytest.raises(ValidationError):
         ExportEnvelope.model_validate({**tampered, 'export_hash': envelope.export_hash})
+
+
+def test_registered_review_event_is_safe_versioned_and_reconstructable(terminal_event, policy):
+    from services.api.app.evaluation.models import OperationEvidence, RunEvidence
+    from libs.observability.operation_contracts import (
+        FieldRule, OperationSchema, PhaseRule, register_operation_schema,
+    )
+
+    register_operation_schema(OperationSchema('test.evidence.review', 1, {
+        'result': PhaseRule({
+            'verdict': FieldRule(str, frozenset({'otel_safe', 'evidence_only'}), max_length=16),
+            'rubric_id': FieldRule(str, frozenset({'evidence_only'}), max_length=32),
+        }, frozenset({'rationale'})),
+    }))
+    operation = OperationEvidence(
+        operation_id='a' * 32, parent_operation_id=None, name='test.evidence.review',
+        schema_version=1, phase='result', sequence=1, timestamp=terminal_event.completed_at,
+        facts={'verdict': 'pass', 'rubric_id': 'private-rubric'},
+        content_slots={'rationale': {'ordinal': 1, 'item_ordinal': 1}},
+    )
+    run = RunEvidence.model_validate(terminal_event.model_dump(mode='json') | {
+        'schema_version': '1.1', 'operation_events': [operation.model_dump(mode='json')],
+    })
+    safe = project_metadata(run, policy, ())
+    assert safe.operation_events[0].facts['verdict'] == 'pass'
+    assert safe.operation_events[0].facts['rubric_id'].startswith('hmac-sha256:')
+    assert safe.operation_events[0].content_slots['rationale'] == PayloadSlot(
+        kind='operation_content', ordinal=1, item_ordinal=1)
+    sealed = seal_export(prepare_export(run, policy, (), ()), ())
+    assert (sealed.export_version, sealed.run_schema_version) == ('1.1', '1.1')
+    assert b'private-rubric' not in sealed.canonical_bytes()
+    assert ExportEnvelope.model_validate_json(sealed.canonical_bytes()).canonical_bytes() == sealed.canonical_bytes()

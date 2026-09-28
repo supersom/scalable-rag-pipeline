@@ -48,6 +48,7 @@ class PayloadKind(StrEnum):
     model_response = "model_response"
     tool_arguments = "tool_arguments"
     tool_result = "tool_result"
+    operation_content = "operation_content"
 
 
 class UnavailableReason(StrEnum):
@@ -83,8 +84,8 @@ class DeliveryReason(StrEnum):
 
 
 class EventIdentity(Contract):
-    export_version: Literal["1.0"] = "1.0"
-    run_schema_version: Literal["1.0"] = "1.0"
+    export_version: Literal["1.0", "1.1"] = "1.0"
+    run_schema_version: Literal["1.0", "1.1"] = "1.0"
     run_id: UUID
 
 
@@ -97,6 +98,8 @@ class PayloadSlot(Contract):
     def input_output_ordinal(self):
         if self.kind in {PayloadKind.input, PayloadKind.output} and (self.ordinal != 1 or self.item_ordinal is not None):
             raise ValueError("input/output use ordinal 1 without item ordinal")
+        if self.kind == PayloadKind.operation_content and self.item_ordinal is None:
+            raise ValueError("operation content requires item ordinal")
         return self
 
 
@@ -224,6 +227,34 @@ class SafeDependency(Contract):
         return self
 
 
+class SafeOperationEvent(Contract):
+    operation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    parent_operation_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    name: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.-]{0,63}$")
+    schema_version: PositiveInt
+    phase: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.-]{0,63}$")
+    sequence: PositiveInt
+    timestamp: UtcTime
+    status: Outcome | None = None
+    latency_ms: FiniteNonnegative | None = None
+    facts: Mapping[str, str | int | float | bool] = Field(default_factory=dict)
+    content_slots: Mapping[str, PayloadSlot] = Field(default_factory=dict)
+    detail_state: Literal["recorded", "schema_unavailable"] = "recorded"
+
+    @model_validator(mode="after")
+    def freeze_maps(self):
+        object.__setattr__(self, "facts", MappingProxyType(dict(self.facts)))
+        object.__setattr__(self, "content_slots", MappingProxyType(dict(self.content_slots)))
+        return self
+
+    @field_serializer("facts", "content_slots")
+    def serialize_maps(self, value: Mapping) -> dict:
+        return dict(value)
+
+    def __deepcopy__(self, memo):
+        return self
+
+
 class SafeOperations(Contract):
     latency_ms: FiniteNonnegative = 0.0
     time_to_first_output_ms: FiniteNonnegative | None = None
@@ -254,6 +285,7 @@ class SafeRun(Contract):
     model_calls: tuple[SafeModelCall, ...] = ()
     trajectory: tuple[SafeToolStep, ...] = ()
     dependencies: tuple[SafeDependency, ...] = ()
+    operation_events: tuple[SafeOperationEvent, ...] = ()
     operations: SafeOperations = Field(default_factory=SafeOperations)
     unavailable: tuple[str, ...] = ()
 
@@ -297,8 +329,8 @@ class PreparedExport(Contract):
 
 
 class ExportEnvelope(Contract):
-    export_version: Literal["1.0"] = "1.0"
-    run_schema_version: Literal["1.0"] = "1.0"
+    export_version: Literal["1.0", "1.1"] = "1.0"
+    run_schema_version: Literal["1.0", "1.1"] = "1.0"
     run_id: UUID
     export_hash: Hash256 | None = None
     redaction_policy_version: str = Field(min_length=1)
@@ -310,6 +342,10 @@ class ExportEnvelope(Contract):
     def validate_hash_and_identity(self):
         if self.run_id != self.safe_run.run_id:
             raise ValueError("run identities disagree")
+        if self.export_version != self.run_schema_version:
+            raise ValueError("export and run versions disagree")
+        if self.run_schema_version == "1.0" and self.safe_run.operation_events:
+            raise ValueError("operation events require schema 1.1")
         digest = hashlib.sha256(self.canonical_bytes(exclude_hash=True)).hexdigest()
         if self.export_hash is not None and self.export_hash != digest:
             raise ValueError("export hash mismatch")
@@ -317,7 +353,10 @@ class ExportEnvelope(Contract):
         return self
 
     def canonical_bytes(self, *, exclude_hash: bool = False) -> bytes:
-        return canonical_bytes(self.model_dump(mode="json", exclude={"export_hash"} if exclude_hash else None))
+        data = self.model_dump(mode="json", exclude={"export_hash"} if exclude_hash else None)
+        if self.run_schema_version == "1.0":
+            data["safe_run"].pop("operation_events", None)
+        return canonical_bytes(data)
 
 
 class DeliveryReceipt(Contract):

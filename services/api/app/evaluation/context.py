@@ -10,7 +10,7 @@ from threading import RLock
 
 from .models import (
     ConfigurationFingerprint, DependencyObservation, ModelCall, OperationalEvidence,
-    RetrievalEvidence, RunEvidence, ToolStep,
+    RetrievalEvidence, RunEvidence, ToolStep, OperationEvidence,
 )
 
 current_collector = ContextVar("run_evidence_collector", default=None)
@@ -36,7 +36,7 @@ class RunEvidenceCollector:
             identity = json.dumps([tenant_id, str(user_id)], separators=(",", ":")).encode()
             self._user_hash = "hmac-sha256:" + hmac.new(identity_hash_key.encode(), identity, hashlib.sha256).hexdigest()
         self._output_hash = self._first_output = None
-        self._retrieval, self._models, self._tools, self._dependencies = [], [], [], []
+        self._retrieval, self._models, self._tools, self._dependencies, self._events = [], [], [], [], []
         self._event = None
         self._cache_hit = False
 
@@ -76,6 +76,11 @@ class RunEvidenceCollector:
             self._open()
             self._tools.append(ToolStep(step=len(self._tools) + 1, **fields))
 
+    def record_event(self, event: OperationEvidence):
+        with self._lock:
+            self._open()
+            self._events.append(event.model_copy(deep=True))
+
     def record_operation(self, name, attributes):
         # Only operational attributes survive; future callers cannot accidentally
         # turn this metadata event into a prompt/document payload store.
@@ -104,11 +109,13 @@ class RunEvidenceCollector:
             if self._user_hash is None:
                 unavailable.append("identity_hash_key_not_configured")
             self._event = RunEvidence(
+                schema_version="1.1" if self._events else "1.0",
                 **self._identity, started_at=self._started_at, completed_at=datetime.now(timezone.utc),
                 status=status, error_type=error_type, configuration=self._configuration,
                 input_hash=self._input_hash, output_hash=self._output_hash, user_id_hash=self._user_hash,
                 retrieval=self._retrieval, model_calls=self._models, trajectory=self._tools,
                 dependencies=self._dependencies, unavailable=unavailable,
+                operation_events=self._events,
                 operations=OperationalEvidence(
                     latency_ms=(time.perf_counter() - self._started) * 1000,
                     time_to_first_output_ms=self._first_output,

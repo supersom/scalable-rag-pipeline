@@ -129,6 +129,13 @@ def test_generated_key_namespace(store):
     assert model.key == f'{namespace}2026-01-01/model_request/4'
 
 
+def test_generic_operation_content_round_trip_uses_exact_version(store):
+    candidate = payload('operation_content', 3, 2)
+    ref = asyncio.run(store.put(RUN_ID, TENANT, candidate, deadline=100.0))
+    assert ref.key.endswith('/2026-01-01/operation_content/3/2')
+    assert asyncio.run(store.get(ref, TENANT, deadline=100.0)) == DATA
+
+
 @pytest.mark.parametrize('tenant', ['', '../other', 'a/b', 'x' * 200, 'tenant with space', '.', 'a..b'])
 def test_unsafe_tenant_partition_rejected_before_io(store, sdk_spy, tenant):
     with pytest.raises(PayloadAccessDenied):

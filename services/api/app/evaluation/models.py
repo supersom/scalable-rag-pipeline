@@ -110,6 +110,33 @@ class DependencyObservation(EvidenceModel):
     attributes: dict[str, str | int | float | bool] = Field(default_factory=dict)
 
 
+class ContentSlotRef(EvidenceModel):
+    ordinal: int = Field(gt=0)
+    item_ordinal: int = Field(gt=0)
+
+
+class OperationEvidence(EvidenceModel):
+    operation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    parent_operation_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    name: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")
+    schema_version: int = Field(gt=0)
+    phase: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")
+    sequence: int = Field(gt=0)
+    timestamp: datetime
+    status: Outcome | None = None
+    latency_ms: float | None = Field(default=None, ge=0)
+    facts: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    content_slots: dict[str, ContentSlotRef] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def valid_slots(self):
+        if self.timestamp.tzinfo is None or len(self.facts) > 16 or len(self.content_slots) > 16:
+            raise ValueError("invalid operation event")
+        if len(set(self.content_slots.values())) != len(self.content_slots):
+            raise ValueError("duplicate operation content slot")
+        return self
+
+
 class OperationalEvidence(EvidenceModel):
     latency_ms: float = Field(ge=0)
     time_to_first_output_ms: float | None = Field(default=None, ge=0)
@@ -126,7 +153,7 @@ class OperationalEvidence(EvidenceModel):
 
 
 class RunEvidence(EvidenceModel):
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.0"
     run_id: str
     session_id: str
     trace_id: str | None = None
@@ -147,6 +174,7 @@ class RunEvidence(EvidenceModel):
     model_calls: list[ModelCall] = Field(default_factory=list)
     trajectory: list[ToolStep] = Field(default_factory=list)
     dependencies: list[DependencyObservation] = Field(default_factory=list)
+    operation_events: list[OperationEvidence] = Field(default_factory=list)
     operations: OperationalEvidence
     unavailable: list[str] = Field(default_factory=list)
 
@@ -156,4 +184,6 @@ class RunEvidence(EvidenceModel):
             raise ValueError("Evidence timestamps must be timezone-aware")
         if self.completed_at < self.started_at:
             raise ValueError("Completion precedes start")
+        if self.operation_events and self.schema_version != "1.1":
+            raise ValueError("operation events require schema 1.1")
         return self

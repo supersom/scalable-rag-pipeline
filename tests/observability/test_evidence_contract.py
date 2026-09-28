@@ -99,3 +99,19 @@ def test_fixture_schema_1_remains_readable_and_rejects_raw_extra_fields():
     wire = json.loads(event.model_dump_json())
     wire["prompt"] = "private prompt"
     with pytest.raises(ValidationError): models.RunEvidence.model_validate(wire)
+
+
+def test_collector_keeps_detached_versioned_operation_events():
+    from datetime import datetime, timezone
+    context, models = evidence_modules()
+    c = collector()
+    c.record_event(models.OperationEvidence(
+        operation_id='a' * 32, parent_operation_id=None, name='agent.review',
+        schema_version=1, phase='result', sequence=1,
+        timestamp=datetime.now(timezone.utc), facts={'verdict': 'pass'},
+    ))
+    event = c.finish('success')
+    assert event.schema_version == '1.1'
+    assert event.operation_events[0].facts == {'verdict': 'pass'}
+    event.operation_events.clear()
+    assert len(c.event.operation_events) == 1

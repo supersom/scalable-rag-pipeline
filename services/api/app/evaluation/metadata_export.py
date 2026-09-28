@@ -4,9 +4,11 @@ import hmac
 import json
 import re
 
+from libs.observability.operation_contracts import get_operation_schema, validate_record
+
 from .delivery_models import (ExportEnvelope, ManifestEntry, PreparedExport, SafeConfiguration,
-                              SafeDependency, SafeModelCall, SafeOperations, SafeRetrieval,
-                              SafeRetrievalItem, SafeRun, SafeToolStep)
+                              SafeDependency, SafeModelCall, SafeOperationEvent, SafeOperations,
+                              SafeRetrieval, SafeRetrievalItem, SafeRun, SafeToolStep, PayloadSlot)
 
 HEX = re.compile(r'^(?:sha256:)?[a-f0-9]{64}$')
 ERRORS = {'TimeoutError', 'CancelledError', 'ValueError', 'ConnectionError', 'RuntimeError'}
@@ -56,6 +58,40 @@ def _attributes(attributes, policy):
     return result
 
 
+def _project_operation(item, policy, tenant):
+    common = dict(operation_id=item.operation_id, parent_operation_id=item.parent_operation_id,
+                  schema_version=item.schema_version, sequence=item.sequence,
+                  timestamp=item.timestamp, status=item.status, latency_ms=item.latency_ms)
+    schema = get_operation_schema(item.name, item.schema_version)
+    if schema is None:
+        return SafeOperationEvent(**common, detail_state='schema_unavailable')
+    try:
+        facts = validate_record(schema, item.phase, item.facts, tuple(item.content_slots))
+    except (ValueError, TypeError):
+        return SafeOperationEvent(**common, detail_state='schema_unavailable')
+    rules = schema.phases[item.phase].facts
+    projected = {}
+    for key, value in facts.items():
+        destinations = rules[key].destinations
+        if 'otel_safe' in destinations:
+            projected[key] = value
+        elif 'evidence_only' in destinations and isinstance(value, str):
+            pseudonymized = pseudonym(policy, tenant, f'operation:{item.name}:{key}', value)
+            if pseudonymized is not None:
+                projected[key] = pseudonymized
+        elif 'evidence_only' in destinations:
+            projected[key] = value
+        elif 'derived_digest' in destinations and isinstance(value, str):
+            pseudonymized = pseudonym(policy, tenant, f'operation_digest:{item.name}:{key}', _hash(value))
+            if pseudonymized is not None:
+                projected[key] = pseudonymized
+    slots = {name: PayloadSlot(kind='operation_content', ordinal=ref.ordinal,
+                               item_ordinal=ref.item_ordinal)
+             for name, ref in item.content_slots.items()}
+    return SafeOperationEvent(**common, name=item.name, phase=item.phase,
+                              facts=projected, content_slots=slots)
+
+
 def project_metadata(event, policy, model_ordinals=()) -> SafeRun:
     def identity(domain, value):
         return pseudonym(policy, event.tenant_id, domain, value)
@@ -97,6 +133,7 @@ def project_metadata(event, policy, model_ordinals=()) -> SafeRun:
             result_digest_pseudonym=digest('result_digest', t.result_hash), error_class=_error(t.error_type), retry_count=t.retry_count) for t in event.trajectory),
         dependencies=tuple(SafeDependency(sequence=d.sequence, name=_allowed(d.name, policy.allowed_dependencies),
             status=d.status, latency_ms=d.latency_ms, error_class=_error(d.error_type), attributes=_attributes(d.attributes, policy)) for d in event.dependencies),
+        operation_events=tuple(_project_operation(o, policy, event.tenant_id) for o in event.operation_events),
         operations=SafeOperations(**{key: getattr(event.operations, key) for key in SafeOperations.model_fields}),
         unavailable=tuple(u for u in event.unavailable if u in KNOWN_UNAVAILABLE and u != 'payloads_not_stored')
             + (() if event.tenant_id and policy.identity_key else ('identity_unavailable',)))
@@ -137,6 +174,8 @@ def seal_export(prepared, entries) -> ExportEnvelope:
     for entry in entries:
         if entry.reference and entry.reference.policy_version != prepared.redaction_policy_version:
             raise ValueError('reference policy mismatch')
-    return ExportEnvelope(run_id=prepared.safe_run.run_id, safe_run=prepared.safe_run,
+    version = '1.1' if prepared.safe_run.operation_events else '1.0'
+    return ExportEnvelope(export_version=version, run_schema_version=version,
+        run_id=prepared.safe_run.run_id, safe_run=prepared.safe_run,
         redaction_policy_version=prepared.redaction_policy_version, manifest=manifest,
         completeness='partial' if any(e.state == 'unavailable' for e in manifest) else 'complete' if manifest else 'metadata_only')
