@@ -21,6 +21,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from functools import partial
 from uuid import UUID
 
 from services.api.app.evaluation.delivery_models import EventIdentity
@@ -91,17 +92,21 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def load_config():
+    """Pure configuration validation; runs before any event loop, engine or client exists."""
+    from services.api.app.config import Settings
+    from services.api.app.evaluation.delivery_config import DeliveryConfig
+    return DeliveryConfig.from_settings(Settings())
+
+
 @asynccontextmanager
-async def open_resources():
+async def open_configured_resources(config):
     """Engine, repository and (when content storage is configured) payload store; always released."""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from services.api.app.config import Settings
-    from services.api.app.evaluation.delivery_config import DeliveryConfig
     from services.api.app.evaluation.outbox import OutboxRepository
     from services.api.app.evaluation.payloads import S3PayloadStore
 
-    config = DeliveryConfig.from_settings(Settings())
     engine = create_async_engine(config.database_url, pool_size=1, pool_pre_ping=True)
     store = None
     try:
@@ -113,6 +118,8 @@ async def open_resources():
         # empty listing that would record cleanup as complete.
         if config.bucket and config.kms_key_id:
             store = S3PayloadStore.from_config(config, clock=utc_now)
+        else:
+            logger.info("evidence content cleanup skipped: storage not configured")
         yield repo, store, utc_now
     finally:
         if store is not None:
@@ -138,14 +145,25 @@ async def _retry(args, resources) -> int:
     return EXIT_OK if requeued else EXIT_INCOMPLETE
 
 
-def main(argv: list[str] | None = None, *, open_resources=open_resources) -> int:
-    """Only fixed messages are logged: configuration and driver errors can echo URLs or credentials."""
+def main(argv: list[str] | None = None, *, open_resources=None) -> int:
+    """Only fixed messages are logged: configuration and driver errors can echo URLs or credentials.
+
+    ``open_resources`` (a zero-argument async context manager factory) replaces configuration
+    loading and resource construction; tests inject it.
+    """
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(name)s %(message)s")
     try:
         args = _parser().parse_args(argv)
     except _UsageError:
         logger.error("evidence maintenance arguments invalid")
         return EXIT_CONFIGURATION
+    if open_resources is None:
+        try:
+            config = load_config()
+        except Exception:
+            logger.error("evidence maintenance configuration invalid")
+            return EXIT_CONFIGURATION
+        open_resources = partial(open_configured_resources, config)
     command = _cleanup if args.command == "cleanup" else _retry
     try:
         return asyncio.run(command(args, open_resources))
