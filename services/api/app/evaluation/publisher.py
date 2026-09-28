@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -79,6 +80,27 @@ def _classify(error: BaseException) -> PublishError:
                         permanent=permanent)
 
 
+class _RetryingCredentialClient:
+    """Retry client construction on sends after a transient credential lookup failure."""
+
+    def __init__(self, build: Callable[[], Any]) -> None:
+        self._build = build
+        self._client = None
+        self._lock = threading.Lock()
+
+    def send_message(self, **kwargs: Any) -> dict:
+        with self._lock:
+            if self._client is None:
+                self._client = self._build()
+            client = self._client
+        return client.send_message(**kwargs)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._client is not None:
+                self._client.close()
+
+
 class RunEvidencePublisher:
     def __init__(self, client: Any, *, queue_url: str, io: BoundedIO, max_body_bytes: int,
                  owns_client: bool = False) -> None:
@@ -98,13 +120,22 @@ class RunEvidencePublisher:
             raise ValueError("publisher requires an http(s) queue URL")
         import boto3
         from botocore.config import Config
+        from botocore.exceptions import NoCredentialsError, PartialCredentialsError
         # The queue URL's own origin is the endpoint, for AWS and local emulators alike.
-        client = boto3.client(
-            "sqs", region_name=config.aws_region, endpoint_url=f"{parts.scheme}://{parts.netloc}",
-            config=Config(connect_timeout=config.sdk_connect_timeout_seconds,
-                          read_timeout=config.sdk_read_timeout_seconds,
-                          retries={"total_max_attempts": config.sdk_attempts, "mode": "standard"},
-                          max_pool_connections=config.send_workers))
+        def build_client() -> Any:
+            return boto3.client(
+                "sqs", region_name=config.aws_region, endpoint_url=f"{parts.scheme}://{parts.netloc}",
+                config=Config(connect_timeout=config.sdk_connect_timeout_seconds,
+                              read_timeout=config.sdk_read_timeout_seconds,
+                              retries={"total_max_attempts": config.sdk_attempts, "mode": "standard"},
+                              max_pool_connections=config.send_workers))
+
+        try:
+            client = build_client()
+        except (NoCredentialsError, PartialCredentialsError):
+            # Credential discovery may recover. Each claimed row gets its own bounded attempt,
+            # classified by publish() and persisted by the outbox retry policy.
+            client = _RetryingCredentialClient(build_client)
         return cls(client, queue_url=config.queue_url,
                    io=BoundedIO(config.send_workers, clock=monotonic, thread_name_prefix="evidence-sqs"),
                    max_body_bytes=config.queue_body_bytes, owns_client=True)

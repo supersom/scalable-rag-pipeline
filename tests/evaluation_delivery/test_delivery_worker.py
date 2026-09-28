@@ -677,6 +677,76 @@ def test_cli_invalid_queue_url_is_a_configuration_failure(monkeypatch, tmp_path,
     assert 'evidence delivery configuration invalid' in caplog.text and SENTINEL not in caplog.text
 
 
+def test_cli_startup_credential_gap_uses_row_retry_budget(monkeypatch, tmp_path, caplog, capsys, envelope):
+    from botocore.exceptions import PartialCredentialsError
+    from services.evaluation_delivery import worker as worker_module
+
+    caplog.set_level(logging.DEBUG)
+    attempts = []
+
+    def unavailable_client(*args, **kwargs):
+        attempts.append(1)
+        raise PartialCredentialsError(provider='env', cred_var=SENTINEL)
+
+    async def exercise_retries(config, publisher):
+        clock = StepClock()
+        repo = FakeRepo(clock)
+        row = repo.add(envelope)
+        worker = DeliveryWorker(repo, publisher, clock, batch=1)
+        try:
+            for attempt in range(1, 9):
+                assert await worker.run_once() == 1
+                assert row.attempts == attempt
+                assert row.error_class == ('broker_transient' if attempt < 8 else 'retry_exhausted')
+                assert row.state == ('pending' if attempt < 8 else 'quarantined')
+                clock.advance(61)
+        finally:
+            await worker.close(time.monotonic() + 1)
+        return 0
+
+    monkeypatch.setattr('boto3.client', unavailable_client)
+    monkeypatch.setattr(worker_module, 'serve', exercise_retries)
+    assert main_in_process(monkeypatch, tmp_path) == 0
+    captured = capsys.readouterr()
+    assert len(attempts) >= 8
+    assert 'evidence delivery configuration invalid' not in caplog.text
+    assert SENTINEL not in caplog.text + captured.err + captured.out
+
+
+def test_cli_startup_region_failure_remains_configuration_invalid(monkeypatch, tmp_path, caplog):
+    from botocore.exceptions import NoRegionError
+
+    def invalid_client(*args, **kwargs):
+        raise NoRegionError()
+
+    monkeypatch.setattr('boto3.client', invalid_client)
+    assert main_in_process(monkeypatch, tmp_path) == 2
+    assert 'evidence delivery configuration invalid' in caplog.text
+
+
+def test_serve_closes_publisher_if_engine_creation_fails(monkeypatch):
+    from types import SimpleNamespace
+    from sqlalchemy.ext import asyncio as sqlalchemy_asyncio
+    from services.evaluation_delivery import worker as worker_module
+
+    class Publisher:
+        close_calls = 0
+
+        async def close(self, deadline):
+            self.close_calls += 1
+            return 0
+
+    def fail_engine(*args, **kwargs):
+        raise RuntimeError(SENTINEL)
+
+    monkeypatch.setattr(sqlalchemy_asyncio, 'create_async_engine', fail_engine)
+    publisher = Publisher()
+    config = SimpleNamespace(database_url='postgresql+asyncpg://u@localhost/db', send_workers=2)
+    with pytest.raises(RuntimeError):
+        asyncio.run(worker_module.serve(config, publisher))
+    assert publisher.close_calls == 1
+
+
 def test_unexpected_settlement_error_surfaces_after_every_claim_settles(repo, clock, envelope):
     for _ in range(3):
         repo.add(other_envelope(envelope))

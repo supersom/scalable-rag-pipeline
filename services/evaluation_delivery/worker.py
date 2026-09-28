@@ -172,9 +172,10 @@ async def serve(config, publisher) -> int:
     from services.api.app.evaluation.outbox import OutboxRepository
 
     loop = asyncio.get_running_loop()
-    engine = create_async_engine(config.database_url, pool_size=config.send_workers + 1, pool_pre_ping=True)
+    engine = None
     worker = None
     try:
+        engine = create_async_engine(config.database_url, pool_size=config.send_workers + 1, pool_pre_ping=True)
         repo = OutboxRepository(
             async_sessionmaker(engine, expire_on_commit=False), utc_now, max_attempts=config.producer_attempts,
             backoff_base_seconds=config.backoff_base_seconds, backoff_cap_seconds=config.backoff_cap_seconds,
@@ -202,7 +203,8 @@ async def serve(config, publisher) -> int:
             loop.remove_signal_handler(signum)
         if worker is None:
             await publisher.close(time.monotonic())
-        await engine.dispose()
+        if engine is not None:
+            await engine.dispose()
     logger.info("evidence delivery worker stopped residual_calls=%d", residue)
     return 0
 

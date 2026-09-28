@@ -351,6 +351,40 @@ def test_from_config_uses_queue_url_timeouts_and_cap(aws_env):
         asyncio.run(publisher.close(time.monotonic() + 1))
 
 
+def test_from_config_recovers_when_credentials_return(monkeypatch, envelope):
+    import boto3
+
+    class RecoveredClient:
+        closed = False
+        sends = 0
+
+        def send_message(self, **kwargs):
+            self.sends += 1
+            return {'MessageId': 'recovered'}
+
+        def close(self):
+            self.closed = True
+
+    recovered = RecoveredClient()
+    builds = []
+
+    def build(*args, **kwargs):
+        builds.append(1)
+        if len(builds) == 1:
+            raise PartialCredentialsError(provider='env', cred_var=SENTINEL)
+        return recovered
+
+    monkeypatch.setattr(boto3, 'client', build)
+    publisher = RunEvidencePublisher.from_config(enabled_config())
+    try:
+        assert publish(publisher, envelope.canonical_bytes()) == PublishReceipt(acknowledgement_id='recovered')
+        assert publish(publisher, envelope.canonical_bytes()) == PublishReceipt(acknowledgement_id='recovered')
+        assert len(builds) == 2 and recovered.sends == 2
+    finally:
+        asyncio.run(publisher.close(time.monotonic() + 1))
+    assert recovered.closed
+
+
 @pytest.mark.parametrize('queue_url', [None, '', 'not-a-url', 'ftp://host/1/q'])
 def test_from_config_requires_an_http_queue_url(aws_env, queue_url):
     config = DeliveryConfig(queue_url=queue_url)
