@@ -98,7 +98,7 @@ def project_metadata(event, policy, model_ordinals=()) -> SafeRun:
         dependencies=tuple(SafeDependency(sequence=d.sequence, name=_allowed(d.name, policy.allowed_dependencies),
             status=d.status, latency_ms=d.latency_ms, error_class=_error(d.error_type), attributes=_attributes(d.attributes, policy)) for d in event.dependencies),
         operations=SafeOperations(**{key: getattr(event.operations, key) for key in SafeOperations.model_fields}),
-        unavailable=tuple(u for u in event.unavailable if u in KNOWN_UNAVAILABLE)
+        unavailable=tuple(u for u in event.unavailable if u in KNOWN_UNAVAILABLE and u != 'payloads_not_stored')
             + (() if event.tenant_id and policy.identity_key else ('identity_unavailable',)))
 
 

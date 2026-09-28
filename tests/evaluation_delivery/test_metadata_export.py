@@ -48,7 +48,10 @@ def test_known_collector_unavailable_reasons_propagate(terminal_event, policy):
     assert set(terminal_event.unavailable) <= {
         'payloads_not_stored', 'corpus_index_acl_versions_not_configured',
         'cost_not_calculated', 'identity_hash_key_not_configured'}
-    assert set(terminal_event.unavailable) <= set(safe.unavailable)
+    # The payload manifest is authoritative; the collector's legacy tag would contradict stored references.
+    assert 'payloads_not_stored' in terminal_event.unavailable
+    assert 'payloads_not_stored' not in safe.unavailable
+    assert set(terminal_event.unavailable) - {'payloads_not_stored'} <= set(safe.unavailable)
 
 
 def test_no_tenant_hashes_all_null(terminal_event, policy):
