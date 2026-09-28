@@ -145,3 +145,62 @@ def test_healthcheck_rejects_bucket_without_enabled_versioning(response):
 
         with pytest.raises(SystemExit, match="is not ready"):
             healthcheck.main(client=client)
+
+
+class _EventuallyAvailableSQS:
+    def __init__(self, failures):
+        self.failures = failures
+        self.list_attempts = 0
+
+    def list_queues(self):
+        self.list_attempts += 1
+        if self.list_attempts <= self.failures:
+            raise EndpointConnectionError(endpoint_url="http://s3-emulator:4566")
+        return {}
+
+
+def test_queue_initialize_waits_for_emulator_then_ensures_queues(monkeypatch):
+    from services.aws_emulator import init_eval_queue
+
+    ensured = []
+    monkeypatch.setattr(init_eval_queue, "ensure_queues",
+                        lambda client, queue, dlq: ensured.append((queue, dlq)) or {})
+    client = _EventuallyAvailableSQS(failures=2)
+    sleeps = []
+
+    init_eval_queue.initialize(client=client, sleep=sleeps.append)
+
+    assert client.list_attempts == 3
+    assert sleeps == [0.25, 0.25]
+    assert ensured == [("eval-runs", "eval-runs-dlq")]
+
+
+def test_queue_initialize_stops_after_sixty_connection_failures():
+    from services.aws_emulator import init_eval_queue
+
+    client = _EventuallyAvailableSQS(failures=10**6)
+    sleeps = []
+
+    with pytest.raises(EndpointConnectionError):
+        init_eval_queue.initialize(client=client, sleep=sleeps.append)
+
+    assert client.list_attempts == 60
+    assert sleeps == [0.25] * 59
+
+
+def test_queue_client_uses_the_shared_emulator_endpoint():
+    from services.aws_emulator import init_eval_queue
+
+    client = init_eval_queue._client()
+
+    assert client.meta.service_model.service_name == "sqs"
+    assert client.meta.endpoint_url == init_s3.ENDPOINT_URL
+    assert client.meta.region_name == init_s3.REGION
+
+
+def test_s3_healthcheck_is_still_the_bucket_versioning_check():
+    import inspect
+
+    source = inspect.getsource(healthcheck)
+    assert "get_bucket_versioning" in source
+    assert "sqs" not in source.lower()

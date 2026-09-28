@@ -1,9 +1,11 @@
 # Makefile
 
 LOCAL_COMPOSE = docker compose -p scalable-rag-eval --profile eval-local --env-file .env.example
+EVIDENCE_COMPOSE = $(LOCAL_COMPOSE) -f docker-compose.yml -f docker-compose.evaluation.yml
+EVIDENCE_WAIT_SECONDS ?= 300
 LOAD_TEST_HOST ?= http://127.0.0.1:18000
 
-.PHONY: help install dev ray-serve ray-stop up down local-up local-down local-check local-smoke load-test-install load-test deploy test infra
+.PHONY: help install dev ray-serve ray-stop up down local-up local-down local-check local-smoke local-evidence-up local-evidence-down local-evidence-check local-evidence-smoke load-test-install load-test deploy test infra
 
 help:
 	@echo "RAG Platform Commands:"
@@ -15,6 +17,10 @@ help:
 	@echo "  make local-down - Stop the complete local evaluation stack"
 	@echo "  make local-check - Validate the local Compose profile and run its contract tests"
 	@echo "  make local-smoke - Exercise the running local stack end to end"
+	@echo "  make local-evidence-up    - Local stack plus evidence migrations, SQS queues and delivery worker"
+	@echo "  make local-evidence-down  - Stop the evidence stack (volumes are kept)"
+	@echo "  make local-evidence-check - Validate the evidence override and run its contract tests"
+	@echo "  make local-evidence-smoke - Check the running evidence stack and the default smoke contract"
 	@echo "  make load-test-install - Install the optional Locust dependency"
 	@echo "  make load-test  - Open Locust against the local API"
 	@echo "  make deploy     - Deploy to AWS EKS via Helm"
@@ -43,6 +49,21 @@ local-check:
 
 local-smoke:
 	RUN_LOCAL_STACK_TESTS=1 pytest tests/local_env/test_running_stack.py tests/local_env/test_otel_collector.py -q
+
+# Same project as local-up: the override recreates api-local with evidence enabled and adds
+# the migration job and delivery worker. down never passes -v, so volumes survive.
+local-evidence-up:
+	$(EVIDENCE_COMPOSE) up -d --build --wait --wait-timeout $(EVIDENCE_WAIT_SECONDS)
+
+local-evidence-down:
+	$(EVIDENCE_COMPOSE) down
+
+local-evidence-check:
+	$(EVIDENCE_COMPOSE) config --quiet
+	pytest tests/local_env/test_eval_queue.py tests/local_env/test_local_configuration.py tests/local_env/test_aws_emulator.py -q
+
+local-evidence-smoke:
+	RUN_LOCAL_EVIDENCE_TESTS=1 RUN_LOCAL_STACK_TESTS=1 pytest tests/local_env/test_eval_queue.py tests/local_env/test_running_stack.py -q
 
 load-test-install:
 	pip install -r requirements-loadtest.txt

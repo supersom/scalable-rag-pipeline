@@ -1,0 +1,82 @@
+# docker-compose.evaluation.yml
+# Opt-in override for local evidence delivery; the only place the evidence flags are enabled.
+# Use through `make local-evidence-up`, which layers this file over docker-compose.yml.
+# Every key and endpoint below is a local dummy for the Moto emulator and fake models; none is
+# valid against real AWS, and content capture accepts only the restricted synthetic fixtures.
+
+# Literal dummies: the base file's ${AWS_ACCESS_KEY_ID:-test} would pass a developer's exported
+# credentials through to these containers.
+x-dummy-aws: &dummy-aws
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+
+x-evidence-environment: &evidence-environment
+  <<: *dummy-aws
+  ENV: local
+  EVAL_EVIDENCE_ENABLED: "true"
+  EVAL_CAPTURE_CONTENT: "true"
+  # Moto's default account; the publisher uses this URL's origin as its SQS endpoint.
+  EVAL_QUEUE_URL: http://s3-emulator:4566/123456789012/${EVAL_QUEUE_NAME:-eval-runs}
+  EVAL_IDENTITY_HASH_KEY: local-evidence-identity-key-not-a-secret
+  EVAL_CONTENT_POLICY: restricted-synthetic-v1
+  EVAL_FIXTURE_MANIFEST: /app/deploy/evaluation/restricted-synthetic-v1.json
+  EVAL_FIXTURE_CASE: synthetic-question
+  EVAL_S3_BUCKET: ${EVAL_EVIDENCE_BUCKET:-eval-traces}
+  EVAL_S3_ENDPOINT_URL: http://s3-emulator:4566
+  EVAL_KMS_KEY_ID: local-evidence-kms-key
+
+x-synthetic-manifest: &synthetic-manifest
+  type: bind
+  source: ./deploy/evaluation/restricted-synthetic-v1.json
+  target: /app/deploy/evaluation/restricted-synthetic-v1.json
+  read_only: true
+
+services:
+  s3-emulator:
+    environment: *dummy-aws
+    healthcheck:
+      # The unchanged bucket/versioning check, plus queue/redrive readiness for delivery startup.
+      test:
+        - CMD-SHELL
+        - python -m services.aws_emulator.healthcheck && python -m services.aws_emulator.init_eval_queue --check
+
+  evidence-migrate:
+    extends:
+      file: docker-compose.yml
+      service: api-local
+    command: ["python", "-m", "services.api.app.evaluation.migrate"]
+    environment: *dummy-aws
+    restart: "no"
+    ports: !reset []
+    healthcheck:
+      disable: true
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+
+  api-local:
+    environment: *evidence-environment
+    volumes:
+      - *synthetic-manifest
+    depends_on:
+      evidence-migrate:
+        condition: service_completed_successfully
+
+  evidence-delivery:
+    extends:
+      file: docker-compose.yml
+      service: api-local
+    command: ["python", "-m", "services.evaluation_delivery.worker"]
+    environment: *evidence-environment
+    volumes:
+      - *synthetic-manifest
+    ports: !reset []
+    healthcheck:
+      disable: true
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+      s3-emulator:
+        condition: service_healthy
+      evidence-migrate:
+        condition: service_completed_successfully

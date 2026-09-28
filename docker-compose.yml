@@ -49,7 +49,8 @@ services:
     volumes:
       - neo4j_data:/data
 
-  # 5. Moto S3 - local evidence payload store, no AWS account or auth token required
+  # 5. Moto S3 + SQS on one port - local evidence payload store and evaluation queues,
+  #    no AWS account or auth token required
   s3-emulator:
     build:
       context: .
@@ -62,6 +63,8 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
       EVAL_EVIDENCE_BUCKET: ${EVAL_EVIDENCE_BUCKET:-eval-traces}
+      EVAL_QUEUE_NAME: ${EVAL_QUEUE_NAME:-eval-runs}
+      EVAL_DLQ_NAME: ${EVAL_DLQ_NAME:-eval-runs-dlq}
       S3_ENDPOINT_URL: http://localhost:4566
     healthcheck:
       test: ["CMD", "python", "-m", "services.aws_emulator.healthcheck"]
