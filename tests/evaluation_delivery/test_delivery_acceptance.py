@@ -8,12 +8,39 @@ import hashlib
 import json
 import time
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import pytest
 
 LITERAL = 'Contact alice@example.test; token=fixture-secret'
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize('collision', ['bucket', 'queue'])
+def test_fixture_rejects_existing_resource_without_cleanup(collision):
+    from botocore.exceptions import ClientError
+    from acceptance_fixture import LiveDelivery
+
+    harness = object.__new__(LiveDelivery)
+    harness.name = 'eval_test_0123456789abcdef'
+    harness.bucket = 'eval-test-0123456789abcdef'
+    harness.created_schema = harness.created_bucket = False
+    harness.queue = None
+    harness.engine = Mock(dispose=AsyncMock())
+    harness.admin = Mock(dispose=AsyncMock())
+    harness.s3 = Mock()
+    harness.sqs = Mock()
+    if collision == 'queue':
+        harness.s3.head_bucket.side_effect = ClientError(
+            {'Error': {'Code': '404', 'Message': 'missing'}}, 'HeadBucket')
+    with pytest.raises(AssertionError, match=f'{collision} name already exists'):
+        harness.setup()
+    harness.cleanup()
+    harness.s3.create_bucket.assert_not_called()
+    harness.s3.delete_bucket.assert_not_called()
+    harness.sqs.create_queue.assert_not_called()
+    harness.sqs.delete_queue.assert_not_called()
 
 
 def test_manifest_hashes_match_the_live_acceptance_sources():
@@ -69,11 +96,25 @@ def test_live_delivery_links_stored_versions(live_delivery, caplog):
             from services.api.app.evaluation.payloads import PayloadAccessDenied
             tenant_a = await api.authorized_partition('synthetic-tenant')
             tenant_b = await api.authorized_partition('synthetic-tenant-2')
+            from services.api.app.agents.nodes.responder import DIRECT_TEMPLATE
+            from services.api.app.evaluation.delivery_models import canonical_bytes
+            redacted_input = 'Contact [REDACTED_EMAIL]; token=[REDACTED_SECRET]'
+            answer = 'This is a deterministic local response.'
+            expected_payloads = {
+                'input': canonical_bytes({'text': redacted_input}),
+                'model_request': canonical_bytes({
+                    'messages': [{'role': 'user', 'content': DIRECT_TEMPLATE.format(query=redacted_input)}],
+                    'model': 'fake-chat', 'temperature': 0.3, 'max_tokens': 1024,
+                }),
+                'model_response': canonical_bytes({'text': answer}),
+                'output': canonical_bytes({'text': answer}),
+            }
             for entry in envelope.manifest:
                 ref = entry.reference
                 assert ref.version_id
                 data = await live_delivery.store.get(ref, authorized_tenant=tenant_a,
                                                      deadline=time.monotonic() + 3)
+                assert data == expected_payloads[entry.slot.kind.value]
                 assert hashlib.sha256(data).hexdigest() == ref.sha256
                 assert b'fixture-secret' not in data and b'alice@example.test' not in data
                 with pytest.raises(PayloadAccessDenied):
@@ -82,6 +123,9 @@ def test_live_delivery_links_stored_versions(live_delivery, caplog):
             assert b'fixture-secret' not in stored
             from prometheus_client import generate_latest
             metrics = generate_latest(live_delivery.registry).decode()
+            assert 'evidence_delivery_events_total{' in metrics
+            assert live_delivery.registry.get_sample_value('evidence_delivery_events_total',
+                {'component': 'runtime', 'outcome': 'committed', 'reason': 'none'}) == 1
             for private in ('fixture-secret', 'alice@example.test', str(run_id), tenant_a, tenant_b):
                 assert private not in metrics and private not in caplog.text
     asyncio.run(scenario())
@@ -106,8 +150,11 @@ def test_live_denial_preserves_answer(live_delivery, mode, tenant, expected):
             if mode == 'cache':
                 assert any(e.slot.kind == 'output' and e.state == 'unavailable' for e in envelope.manifest)
             if mode == 'unapproved':
-                assert any(e.slot.kind == 'model_request' and e.reason == 'unapproved_source'
-                           for e in envelope.manifest)
+                denied = {e.slot.kind.value: e for e in envelope.manifest
+                          if e.slot.kind.value in ('model_request', 'model_response', 'output')}
+                assert set(denied) == {'model_request', 'model_response', 'output'}
+                assert all(e.state == 'unavailable' and e.reason == 'unapproved_source'
+                           and e.reference is None for e in denied.values())
     asyncio.run(scenario())
 
 

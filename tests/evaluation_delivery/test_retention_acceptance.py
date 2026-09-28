@@ -25,11 +25,14 @@ def test_live_expiry_failed_delete_resume_and_metadata_retention(live_delivery):
             refs = [entry.reference for entry in envelope.manifest]
             assert refs and all(refs)
             first = refs[0]
+            original_bytes = await live_delivery.store.get(
+                first, first.tenant_partition, deadline=time.monotonic() + 3)
             # A later version and delete marker must not change the immutable resolver target.
             live_delivery.s3.put_object(Bucket=first.bucket, Key=first.key, Body=b'other version')
             marker = live_delivery.s3.delete_object(Bucket=first.bucket, Key=first.key)
             assert marker['VersionId'] != first.version_id
-            assert await live_delivery.store.get(first, first.tenant_partition, deadline=time.monotonic() + 3)
+            assert await live_delivery.store.get(
+                first, first.tenant_partition, deadline=time.monotonic() + 3) == original_bytes
             live_delivery.now = first.created_at + timedelta(days=30)
             with pytest.raises(PayloadAccessDenied, match='expired'):
                 await live_delivery.store.get(first, first.tenant_partition, deadline=time.monotonic() + 3)

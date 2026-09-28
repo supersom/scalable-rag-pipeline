@@ -16,6 +16,7 @@ from uuid import uuid4
 import boto3
 import httpx
 from botocore.config import Config
+from botocore.exceptions import ClientError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -54,6 +55,25 @@ class LiveDelivery:
             return (await conn.execute(text(statement))).all()
 
     def setup(self):
+        # S3 CreateBucket (in us-east-1) and SQS CreateQueue can succeed for an
+        # existing resource owned by these credentials. Check both names before
+        # creating anything, including the disposable database schema.
+        try:
+            self.s3.head_bucket(Bucket=self.bucket)
+        except ClientError as exc:
+            if exc.response['Error']['Code'] not in ('404', 'NoSuchBucket', 'NotFound'):
+                raise
+        else:
+            raise AssertionError('test evidence bucket name already exists')
+        try:
+            self.sqs.get_queue_url(QueueName=self.name)
+        except ClientError as exc:
+            if exc.response['Error']['Code'] not in ('AWS.SimpleQueueService.NonExistentQueue',
+                                                     'QueueDoesNotExist'):
+                raise
+        else:
+            raise AssertionError('test evidence queue name already exists')
+
         async def db():
             async with self.admin.begin() as conn:
                 await conn.execute(text(f'CREATE SCHEMA "{self.name}"'))
