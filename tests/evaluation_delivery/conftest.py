@@ -20,7 +20,8 @@ def policy():
 def provenance_for(policy):
     from services.api.app.evaluation.provenance import Provenance, SourceProof
     def make(case_id='literal', tenant='synthetic-tenant', tool_name=None):
-        record = next(r for r in policy.synthetic_sources if r.case_id == case_id and r.tenant_id == tenant)
+        record = next(r for r in policy.synthetic_sources if r.case_id == case_id and r.tenant_id == tenant
+                      and r.source_id == case_id)
         return Provenance(tenant_id=tenant, case_id=case_id, tool_name=tool_name,
                           sources=(SourceProof(**record.model_dump(exclude={'tenant_id', 'case_id'})),))
     return make
@@ -211,3 +212,26 @@ def repo_factory(pg_engine, clock):
 @pytest.fixture
 def repo(repo_factory):
     return repo_factory()
+
+
+@pytest.fixture
+def live_delivery(monkeypatch, terminal_event, policy):
+    """Own only a random schema, bucket, queue and explicitly selected loopback API port."""
+    if os.getenv('RUN_EVAL_DELIVERY_TESTS') != '1':
+        pytest.skip('live delivery acceptance requires RUN_EVAL_DELIVERY_TESTS=1')
+    from acceptance_fixture import LiveDelivery
+    required = ('EVAL_TEST_DATABASE_URL', 'EVAL_TEST_API_URL', 'EVAL_TEST_S3_ENDPOINT',
+                'EVAL_TEST_SQS_ENDPOINT', 'EVAL_TEST_MODEL_URL')
+    values = {key: os.getenv(key) for key in required}
+    if not all(values.values()):
+        pytest.fail('delivery acceptance requires explicit local DB/API/S3/SQS/model endpoints')
+    from urllib.parse import urlsplit
+    if any(urlsplit(value).hostname not in ('localhost', '127.0.0.1', '::1')
+           for value in values.values()):
+        pytest.fail('delivery acceptance endpoints must be loopback')
+    harness = LiveDelivery(values, policy, monkeypatch)
+    try:
+        harness.setup()
+        yield harness
+    finally:
+        harness.cleanup()

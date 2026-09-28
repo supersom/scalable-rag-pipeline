@@ -164,6 +164,10 @@ async def chat_stream(
             lookup.set_attribute("cache.hit", bool(cached_ans))
         trace.get_current_span().set_attribute("cache.hit", bool(cached_ans))
         if cached_ans:
+            if capture is not None:
+                # Cached text has no retained source proof; equal fixture text
+                # cannot establish the provenance of this cached computation.
+                capture.omit(PayloadSlot(kind="output", ordinal=1), "unapproved_source")
             yield encode_event(type="answer", content=cached_ans)
             # Include cached persistence in the run lifecycle, just like normal answers.
             await persist(cached_ans)

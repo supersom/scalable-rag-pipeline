@@ -5,6 +5,26 @@
     {
       "tenant_id": "synthetic-tenant",
       "case_id": "literal",
+      "source_kind": "template",
+      "source_id": "responder-direct-v1",
+      "source_hash": "sha256:583ae856b47de49fc48c9e1ca90e64da170a281efa5489ef402bb32d96ab61bd",
+      "template_id": "responder-direct-v1",
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant-2",
+      "case_id": "literal",
+      "source_kind": "template",
+      "source_id": "responder-direct-v1",
+      "source_hash": "sha256:583ae856b47de49fc48c9e1ca90e64da170a281efa5489ef402bb32d96ab61bd",
+      "template_id": "responder-direct-v1",
+      "collection": null,
+      "document_id": null
+    },
+    {
+      "tenant_id": "synthetic-tenant",
+      "case_id": "literal",
       "source_kind": "input",
       "source_id": "literal",
       "source_hash": "sha256:2b85e59d91f1cfda9c4da06384fba612794d9d381fa8a58e73078cf3b7bcf767",
