@@ -250,6 +250,44 @@ def test_capture_is_bound_only_while_the_generator_advances(route, install, monk
     assert runtime._pool.active_runs == 0 and runtime._pool.resident_bytes == 0
 
 
+def test_stream_disconnect_finalizes_recorded_operations_once_and_resets_ports(route, install, monkeypatch):
+    from libs.observability import tracing
+    from services.api.app.evaluation.operation_schemas import register_api_operation_schemas
+    chat, _, _ = route
+    register_api_operation_schemas()
+    runtime = install(counting_runtime(config(capture=False)))
+    type(runtime).admitted = type(runtime).submitted = 0
+
+    class RecordingGraph:
+        async def astream(self, state, config):
+            with tracing.domain_span('llm.chat', schema_version=1) as op:
+                op.record('request', facts={'request_hash': 'sha256:' + 'a' * 64})
+                op.record('result', facts={'status': 'success', 'input_tokens': 1, 'output_tokens': 1})
+            yield {'planner': {'action': 'direct_answer'}}
+
+    monkeypatch.setattr(chat, 'agent_app', RecordingGraph())
+
+    async def run():
+        await runtime.start()
+        response = await chat.chat_stream(chat.ChatRequest(message='question'), BackgroundTasks(),
+            user=TENANT_USER, cache=Cache(), memory=Memory(), llm=SimpleNamespace())
+        iterator = response.body_iterator
+        first = await anext(iterator)
+        assert json.loads(first)['run_id'] == response.headers['X-Run-ID']
+        await iterator.aclose()
+        response.on_close()
+        await runtime.close(time.monotonic() + 1)
+        return response
+
+    response = asyncio.run(run())
+    assert response.evidence.status == 'cancelled'
+    assert [record.phase for record in response.evidence.operation_events] == ['request', 'result']
+    assert len(response.evidence.model_calls) == 1
+    assert type(runtime).admitted == type(runtime).submitted == 1
+    assert tracing.record_observer.get() is None
+    assert tracing.provenance_port.get() is None
+
+
 @pytest.mark.parametrize("failure", ["open", "admit", "submit"])
 def test_runtime_failure_does_not_alter_chat_or_agent_status(route, install, monkeypatch, failure):
     chat, _, _ = route
