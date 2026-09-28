@@ -103,7 +103,11 @@ class DeliveryWorker:
         async def settle(claim: OutboxClaim) -> None:
             async with slots:
                 await self._deliver(claim)
-        await asyncio.gather(*(settle(claim) for claim in claims))
+        # Settle every claim before surfacing an unexpected error, so no send runs unsupervised.
+        outcomes = await asyncio.gather(*(settle(claim) for claim in claims), return_exceptions=True)
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                raise outcome
         return len(claims)
 
     async def _deliver(self, claim: OutboxClaim) -> None:
@@ -157,62 +161,76 @@ class DeliveryWorker:
             logger.warning("evidence delivery retry unrecorded reason=%s", DeliveryReason.database_unavailable.value)
 
 
-async def serve(config) -> int:
+EXIT_RUNTIME_FAILURE = 1
+EXIT_CONFIGURATION = 2
+
+
+async def serve(config, publisher) -> int:
+    """Own the engine, repository and worker; always drain, unregister signals and dispose on exit."""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from services.api.app.evaluation.outbox import OutboxRepository
-    from services.api.app.evaluation.publisher import RunEvidencePublisher
 
-    engine = create_async_engine(config.database_url, pool_size=config.send_workers + 1, pool_pre_ping=True)
-    publisher = RunEvidencePublisher.from_config(config)
-    repo = OutboxRepository(
-        async_sessionmaker(engine, expire_on_commit=False), utc_now, max_attempts=config.producer_attempts,
-        backoff_base_seconds=config.backoff_base_seconds, backoff_cap_seconds=config.backoff_cap_seconds,
-        metadata_retention_days=config.metadata_retention_days,
-        content_retention_days=config.content_retention_days, orphan_grace_seconds=config.orphan_grace_seconds)
-    worker = DeliveryWorker(
-        repo, publisher, utc_now, batch=config.delivery_batch, send_workers=config.send_workers,
-        lease_seconds=config.claim_lease_seconds,
-        send_timeout_seconds=config.sdk_attempts * (config.sdk_connect_timeout_seconds
-                                                    + config.sdk_read_timeout_seconds))
-    stop = asyncio.Event()
     loop = asyncio.get_running_loop()
-    for signum in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(signum, stop.set)
-    runner = asyncio.create_task(worker.run(stop))
-    logger.info("evidence delivery worker started")
+    engine = create_async_engine(config.database_url, pool_size=config.send_workers + 1, pool_pre_ping=True)
+    worker = None
     try:
+        repo = OutboxRepository(
+            async_sessionmaker(engine, expire_on_commit=False), utc_now, max_attempts=config.producer_attempts,
+            backoff_base_seconds=config.backoff_base_seconds, backoff_cap_seconds=config.backoff_cap_seconds,
+            metadata_retention_days=config.metadata_retention_days,
+            content_retention_days=config.content_retention_days, orphan_grace_seconds=config.orphan_grace_seconds)
+        worker = DeliveryWorker(
+            repo, publisher, utc_now, batch=config.delivery_batch, send_workers=config.send_workers,
+            lease_seconds=config.claim_lease_seconds, ack_reserve_seconds=config.ack_reserve_seconds,
+            send_timeout_seconds=config.sdk_attempts * (config.sdk_connect_timeout_seconds
+                                                        + config.sdk_read_timeout_seconds))
+        stop = asyncio.Event()
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(signum, stop.set)
+        runner = asyncio.create_task(worker.run(stop))
         stopping = asyncio.create_task(stop.wait())
-        await asyncio.wait({runner, stopping}, return_when=asyncio.FIRST_COMPLETED)
-        stopping.cancel()
+        logger.info("evidence delivery worker started")
+        try:
+            await asyncio.wait({runner, stopping}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stopping.cancel()
+            residue = await worker.close(time.monotonic() + config.shutdown_drain_seconds)
+        await runner  # re-raises a crashed run loop, after draining
     finally:
-        residue = await worker.close(time.monotonic() + config.shutdown_drain_seconds)
-        await runner
-        await engine.dispose()
         for signum in (signal.SIGTERM, signal.SIGINT):
             loop.remove_signal_handler(signum)
+        if worker is None:
+            await publisher.close(time.monotonic())
+        await engine.dispose()
     logger.info("evidence delivery worker stopped residual_calls=%d", residue)
     return 0
 
 
 def main() -> int:
+    """Exit 0 after a signalled stop, 2 for rejected configuration, 1 for any runtime failure.
+
+    Only fixed messages are logged: configuration errors can echo URLs or keys, and runtime errors
+    (including pydantic ValidationError, a ValueError subclass) can echo envelope content.
+    """
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(name)s %(message)s")
     from services.api.app.evaluation.delivery_config import DeliveryConfig
+    from services.api.app.evaluation.publisher import RunEvidencePublisher
     try:
         from services.api.app.config import Settings
         config = DeliveryConfig.from_settings(Settings())
+        publisher = RunEvidencePublisher.from_config(config) if config.enabled else None
     except Exception:
-        # Validation errors can echo URLs or keys; report only that configuration was rejected.
         logger.error("evidence delivery configuration invalid")
-        return 2
-    if not config.enabled:
+        return EXIT_CONFIGURATION
+    if publisher is None:
         logger.error("evidence delivery disabled; set EVAL_EVIDENCE_ENABLED to run the worker")
-        return 2
+        return EXIT_CONFIGURATION
     try:
-        return asyncio.run(serve(config))
-    except ValueError:
-        logger.error("evidence delivery configuration invalid")
-        return 2
+        return asyncio.run(serve(config, publisher))
+    except Exception:
+        logger.error("evidence delivery worker failed")
+        return EXIT_RUNTIME_FAILURE
 
 
 if __name__ == "__main__":

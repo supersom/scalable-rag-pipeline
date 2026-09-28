@@ -7,7 +7,10 @@ import time
 from datetime import timedelta
 
 import pytest
-from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
+from botocore.exceptions import (
+    ClientError, EndpointConnectionError, NoCredentialsError, NoRegionError, ParamValidationError,
+    PartialCredentialsError,
+)
 from botocore.stub import Stubber
 
 from services.api.app.evaluation.bounded_io import BoundedIO
@@ -39,6 +42,7 @@ def sqs(aws_env):
 
 
 def make_publisher(client, url, **kwargs):
+    kwargs.setdefault('max_body_bytes', DeliveryConfig().queue_body_bytes)
     return RunEvidencePublisher(client, queue_url=url, io=BoundedIO(2), **kwargs)
 
 
@@ -167,7 +171,7 @@ def mutated_content(envelope):
         'content-changed-after-hash', 'trailing-bytes', 'unknown-version'])
 def test_invalid_envelopes_are_permanent_and_never_sent(envelope, build):
     client = CountingClient()
-    publisher = RunEvidencePublisher(client, queue_url='https://sqs.us-east-1.amazonaws.com/1/q', io=BoundedIO(1))
+    publisher = make_publisher(client, 'https://sqs.us-east-1.amazonaws.com/1/q')
     with pytest.raises(PublishError) as caught:
         publish(publisher, build(envelope))
     assert_safe(caught.value, DeliveryReason.metadata_invalid, permanent=True)
@@ -179,7 +183,7 @@ def test_characters_sqs_cannot_carry_are_rejected_before_send(envelope):
     value['safe_run']['error_class'] = 'bad￾class'
     tricky = ExportEnvelope.model_validate(value)
     client = CountingClient()
-    publisher = RunEvidencePublisher(client, queue_url='https://sqs.us-east-1.amazonaws.com/1/q', io=BoundedIO(1))
+    publisher = make_publisher(client, 'https://sqs.us-east-1.amazonaws.com/1/q')
     with pytest.raises(PublishError) as caught:
         publish(publisher, tricky.canonical_bytes())
     assert_safe(caught.value, DeliveryReason.metadata_invalid, permanent=True)
@@ -260,7 +264,11 @@ class RaisingClient:
     (EndpointConnectionError(endpoint_url=f'http://{SENTINEL}'), DeliveryReason.broker_transient, False),
     (ConnectionResetError(SENTINEL), DeliveryReason.broker_transient, False),
     (RuntimeError(SENTINEL), DeliveryReason.broker_transient, False),
-    (NoCredentialsError(), DeliveryReason.broker_denied, True),
+    # Missing/partial credentials look identical to an IMDS or role-provider hiccup: retry, never quarantine.
+    (NoCredentialsError(), DeliveryReason.broker_transient, False),
+    (PartialCredentialsError(provider='env', cred_var=SENTINEL), DeliveryReason.broker_transient, False),
+    (NoRegionError(), DeliveryReason.broker_denied, True),
+    (ParamValidationError(report=SENTINEL), DeliveryReason.broker_denied, True),
 ])
 def test_client_side_failures_are_classified(envelope, error, reason, permanent):
     publisher = make_publisher(RaisingClient(error), 'https://sqs.us-east-1.amazonaws.com/1/q')
@@ -298,8 +306,7 @@ def test_hung_send_is_bounded_by_the_deadline(envelope):
 
 def test_closed_publisher_refuses_new_sends(envelope):
     client = CountingClient()
-    publisher = RunEvidencePublisher(client, queue_url='https://sqs.us-east-1.amazonaws.com/1/q', io=BoundedIO(1),
-                                     owns_client=True)
+    publisher = make_publisher(client, 'https://sqs.us-east-1.amazonaws.com/1/q', owns_client=True)
 
     async def scenario():
         assert await publisher.close(time.monotonic() + 1) == 0
@@ -353,3 +360,8 @@ def test_from_config_requires_an_http_queue_url(aws_env, queue_url):
 
 def test_default_cap_is_128_kib():
     assert DeliveryConfig().queue_body_bytes == 128 * 1024
+
+
+def test_publisher_requires_an_explicit_body_cap():
+    with pytest.raises(TypeError):
+        RunEvidencePublisher(CountingClient(), queue_url='https://sqs.us-east-1.amazonaws.com/1/q', io=BoundedIO(1))

@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     EVAL_DELIVERY_BATCH: int = 10
     EVAL_SEND_WORKERS: int = 2
     EVAL_CLAIM_LEASE_SECONDS: float = 60
+    EVAL_ACK_RESERVE_SECONDS: float = 5
     EVAL_PRODUCER_ATTEMPTS: int = 8
     EVAL_BACKOFF_BASE_SECONDS: float = 1
     EVAL_BACKOFF_CAP_SECONDS: float = 60

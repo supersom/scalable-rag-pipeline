@@ -57,3 +57,13 @@ def test_from_settings_preserves_disabled_startup(monkeypatch):
     from services.api.app.config import Settings
     from services.api.app.evaluation.delivery_config import DeliveryConfig
     assert DeliveryConfig.from_settings(Settings()).enabled is False
+
+
+def test_claim_lease_covers_send_budget_plus_acknowledgement_reserve():
+    from services.api.app.evaluation.delivery_config import DeliveryConfig
+    # Default SDK budget is 2 attempts x (1 + 2) s = 6 s; the default reserve adds 5 s.
+    assert DeliveryConfig(claim_lease_seconds=11).ack_reserve_seconds == 5
+    for overrides in ({"claim_lease_seconds": 10}, {"claim_lease_seconds": 20, "ack_reserve_seconds": 15},
+                      {"ack_reserve_seconds": 0}):
+        with pytest.raises(ValidationError):
+            DeliveryConfig(**overrides)

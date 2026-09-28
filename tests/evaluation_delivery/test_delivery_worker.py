@@ -181,7 +181,7 @@ class MotoBroker:
         self._bodies: list[bytes] = []
 
     def publisher(self):
-        return RunEvidencePublisher(self.client, queue_url=self.url, io=BoundedIO(2))
+        return RunEvidencePublisher(self.client, queue_url=self.url, io=BoundedIO(2), max_body_bytes=131072)
 
     @property
     def bodies(self):
@@ -431,7 +431,8 @@ def test_denied_broker_quarantines_immediately(repo, clock, envelope):
 def test_denied_real_broker_quarantines(repo, clock, envelope, sqs_queue):
     client, url = sqs_queue
     row = repo.add(envelope)
-    publisher = RunEvidencePublisher(client, queue_url=url.rsplit('/', 1)[0] + '/missing', io=BoundedIO(1))
+    publisher = RunEvidencePublisher(client, queue_url=url.rsplit('/', 1)[0] + '/missing', io=BoundedIO(1),
+                                     max_body_bytes=131072)
     asyncio.run(DeliveryWorker(repo, publisher, clock).run_once())
     assert row.state == 'quarantined' and row.error_class == 'broker_denied'
 
@@ -626,6 +627,87 @@ def test_cli_stops_claiming_and_exits_cleanly_on_signal(tmp_path, signum):
             process.kill()
     assert process.returncode == 0
     assert 'stopped' in err and SENTINEL not in out + err + line
+
+
+def main_in_process(monkeypatch, tmp_path, **overrides):
+    from services.evaluation_delivery import worker as worker_module
+    for name in [n for n in os.environ if n.startswith(('EVAL_', 'AWS_'))]:
+        monkeypatch.delenv(name)
+    for name, value in cli_env(tmp_path, **overrides).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.chdir(tmp_path)  # no stray .env file
+    return worker_module.main()
+
+
+def test_cli_run_loop_crash_is_a_content_free_runtime_failure_with_cleanup(monkeypatch, tmp_path, caplog, capsys):
+    from pydantic import ValidationError
+    from sqlalchemy.ext.asyncio import AsyncEngine
+    from services.api.app.evaluation.outbox import OutboxRepository
+    caplog.set_level(logging.DEBUG)
+    disposed = []
+    original_dispose = AsyncEngine.dispose
+
+    async def dispose(self, *args, **kwargs):
+        disposed.append(self)
+        return await original_dispose(self, *args, **kwargs)
+
+    async def corrupt_claim(self, limit, lease_seconds):
+        # A real pydantic ValidationError (a ValueError subclass) quoting content, as a bad row would.
+        OutboxClaim.model_validate({'envelope_bytes': SENTINEL})
+    monkeypatch.setattr(AsyncEngine, 'dispose', dispose)
+    monkeypatch.setattr(OutboxRepository, 'claim_batch', corrupt_claim)
+    with pytest.raises(ValidationError):
+        OutboxClaim.model_validate({'envelope_bytes': SENTINEL})
+    assert issubclass(ValidationError, ValueError)
+
+    assert main_in_process(monkeypatch, tmp_path) == 1  # runtime failure, not configuration (2)
+    captured = capsys.readouterr()
+    messages = [record.getMessage() for record in caplog.records]
+    assert 'evidence delivery worker failed' in messages
+    assert 'evidence delivery configuration invalid' not in messages
+    assert not any(record.exc_info for record in caplog.records)
+    assert SENTINEL not in caplog.text + captured.err + captured.out
+    assert 'Traceback' not in captured.err + captured.out
+    assert len(disposed) == 1
+    assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
+
+
+def test_cli_invalid_queue_url_is_a_configuration_failure(monkeypatch, tmp_path, caplog):
+    assert main_in_process(monkeypatch, tmp_path, EVAL_QUEUE_URL=f'ftp://{SENTINEL}/1/q') == 2
+    assert 'evidence delivery configuration invalid' in caplog.text and SENTINEL not in caplog.text
+
+
+def test_unexpected_settlement_error_surfaces_after_every_claim_settles(repo, clock, envelope):
+    for _ in range(3):
+        repo.add(other_envelope(envelope))
+    worker, broker = fake_worker(repo, clock, send_workers=3)
+    original = repo.mark_delivered
+    calls = []
+
+    async def flaky(claim, receipt):
+        calls.append(claim)
+        if len(calls) == 1:
+            raise RuntimeError(SENTINEL)
+        return await original(claim, receipt)
+    repo.mark_delivered = flaky
+    with pytest.raises(RuntimeError):
+        asyncio.run(worker.run_once())
+    assert len(broker.bodies) == 3 and sum(row.state == 'delivered' for row in repo.rows) == 2
+
+
+def test_credential_resolution_errors_retry_instead_of_quarantining_a_batch(repo, clock, envelope):
+    from botocore.exceptions import NoCredentialsError
+
+    class NoCredentials:
+        def send_message(self, **kwargs):
+            raise NoCredentialsError()
+    for _ in range(5):
+        repo.add(other_envelope(envelope))
+    publisher = RunEvidencePublisher(NoCredentials(), queue_url='https://sqs.us-east-1.amazonaws.com/1/q',
+                                     io=BoundedIO(2), max_body_bytes=131072)
+    asyncio.run(DeliveryWorker(repo, publisher, clock, batch=5).run_once())
+    assert all(row.state == 'pending' and row.error_class == 'broker_transient' and row.attempts == 1
+               for row in repo.rows)
 
 
 # --- consumer fixture ---------------------------------------------------------------------

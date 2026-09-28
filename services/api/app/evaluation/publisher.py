@@ -1,13 +1,16 @@
 """Publish committed metadata envelopes to SQS: exact stored bytes, finite IO, content-free failures.
 
-The message body is the canonical envelope exactly as committed; string message attributes repeat
-only its identity and hash. Every failure becomes a ``PublishError`` carrying a fixed
+Wire contract: the message body is the canonical envelope exactly as committed. Four String message
+attributes (``export_version``, ``run_schema_version``, ``run_id``, ``export_hash``) repeat the
+body's identity and hash for routing/inspection only; consumers must deduplicate from the validated
+body, never from the attributes. Every failure becomes a ``PublishError`` carrying a fixed
 ``DeliveryReason`` and a transient/permanent flag, never an SDK message, queue body, or cause chain.
 
-Classification: explicit authorization, credential, missing-queue, KMS-key, and invalid-content
-rejections are permanent (quarantine for operator action); throttling, 5xx, connection errors,
-expired tokens/requests, deadlines, unknown error codes, and malformed acknowledgements are transient
-(the outbox's attempt cap bounds them).
+Classification: explicit server-side authorization, missing-queue, KMS-key, and invalid-content
+rejections plus local region/parameter misconfiguration are permanent (quarantine for operator
+action). Throttling, 5xx, connection errors, expired tokens/requests, unresolvable credentials (an
+IMDS/role-provider hiccup looks identical to missing credentials), deadlines, unknown error codes,
+and malformed acknowledgements are transient; the outbox's attempt cap bounds them.
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ from .delivery_config import DeliveryConfig
 from .delivery_models import DeliveryReason, ExportEnvelope, PublishReceipt
 
 # SQS accepts only these characters in a message body (#x9 | #xA | #xD | #x20-#xD7FF | #xE000-#xFFFD | astral).
-_SQS_TEXT = re.compile("[\t\n\r\x20-퟿-�\U00010000-\U0010ffff]*")
+_SQS_TEXT = re.compile(r"[\t\n\r\x20-\uD7FF\uE000-\uFFFD\U00010000-\U0010FFFF]*")
 
 _DENIED_CODES = frozenset({
     "AccessDenied", "AccessDeniedException", "AuthorizationError", "InvalidClientTokenId",
@@ -65,20 +68,19 @@ def parse_envelope(envelope_bytes: bytes) -> ExportEnvelope:
 
 
 def _classify(error: BaseException) -> PublishError:
-    from botocore.exceptions import ClientError, NoCredentialsError, NoRegionError, ParamValidationError, \
-        PartialCredentialsError
+    from botocore.exceptions import ClientError, NoRegionError, ParamValidationError
     if isinstance(error, ClientError):
         code = error.response.get("Error", {}).get("Code")
         permanent = code in _DENIED_CODES
     else:
-        permanent = isinstance(error, (NoCredentialsError, PartialCredentialsError, NoRegionError,
-                                       ParamValidationError))
+        # Credential-resolution errors stay transient: a per-row quarantine would sweep a healthy backlog.
+        permanent = isinstance(error, (NoRegionError, ParamValidationError))
     return PublishError(DeliveryReason.broker_denied if permanent else DeliveryReason.broker_transient,
                         permanent=permanent)
 
 
 class RunEvidencePublisher:
-    def __init__(self, client: Any, *, queue_url: str, io: BoundedIO, max_body_bytes: int = 131072,
+    def __init__(self, client: Any, *, queue_url: str, io: BoundedIO, max_body_bytes: int,
                  owns_client: bool = False) -> None:
         if not queue_url or max_body_bytes <= 0:
             raise ValueError("publisher requires a queue URL and a positive body cap")

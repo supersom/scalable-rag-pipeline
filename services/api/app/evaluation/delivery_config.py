@@ -38,6 +38,7 @@ class DeliveryConfig(BaseModel):
     delivery_batch: int = Field(default=10, gt=0)
     send_workers: int = Field(default=2, gt=0)
     claim_lease_seconds: float = Field(default=60, gt=0)
+    ack_reserve_seconds: float = Field(default=5, gt=0)
     producer_attempts: int = Field(default=8, gt=0)
     backoff_base_seconds: float = Field(default=1, gt=0)
     backoff_cap_seconds: float = Field(default=60, gt=0)
@@ -55,8 +56,11 @@ class DeliveryConfig(BaseModel):
             raise ValueError("commit reserve must be shorter than deadline")
         if self.intent_lease_seconds < self.deadline_seconds:
             raise ValueError("intent lease must cover upload and commit deadline")
-        if self.claim_lease_seconds < self.sdk_attempts * (self.sdk_connect_timeout_seconds + self.sdk_read_timeout_seconds):
-            raise ValueError("claim lease must cover broker processing")
+        # The worker reserves ack_reserve_seconds of each lease for the acknowledgement write, so the
+        # remainder must still cover the SDK's full send budget.
+        if self.claim_lease_seconds < self.sdk_attempts * (self.sdk_connect_timeout_seconds + self.sdk_read_timeout_seconds) \
+                + self.ack_reserve_seconds:
+            raise ValueError("claim lease must cover broker processing and acknowledgement")
         if self.backoff_cap_seconds < self.backoff_base_seconds:
             raise ValueError("backoff cap must be at least base")
         if self.payload_bytes > self.run_bytes or self.run_bytes > self.active_bytes or self.run_bytes > self.pending_bytes:
@@ -111,6 +115,7 @@ class DeliveryConfig(BaseModel):
             delivery_batch=settings.EVAL_DELIVERY_BATCH,
             send_workers=settings.EVAL_SEND_WORKERS,
             claim_lease_seconds=settings.EVAL_CLAIM_LEASE_SECONDS,
+            ack_reserve_seconds=settings.EVAL_ACK_RESERVE_SECONDS,
             producer_attempts=settings.EVAL_PRODUCER_ATTEMPTS,
             backoff_base_seconds=settings.EVAL_BACKOFF_BASE_SECONDS,
             backoff_cap_seconds=settings.EVAL_BACKOFF_CAP_SECONDS,
