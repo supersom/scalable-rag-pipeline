@@ -69,6 +69,7 @@ class RunEvidenceCollector:
         with self._lock:
             self._open()
             self._models.append(evidence.model_copy(deep=True))
+            return len(self._models) - 1
 
     def record_tool_step(self, **fields):
         with self._lock:

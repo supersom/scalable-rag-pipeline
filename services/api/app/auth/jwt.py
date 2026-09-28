@@ -4,6 +4,9 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from services.api.app.config import settings
 import time
+import re
+
+tenant_pattern = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
 
 # OAuth2 scheme tells Swagger UI where to send the token
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -39,11 +42,14 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
         if exp and time.time() > exp:
             raise HTTPException(status_code=401, detail="Token expired")
 
-        # Return user context dict
+        tenant = payload.get('tenant_id')
+        tenant = tenant if isinstance(tenant, str) and tenant_pattern.fullmatch(tenant) else None
+        # Only the verified optional claim authorizes a capture tenant.
         return {
             "id": user_id, 
             "role": role,
-            "permissions": payload.get("permissions", [])
+            "permissions": payload.get("permissions", []),
+            "tenant_id": tenant,
         }
         
     except JWTError:

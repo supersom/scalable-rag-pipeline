@@ -13,6 +13,10 @@ from services.api.app.config import settings
 from langchain_core.runnables import RunnableConfig
 from services.api.app.evaluation.context import bind_collector, collector_from_config, current_collector, content_hash
 from services.api.app.evaluation.models import RetrievalEvidence, RetrievedEvidence
+from services.api.app.evaluation.capture import current_capture
+from services.api.app.evaluation.delivery_models import PayloadSlot
+
+CITATION_TEMPLATE = '{text} [Source: {filename}]'
 
 
 @dataclass(frozen=True)
@@ -120,6 +124,24 @@ async def retrieve_context(query: str) -> RetrievalResult:
 
 
 def _record_evidence(query, result):
+    capture = current_capture.get()
+    if capture is not None:
+        ordinal = capture.next_ordinal('retrieval')
+        capture.record(PayloadSlot(kind='retrieval_query', ordinal=ordinal),
+                       {'text': query}, capture.source(query))
+        for index, item in enumerate(result.items, 1):
+            proof = capture.proof('retrieval_chunk', item.content,
+                                  collection=settings.QDRANT_COLLECTION, document_id=item.document_id)
+            capture.record(PayloadSlot(kind='retrieval_chunk', ordinal=ordinal, item_ordinal=index),
+                           {'text': item.content}, proof)
+            if item.retrieval_source == 'qdrant':
+                filename = item.metadata.get('filename', 'unknown')
+                formatted = CITATION_TEMPLATE.format(text=item.content, filename=filename)
+                proof = capture.combine(proof, capture.proof('filename', filename),
+                    capture.proof('template', CITATION_TEMPLATE, template_id='retrieval-citation-v1'))
+            else:
+                formatted = item.content
+            capture.remember(formatted, proof)
     collector = current_collector.get()
     if collector is not None:
         collector.record_retrieval(RetrievalEvidence(

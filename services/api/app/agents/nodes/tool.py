@@ -9,21 +9,50 @@ from services.api.app.tools.registry import TOOL_REGISTRY
 from libs.observability.tracing import domain_span, failure_status, mark_failure
 from langchain_core.runnables import RunnableConfig
 from services.api.app.evaluation.context import bind_collector, collector_from_config, content_hash
+from services.api.app.evaluation.capture import current_capture, bind_capture
+from services.api.app.evaluation.delivery_models import PayloadSlot
 
 logger = logging.getLogger(__name__)
 
 async def tool_node(state: AgentState, config: RunnableConfig = None) -> dict:
     name = state.get("tool_name", "")
     collector = collector_from_config(config)
+    capture = current_capture.get()
+    provenance = None
+    if capture is not None:
+        ordinal = capture.next_ordinal('tool')
+        provenance = capture.source(state.get('tool_input', '')).model_copy(update={'tool_name': name})
+        arguments = PayloadSlot(kind='tool_arguments', ordinal=ordinal)
+        if name == 'calculator':
+            capture.record(arguments, {'expression': state.get('tool_input', '')}, provenance)
+        else:
+            capture.omit(arguments, 'unapproved_tool')
+            provenance = capture.unknown()
     started_at, started = datetime.now(timezone.utc), time.perf_counter()
-    with bind_collector(collector, purpose="graph_search" if name == "graph_search" else "tool"), domain_span("tool.execute", attributes={"tool.name": name if name in TOOL_REGISTRY else "unknown"}) as span:
+    with bind_capture(capture, provenance), bind_collector(collector, purpose="graph_search" if name == "graph_search" else "tool"), domain_span("tool.execute", attributes={"tool.name": name if name in TOOL_REGISTRY else "unknown"}) as span:
         if name not in TOOL_REGISTRY:
             mark_failure(span, ValueError(), status="invalid")
         result = None
         try:
             result = await _execute(state)
+            if capture is not None:
+                slot = PayloadSlot(kind='tool_result', ordinal=ordinal)
+                if name == 'calculator':
+                    capture.record(slot, {'value': result['documents'][0]}, provenance)
+                    # An unsupported/error calculator result cannot authorize a prompt.
+                    if not capture.has_payload(arguments) or not capture.has_payload(slot):
+                        provenance = capture.unknown()
+                else:
+                    capture.omit(slot, 'unapproved_tool')
+                    provenance = capture.unknown()
+                for document in result['documents']:
+                    capture.remember(document, provenance)
+                for message in result['messages']:
+                    capture.remember(message['content'], provenance)
             return result
         except BaseException as exc:
+            if capture is not None:
+                capture.omit(PayloadSlot(kind='tool_result', ordinal=ordinal), 'not_observed')
             mark_failure(span, exc)
             raise
         finally:

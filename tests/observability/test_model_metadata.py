@@ -8,6 +8,37 @@ from opentelemetry.trace import StatusCode
 from qdrant_client.http.models import ScoredPoint
 
 
+def test_disabled_capture_preserves_reverse_completion_order_and_schema(route, monkeypatch):
+    from services.api.app.clients.ray_llm import RayLLMClient, LLMResult
+    from services.api.app.evaluation.context import RunEvidenceCollector, bind_collector, content_hash
+    from services.api.app.evaluation.capture import current_capture
+    from services.api.app.evaluation.models import ConfigurationFingerprint
+    evidence = RunEvidenceCollector(run_id='r', session_id='s', input_text='q',
+                                    configuration=ConfigurationFingerprint())
+    client = RayLLMClient()
+    async def run():
+        released = asyncio.Event()
+        async def complete(messages, *args):
+            value = messages[0]['content']
+            if value == 'first':
+                await released.wait()
+            else:
+                released.set()
+            return LLMResult(text=value)
+        monkeypatch.setattr(client, '_completion', complete)
+        with bind_collector(evidence):
+            assert current_capture.get() is None
+            await asyncio.gather(*(client.chat_completion_result([{'role': 'user', 'content': text}])
+                                   for text in ('first', 'second')))
+    asyncio.run(run())
+    event = evidence.finish('success')
+    assert event.schema_version == '1.0'
+    assert [m.request_hash for m in event.model_calls] == [content_hash({
+        'messages': [{'role': 'user', 'content': text}], 'temperature': 0.7, 'max_tokens': 1024})
+        for text in ('second', 'first')]
+    assert all('ordinal' not in m.model_dump() for m in event.model_calls)
+
+
 def test_typed_llm_result_preserves_provider_metadata_and_string_wrapper(route):
     from services.api.app.clients.ray_llm import RayLLMClient
     payloads = []

@@ -9,6 +9,7 @@ from libs.observability.tracing import domain_span, mark_failure, set_span_attri
 from opentelemetry import trace
 from langchain_core.runnables import RunnableConfig
 from services.api.app.evaluation.context import bind_collector, collector_from_config
+from services.api.app.evaluation.capture import current_capture, bind_capture
 
 logger = logging.getLogger(__name__)
 
@@ -101,14 +102,18 @@ async def _plan(state: AgentState) -> dict:
 
     # Call LLM to plan
     try:
-        response = await llm_client.chat_completion_result(
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_query}
-            ],
-            temperature=0.0,
-            max_tokens=300,
-        )
+        capture = current_capture.get()
+        provenance = (capture.combine(capture.source(user_query),
+            capture.proof('template', SYSTEM_PROMPT, template_id='planner-v1')) if capture else None)
+        with bind_capture(capture, provenance):
+            response = await llm_client.chat_completion_result(
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_query}
+                ],
+                temperature=0.0,
+                max_tokens=300,
+            )
         
         # _extract_json strips markdown fences and returns the first JSON object
         plan = _extract_json(response.text)
@@ -134,6 +139,9 @@ async def _plan(state: AgentState) -> dict:
             action = "retrieve"
             tool_name = ""
         refined_query = plan.get("refined_query") or plan.get("query") or user_query
+        capture = current_capture.get()
+        if capture is not None:
+            capture.remember(refined_query, capture.source(response.text))
         logger.info(f"Plan derived: {action}" + (f" / tool: {tool_name}" if tool_name else ""))
 
         return {

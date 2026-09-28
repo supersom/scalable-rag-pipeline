@@ -8,11 +8,43 @@ from .provenance import Provenance
 
 private_key_pattern = re.compile(r'-----BEGIN ([A-Z ]{0,32}PRIVATE KEY)-----[\s\S]{0,65536}?-----END \1-----')
 private_key_opening = re.compile(r'-----BEGIN [A-Z ]{0,32}PRIVATE KEY-----')
-assignment_pattern = re.compile(r'(?i)\b((?:password|token|api[_-]?key)\s{0,8}[:=]\s{0,8})(?:"[^"\r\n]{0,4096}"|\x27[^\x27\r\n]{0,4096}\x27|[^\s;,]{1,4096})')
+assignment_pattern = re.compile(r'(?i)\b((?:password|secret|(?:access[_-]?|refresh[_-]?)?token|(?:api|private)[_-]?key)\s{0,8}[:=]\s{0,8})(?:"[^"\r\n]{0,4096}"|\x27[^\x27\r\n]{0,4096}\x27|[^\s;,]{1,4096})')
 secret_pattern = re.compile(r'(?i)\bBearer[ \t]{1,8}[A-Za-z0-9._~+/=-]{1,4096}|\beyJ[A-Za-z0-9_-]{0,1021}\.[A-Za-z0-9_-]{1,4096}\.[A-Za-z0-9_-]{1,1024}\b|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b')
 email_pattern = re.compile(r'(?<![\w.+-])[A-Za-z0-9.!#$%&\x27*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,187}[A-Za-z0-9])?\.[A-Za-z]{2,63}(?![\w.-])')
 phone_pattern = re.compile(r'(?<![\w+])\+(?:[0-9][ ().-]{0,2}){7,14}[0-9](?![0-9 ().-]*[0-9])')
 FORBIDDEN = {'authorization', 'cookie', 'setcookie', 'password', 'secret', 'token', 'accesstoken', 'refreshtoken', 'apikey', 'privatekey'}
+
+
+def _preflight(value, byte_limit):
+    """Bound traversal and text allocation before recursive shape/JSON processing."""
+    pending = [(value, 0)]
+    nodes = text_bytes = 0
+    while pending:
+        item, depth = pending.pop()
+        nodes += 1
+        if depth > 8 or nodes > 4096:
+            return 'unsupported_shape'
+        if isinstance(item, (dict, list)):
+            if len(item) > 4096 - nodes - len(pending):
+                return 'unsupported_shape'
+            if isinstance(item, dict):
+                if any(not isinstance(key, str) or len(key) > 128 for key in item):
+                    return 'unsupported_shape'
+                pending.extend((v, depth + 1) for v in item.values())
+            else:
+                pending.extend((v, depth + 1) for v in item)
+        elif isinstance(item, str):
+            if len(item) > byte_limit:
+                return 'payload_too_large'
+            try:
+                text_bytes += len(item.encode('utf-8'))
+            except UnicodeError:
+                return 'redaction_failed'
+            if text_bytes > byte_limit:
+                return 'payload_too_large'
+        elif type(item) is int and item.bit_length() > 64:
+            return 'unsupported_shape'
+    return None
 
 
 def _structure(value, depth=0):
@@ -58,6 +90,9 @@ def redact_payload(slot: PayloadSlot, value: object, provenance: Provenance, pol
         return deny('missing_tenant')
     if slot.kind in ('tool_arguments', 'tool_result') and (provenance.tool_name != 'calculator' or 'calculator' not in policy.allowed_tools):
         return deny('unapproved_tool')
+    reason = _preflight(value, policy.payload_bytes)
+    if reason:
+        return deny(reason)
     if not _shape(slot.kind, value, policy, provenance):
         return deny('unsupported_shape')
     if not provenance.approved(policy):
