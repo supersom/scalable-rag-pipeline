@@ -120,3 +120,94 @@ def terminal_event(monkeypatch):
         input_text="synthetic question", trace_id="a" * 32,
         configuration=ConfigurationFingerprint(generation_model="fake-chat", embedding_model="fake-embed"),
     ).finish("success")
+
+
+# --- Opt-in live PostgreSQL fixtures -------------------------------------------------
+# Each test gets a freshly generated schema; teardown drops only that exact schema.
+# Shared tables (chat history, any existing evidence tables) are never touched.
+import asyncio
+import os
+import re
+from datetime import datetime, timedelta, timezone
+
+LIVE_SCHEMA_PATTERN = re.compile(r"^eval_test_[0-9a-f]{16}$")
+
+
+class FakeClock:
+    def __init__(self, now=None):
+        self.now = now or datetime.now(timezone.utc).replace(microsecond=0)
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, **delta):
+        self.now = self.now + timedelta(**delta)
+        return self.now
+
+
+def live_postgres_url():
+    if os.environ.get("RUN_EVAL_POSTGRES_TESTS") != "1":
+        pytest.skip("live PostgreSQL tests require RUN_EVAL_POSTGRES_TESTS=1")
+    url = os.environ.get("EVAL_TEST_DATABASE_URL")
+    if not url:
+        pytest.fail("RUN_EVAL_POSTGRES_TESTS=1 requires EVAL_TEST_DATABASE_URL")
+    return url
+
+
+def schema_engine(url, schema):
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+    # NullPool: every asyncio.run gets fresh connections bound to its own loop.
+    return create_async_engine(url, poolclass=NullPool,
+                               connect_args={"server_settings": {"search_path": schema}})
+
+
+@pytest.fixture
+def live_schema():
+    from sqlalchemy import text
+    url = live_postgres_url()
+    name = f"eval_test_{uuid4().hex[:16]}"
+    assert LIVE_SCHEMA_PATTERN.fullmatch(name)
+    admin = schema_engine(url, "public")
+
+    async def execute(statement):
+        async with admin.begin() as conn:
+            await conn.execute(text(statement))
+
+    asyncio.run(execute(f'CREATE SCHEMA "{name}"'))
+    try:
+        yield url, name
+    finally:
+        assert LIVE_SCHEMA_PATTERN.fullmatch(name)
+        asyncio.run(execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE'))
+        asyncio.run(admin.dispose())
+
+
+@pytest.fixture
+def pg_engine(live_schema):
+    url, name = live_schema
+    engine = schema_engine(url, name)
+    yield engine
+    asyncio.run(engine.dispose())
+
+
+@pytest.fixture
+def clock():
+    return FakeClock()
+
+
+@pytest.fixture
+def repo_factory(pg_engine, clock):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from services.api.app.evaluation.migrate import migrate
+    from services.api.app.evaluation.outbox import OutboxRepository
+    asyncio.run(migrate(pg_engine))
+
+    def make(**kwargs):
+        return OutboxRepository(async_sessionmaker(pg_engine, expire_on_commit=False), clock, **kwargs)
+    return make
+
+
+@pytest.fixture
+def repo(repo_factory):
+    return repo_factory()
