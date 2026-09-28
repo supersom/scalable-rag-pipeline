@@ -1,6 +1,6 @@
 # Gap 1 implementation: production run instrumentation
 
-**Status:** In progress — the local foundation and PRs 1–3 are committed and verified locally. PRs 4–5 remain.
+**Status:** In progress — the local foundation and PRs 1–4 are committed and verified locally. PR 5 (production enablement) remains and is not started.
 
 **Scope:** Close Gap 1 from the [evaluation-plane gap analysis](../evaluation-plane-gap-analysis.md#1-instrument-every-production-run-1)
 
@@ -109,7 +109,7 @@ No raw prompts, answers, document text, tool arguments/results, user IDs, or exc
 
 Set `AGENT_BUILD_SHA` from the build/deployment to identify the complete code revision. Known model identifiers, embedding dimensions, graph source, prompt-template source, and tool registry metadata also enter the fingerprint. Without a build revision, it is only a partial configuration fingerprint: changes to tool implementations or external services need not change it. Unknown corpus/index/ACL versions and cost remain `null`; partial token totals carry `usage_complete=false`. Time to first output measures the first answer event, not provider token streaming or client receipt.
 
-`RunStreamingResponse.evidence` exposes the finalized record to server-side code and tests only. It is **not** added to NDJSON responses, logged, persisted, or sent to a queue. Payload references remain `null`. The fixture demonstrates metadata reconstruction and wire compatibility, not complete replay of production context. PR 4 must add encrypted payloads and durable publication before these records can power asynchronous production evaluation.
+`RunStreamingResponse.evidence` exposes the finalized record to server-side code and tests only. It is **not** added to NDJSON responses, logged, persisted, or sent to a queue. Payload references remain `null`. The fixture demonstrates metadata reconstruction and wire compatibility, not complete replay of production context. PR 4 (below) adds redacted synthetic payloads and durable publication; the in-memory property itself is unchanged.
 
 Files responsible:
 
@@ -142,6 +142,49 @@ Tests cover fixture round trips, unknown schema/extra payload rejection, detache
 
 PR 3 is packaged into six functionality commits plus documentation, with each staged snapshot independently tested. See the [completed PR 3 commit plan](pr-03-commit-plan.md) for hashes, boundaries, and verification counts. Tests and implementations land together; there are no intentionally red commits.
 
+### Implemented locally: PR 4 redacted payloads and durable publication
+
+With evidence delivery enabled, a terminal run is redacted, stored, and delivered without delaying or changing the streamed answer. The API admits the run into a bounded in-memory queue (`admitted`, not durable), a runtime worker uploads approved redacted payloads as versioned objects requesting `aws:kms`, and one PostgreSQL transaction commits the immutable run envelope, an outbox row, and payload references (`committed`). A standalone worker sends committed envelopes to SQS with leased retries, bounded backoff, and explicit quarantine. Delivery is at-least-once after commit; consumers deduplicate on `(export_version, run_schema_version, run_id)` and `export_hash`. Runs can still be lost before commit, so this is not audit-grade capture.
+
+It is off by default and opt-in through `make local-evidence-up`. Content capture is restricted to the checked-in synthetic fixture manifest, locally signed tenants, and `ENV=local|test`; production content mode is rejected at startup. Operating details, commands, limits, and gaps are in [evidence delivery operations](evidence-delivery-operations.md).
+
+Files responsible:
+
+| Area | Files |
+|---|---|
+| Export, payload, receipt, and configuration contracts | `services/api/app/evaluation/delivery_models.py`, `delivery_config.py` |
+| Synthetic redaction, safe metadata projection, provenance | `redaction.py`, `metadata_export.py`, `provenance.py`, `deploy/evaluation/restricted-synthetic-v1.json` |
+| Versioned object storage and bounded SDK IO | `payloads.py`, `bounded_io.py` |
+| Migrations, upload intents, transactional outbox | `migrate.py`, `migrations/001_evidence_outbox.sql`, `outbox.py`, `storage_models.py` |
+| Bounded capture, terminal admission, lifecycle | `capture.py`, `runtime.py`, `services/api/app/routes/chat.py`, `services/api/app/auth/jwt.py` (optional `tenant_id`) |
+| Queue publisher and delivery worker | `publisher.py`, `services/evaluation_delivery/worker.py` |
+| Retention, cleanup, explicit retry | `retention.py`, `services/evaluation_delivery/maintenance.py` |
+| Metrics with closed label sets | `delivery_metrics.py` |
+| Local orchestration | `docker-compose.evaluation.yml`, `services/aws_emulator/`, `Makefile` targets |
+| Contract, real-PostgreSQL, and live acceptance coverage | `tests/evaluation_delivery/`, `tests/local_env/` |
+
+Known limits, all documented in the operations guide: redaction is a finite pattern set with measured gaps (JSON-quoted, flag-style, `passwd`, Basic-auth, URL-embedded, and `sk-`/`ghp_` secrets pass through) and only input and retrieval-chunk payloads are fixture-hash checked, so content capture must stay on fake models and synthetic data; orphan cleanup is per run namespace rather than per version; the delivery metrics have no scrape endpoint, only the API runtime records them, and the quarantine gauges are never set; the acceptance graph exercises the approved direct-answer path only; cached runs and unapproved sources have no replay provenance; only the calculator has an approved tool payload shape; and local Moto proves version and request-parameter contracts, not IAM, KMS, or private-network enforcement.
+
+#### PR 4 verification
+
+Run on 2026-09-28 from the `feat/evaluation-pr4` worktree at `0a3f1af` plus the export-tag fix committed just before this documentation (re-run after the fix with identical counts), against the local stack's PostgreSQL 15, Moto S3/SQS, and fake models. The pinned API image is `scalable-rag-eval-api-local:latest` (`sha256:813687a27349595cfd2d642eab056ebca3a5fc01229c071eeb4f4f01648581d0`).
+
+| Check | Result |
+|---|---|
+| Full `pytest -q` (default, no live services) | 736 passed, 73 skipped |
+| Real PostgreSQL: `test_outbox_postgres.py`, `test_migrations.py` with `RUN_EVAL_POSTGRES_TESTS=1` | 49 passed |
+| Delivery and observability suites with all live opt-ins | 628 passed, 0 skipped |
+| Live delivery, restart, and retention acceptance | 14 passed |
+| Delivery and observability suites in the pinned API image, read-only checkout, pinned test requirements | 558 passed, 70 skipped |
+| `make local-check` | 38 passed, 3 skipped |
+| `make local-evidence-smoke`, `make local-smoke`, `make local-evidence-check` against a disposable evidence stack | 10 passed, 4 passed, 31 passed (1 skipped) |
+| Maintenance CLI in that disposable stack: dry-run, apply, unknown-run retry, invalid arguments | Exit 0, 0, 3, 2 with fixed-key output |
+| `git diff --check` | Clean |
+
+The 73 default skips are 59 live-PostgreSQL tests (`RUN_EVAL_POSTGRES_TESTS`), 11 live delivery acceptance tests (`RUN_EVAL_DELIVERY_TESTS`), 2 tests needing the default local stack (`RUN_LOCAL_STACK_TESTS`), and 1 needing the evidence stack (`RUN_LOCAL_EVIDENCE_TESTS`). The pinned-image skips are the PostgreSQL and delivery opt-ins. The live acceptance tests use per-test schemas and random bucket and queue names, refuse to reuse existing names, and clean up after themselves. The smoke targets ran against a separate Compose project with different host ports so the developer's running `scalable-rag-eval` stack was not recreated; that project and its volumes were removed afterwards.
+
+Evidence is local. It covers no AWS IAM, KMS enforcement, private networking, real queue authentication, multi-replica behavior, or load. Those are PR 5 gates.
+
 ### Remaining Gap 1 delivery
 
 | Slice | Status | Next outcome |
@@ -149,10 +192,10 @@ PR 3 is packaged into six functionality commits plus documentation, with each st
 | PR 1: Trace plumbing and run identity | Committed; verified locally | Run identity and root domain spans verified; domain child spans follow in PR 2. |
 | PR 2: Domain spans and typed dependency results | Committed; verified locally | Retain evidence in PR 3. |
 | PR 3: Evidence contract and collector | Committed; verified locally | Metadata decisions are reconstructable; payload replay/delivery follows in PR 4. |
-| PR 4: Redacted payloads and durable publication | Not started | Evidence is safely stored and delivered with the selected guarantee. |
+| PR 4: Redacted payloads and durable publication | Committed locally; verified locally (see [PR 4 verification](#pr-4-verification)) | Synthetic-fixture evidence is stored, linked, and delivered at least once after commit. Production enablement follows in PR 5. |
 | PR 5: Production deployment and controls | Not started | Privacy, durability, load, and operational controls are validated. |
 
-No cloud credentials or model-provider API keys are required for PRs 1–3 local development. The local profile uses dummy AWS credentials, a local JWT secret, fake models, Moto S3, and the local Collector. Cloud-specific credentials and controls become necessary only for staging validation and PRs 4–5.
+No cloud credentials or model-provider API keys are required for PRs 1–4 local development. The local profile uses dummy AWS credentials, a local JWT secret, fake models, Moto S3, and the local Collector. Cloud-specific credentials and controls become necessary only for staging validation and PRs 4–5.
 
 ## Why this gap comes first
 
@@ -580,11 +623,12 @@ Split the work into reviewable changes. Each pull request should leave the servi
 
 ### PR 4: Redacted payloads and durable publication
 
-- Add redaction and encrypted object storage.
-- Add queue publication with bounded retries and a dead-letter queue, or implement the transactional outbox if evidence is an audit record.
-- Add idempotency, duplicate-consumer tests, and publisher failure metrics.
+- [x] Add restricted synthetic redaction and versioned KMS-requested object storage.
+- [x] Add the transactional PostgreSQL outbox, SQS publication with bounded retries, and the standalone delivery worker with explicit quarantine.
+- [x] Add idempotency and duplicate-consumer tests against real PostgreSQL.
+- [ ] Publisher failure metrics: counters are defined and recorded by the API runtime only; the worker and maintenance entrypoints do not record them, the quarantine gauges are never set, and no route exposes the registry. Tracked as a known gap in [evidence delivery operations](evidence-delivery-operations.md#metrics-and-known-observability-gaps).
 
-**Exit condition:** Restart and failure-injection tests prove the chosen delivery guarantee.
+**Exit condition met locally for synthetic fixtures:** Restart and failure-injection tests prove at-least-once delivery after commit, with identical redelivery deduplicated and a conflicting hash rejected by a transactional test consumer. Approved synthetic component-replay payloads are stored and linked. Cached-run and unapproved-source replay provenance remain incomplete, and production content mode is rejected. See [evidence delivery operations](evidence-delivery-operations.md).
 
 ### PR 5: Production deployment and operating controls
 
@@ -657,15 +701,13 @@ Opik can be added as a trace and experiment inspection layer after this evidence
 
 Opik should not replace `RunEvidence`, own the only copy of raw production evidence, or become a synchronous dependency of the request path. Git and CI should remain authoritative for dataset definitions, scorer code, baselines, and release policy; durable storage should remain authoritative for replayable production evidence.
 
-## Design decisions to settle before PR 4
+## Design decisions settled for PR 4
 
-Three choices require explicit product, security, and operations agreement:
+The three choices that needed product, security, and operations agreement were resolved in the [approved PR 4 design](pr-04-payload-publication-design.md):
 
-1. **Delivery guarantee:** best-effort queue publication or transactional outbox.
-2. **Content policy:** metadata-only capture, redacted content capture, or a restricted raw tier plus redacted tier.
-3. **Retention:** separate durations for raw payloads, redacted metadata, traces, and evaluation results.
-
-These decisions do not block PRs 1 through 3. The interfaces above keep them replaceable while the team establishes the evidence contract and trace coverage.
+1. **Delivery guarantee:** transactional PostgreSQL outbox, at-least-once after commit. Not audit-grade: runs can be lost before commit.
+2. **Content policy:** redacted content only, restricted to checked-in synthetic fixtures (`restricted-synthetic-v1`). No raw tier, and production content mode is rejected.
+3. **Retention:** content 30 days from object creation, run metadata 90 days from completion. Queue copies, traces, backups, datasets, and evaluation results need their own policies, decided in PR 5.
 
 ## References
 

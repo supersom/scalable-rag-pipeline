@@ -8,11 +8,11 @@ The `eval-local` Docker Compose profile runs the API and every dependency needed
 |---|---|---|
 | API | `http://127.0.0.1:18000` | Containerized FastAPI service using repository-pinned dependencies |
 | Fake models | `http://127.0.0.1:8001` | Deterministic OpenAI-compatible chat and embedding responses |
-| PostgreSQL | `127.0.0.1:15432` | Chat history and future transactional outbox |
+| PostgreSQL | `127.0.0.1:15432` | Chat history and, in evidence mode, the transactional outbox |
 | Redis | `127.0.0.1:16379` | Semantic-cache coordination |
 | Qdrant | `http://127.0.0.1:16333` | Vector retrieval and semantic cache |
 | Neo4j | `bolt://127.0.0.1:17687` | Graph retrieval |
-| Moto S3 | `http://127.0.0.1:14566` | Credential-free evidence payload storage |
+| Moto S3 and SQS | `http://127.0.0.1:14566` | Credential-free evidence payload storage and evaluation queues |
 | OTLP gRPC | `http://127.0.0.1:14317` | Trace ingestion by the local Collector |
 | OTLP HTTP | `http://127.0.0.1:14318` | HTTP trace ingestion |
 | Collector health | `http://127.0.0.1:13134` | Collector readiness check |
@@ -126,12 +126,27 @@ Raw query strings and captured header values are removed from HTTP telemetry. Pr
 
 The focused contract suite is `pytest tests/observability -q`. Its real-graph tests use the fake model service in-process and embedded Qdrant, so they need neither a GPU nor live service credentials. To confirm dependency compatibility, run the same tests inside the API image with the repository mounted read-only and pytest installed into a disposable container. Query embeddings keep their five-second per-operation timeout; document embeddings retain sixty seconds even when the HTTP client is pooled.
 
-PR 3 also collects schema-version `1.0` run metadata independently of span sampling. After the stream closes, route-level tests inspect `RunStreamingResponse.evidence`; this server-side property is not an HTTP endpoint or an NDJSON field. It contains hashes, ranked identities, typed outcomes, provider usage, trajectory, and configuration—not raw payloads. Records are in memory only, with no publisher or storage yet. Missing identity hashing keys and corpus/index versions are explicit; local model API keys are still unnecessary. See [PR 3 progress and limitations](gap-01-production-run-instrumentation.md#implemented-locally-pr-3-evidence-contract-and-collector).
+PR 3 also collects schema-version `1.0` run metadata independently of span sampling. After the stream closes, route-level tests inspect `RunStreamingResponse.evidence`; this server-side property is not an HTTP endpoint or an NDJSON field. It contains hashes, ranked identities, typed outcomes, provider usage, trajectory, and configuration—not raw payloads. By default the record is in memory only; the opt-in evidence mode described below persists a redacted projection of it. Missing identity hashing keys and corpus/index versions are explicit; local model API keys are still unnecessary. See [PR 3 progress and limitations](gap-01-production-run-instrumentation.md#implemented-locally-pr-3-evidence-contract-and-collector).
 
 `OTEL_EXPORTER_OTLP_TIMEOUT` is a timeout for each export RPC. SDK retries can extend shutdown when the Collector is unavailable; a strict shutdown deadline still needs resilience testing before production deployment.
 
+## Run the opt-in evidence delivery stack
+
+PR 4 adds durable, redacted evidence delivery. It is off by default: `make local-up` starts no evidence runtime, clients, or workers. Opt in with:
+
+```bash
+make local-evidence-check    # validate the override and its contract tests; no running stack needed
+make local-evidence-up       # migrate, recreate api-local with evidence enabled, start the delivery worker
+make local-evidence-smoke    # needs the running evidence stack
+make local-evidence-down     # stop; volumes are kept
+```
+
+`make local-evidence-up` uses the same `scalable-rag-eval` project as `make local-up`, so it recreates `api-local` in an already running stack. The override `docker-compose.evaluation.yml` adds three things: the `evidence-migrate` job, the evidence flags and dummy identity, KMS-request, and AWS settings on `api-local`, and the standalone `evidence-delivery` worker. The Moto service also hosts the `eval-runs` queue and its `eval-runs-dlq` dead-letter queue, created idempotently at startup with a redrive policy. All host ports stay on loopback, and the fake models and ingestion resources are untouched.
+
+Content capture accepts only the checked-in synthetic fixtures and locally signed tokens with a `tenant_id` claim. It is not a general-purpose sanitizer and must not be pointed at real data. See [evidence delivery operations](evidence-delivery-operations.md) for configuration, migrations, retention and retry commands, metrics, and known gaps.
+
 ## Scope and limitations
 
-This environment proves application contracts and failure behavior. It does not reproduce AWS IAM, KMS, IRSA, managed queue authentication, EKS networking, multi-replica shutdown, or production load. Those remain staging checks after Gap 1 is implemented.
+This environment proves application contracts and failure behavior. It does not reproduce AWS IAM, KMS, IRSA, managed queue authentication, EKS networking, multi-replica shutdown, or production load. Local Moto verifies object-version, reference, and queue-message contracts, not KMS encryption or IAM authorization. Those remain staging checks under PR 5.
 
-The local stack deliberately excludes Kafka/SQS. Early Gap 1 tests will use an in-memory publisher. A local broker or outbox worker should be added only after the delivery guarantee is selected.
+The default profile still runs no broker or delivery worker. The opt-in evidence profile delivers committed records at least once to a local SQS queue; it makes no exactly-once claim and is not audit-grade capture.
