@@ -11,7 +11,8 @@ def test_sdk_attribute_updates_survive_unsampled_operations(route, monkeypatch, 
     from libs.observability import tracing
     from services.api.app.agents.nodes import planner
     from services.api.app.tools.sandbox import run_python_code
-    from services.api.app.evaluation.context import bind_collector, RunEvidenceCollector
+    from services.api.app.evaluation.context import RunEvidenceCollector
+    from services.api.app.evaluation.instrumentation_adapter import bind_instrumentation
     from services.api.app.evaluation.models import ConfigurationFingerprint
     provider = TracerProvider(sampler=ALWAYS_OFF)
     monkeypatch.setattr(tracing, "domain_tracer", provider.get_tracer("unsampled"))
@@ -22,7 +23,7 @@ def test_sdk_attribute_updates_survive_unsampled_operations(route, monkeypatch, 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client_type(
         transport=httpx.MockTransport(lambda r: httpx.Response(429))))
     async def run():
-        with bind_collector(c):
+        with bind_instrumentation(c, None):
             if operation == "planner":
                 await planner.planner_node({"messages": [{"content": "q"}]})
             else:
@@ -33,6 +34,7 @@ def test_sdk_attribute_updates_survive_unsampled_operations(route, monkeypatch, 
         event = c.finish("success")
         if operation == "planner":
             assert event.dependencies[0].attributes["planner.fallback"] is True
+            assert event.operation_events[0].name == 'planner'
         else:
             assert event.operations.provider_throttled is True
     finally:

@@ -16,11 +16,17 @@ from .models import ContentSlotRef, ModelCall, OperationEvidence, RetrievalEvide
 class CaptureProvenance:
     """Expose provenance operations without exposing the capture session to call sites."""
 
-    def __init__(self, capture):
+    def __init__(self, capture, adapter):
         self._capture = capture
+        self._adapter = adapter
 
-    def source(self, value):
-        return self._capture.source(value)
+    def source(self, value, **context):
+        proof = self._capture.source(value)
+        if context.get('tool_name') is not None:
+            if context['tool_name'] != 'calculator':
+                return self._capture.unknown()
+            proof = proof.model_copy(update={'tool_name': context['tool_name']})
+        return proof
 
     def template(self, value, *, template_id):
         return self._capture.proof('template', value, template_id=template_id)
@@ -38,6 +44,13 @@ class CaptureProvenance:
 
     def remember(self, value, proof):
         return self._capture.remember(value, proof)
+
+    def effective(self, operation_id, proof):
+        state = self._adapter._tools.get(operation_id)
+        return state['provenance'] if state is not None else proof
+
+    def bind(self, proof):
+        return bind_capture(self._capture, proof)
 
 
 class EvidenceInstrumentation:
@@ -80,7 +93,7 @@ class EvidenceInstrumentation:
 
     def record(self, record: OperationRecord, content: dict[str, ContentCandidate]) -> None:
         fields = dict(record.facts)
-        generic = record.name not in {'llm.chat', 'retrieval', 'tool.execute'}
+        generic = record.name not in {'llm.chat', 'retrieval', 'tool.execute', 'responder'}
         content_slots = self._generic_content(record, content) if generic else {}
         self.collector.record_event(OperationEvidence(
             operation_id=record.operation_id, parent_operation_id=record.parent_operation_id,
@@ -96,6 +109,8 @@ class EvidenceInstrumentation:
             self._retrieval(record, fields, content)
         elif record.name == 'tool.execute':
             self._tool(record, fields, content)
+        elif record.name == 'responder' and self.capture is not None and record.phase == 'result':
+            self._capture_slot(PayloadSlot(kind='output', ordinal=1), content.get('answer'))
 
     def _model(self, record, fields, content):
         if record.phase == 'request':
@@ -167,9 +182,18 @@ class EvidenceInstrumentation:
         key = record.operation_id
         if record.phase == 'request':
             ordinal = self.capture.next_ordinal('tool') if self.capture is not None else None
-            self._tools[key] = {'request': fields, 'ordinal': ordinal, 'started_at': record.timestamp}
+            proof = content.get('arguments').provenance if 'arguments' in content else None
+            self._tools[key] = {'request': fields, 'ordinal': ordinal, 'started_at': record.timestamp,
+                                'provenance': proof}
             if ordinal is not None:
-                self._capture_slot(PayloadSlot(kind='tool_arguments', ordinal=ordinal), content.get('arguments'))
+                arguments = PayloadSlot(kind='tool_arguments', ordinal=ordinal)
+                if fields.get('tool_name') == 'calculator':
+                    self._capture_slot(arguments, content.get('arguments'))
+                    if not self.capture.has_payload(arguments):
+                        self._tools[key]['provenance'] = self.capture.unknown()
+                else:
+                    self.capture.omit(arguments, 'unapproved_tool')
+                    self._tools[key]['provenance'] = self.capture.unknown()
         elif record.phase == 'result':
             state = self._tools.pop(key, None)
             if state is None:
@@ -183,7 +207,21 @@ class EvidenceInstrumentation:
                 retry_count=fields.get('retry_count', 0),
             )
             if state['ordinal'] is not None:
-                self._capture_slot(PayloadSlot(kind='tool_result', ordinal=state['ordinal']), content.get('result'))
+                slot = PayloadSlot(kind='tool_result', ordinal=state['ordinal'])
+                if request.get('tool_name') != 'calculator':
+                    self.capture.omit(slot, 'unapproved_tool')
+                else:
+                    candidate = content.get('result')
+                    if candidate is not None:
+                        candidate = ContentCandidate({'value': candidate.value['documents'][0]}, state['provenance'])
+                    self._capture_slot(slot, candidate)
+                    if not self.capture.has_payload(slot):
+                        state['provenance'] = self.capture.unknown()
+                if 'result' in content:
+                    for value in content['result'].value.get('documents', ()):
+                        self.capture.remember(value, state['provenance'])
+                    for message in content['result'].value.get('messages', ()):
+                        self.capture.remember(message['content'], state['provenance'])
 
 
 @contextmanager
@@ -196,7 +234,7 @@ def bind_instrumentation(collector, capture, *, adapter: EvidenceInstrumentation
         raise ValueError('instrumentation adapter belongs to another run')
     with bind_collector(collector), bind_capture(capture, current_provenance.get()):
         record_token = tracing.record_observer.set(owned.record)
-        proof_token = tracing.provenance_port.set(CaptureProvenance(capture) if capture is not None else None)
+        proof_token = tracing.provenance_port.set(CaptureProvenance(capture, owned) if capture is not None else None)
         try:
             yield owned
         finally:

@@ -16,6 +16,19 @@ def _number(kind, *destinations):
 def register_api_operation_schemas() -> None:
     """Idempotently install the API's known operation shapes at startup."""
     for schema in (
+        OperationSchema("planner", 1, {
+            "result": PhaseRule({
+                "action": _text("otel_safe", "evidence_only", length=32),
+                "tool_name": _text("evidence_only", length=64),
+                "fallback": _number(bool, "otel_safe", "evidence_only"),
+            }, frozenset()),
+        }),
+        OperationSchema("responder", 1, {
+            "result": PhaseRule({
+                "response_type": _text("otel_safe", "evidence_only", length=32),
+                "status": _text("otel_safe", "evidence_only", length=16),
+            }, frozenset({"answer"})),
+        }),
         OperationSchema("llm.chat", 1, {
             "request": PhaseRule({
                 "purpose": _text("evidence_only", length=32),
@@ -45,9 +58,9 @@ def register_api_operation_schemas() -> None:
             }, frozenset({"query"})),
             "hit": PhaseRule({
                 "retrieval_source": _text("evidence_only", length=16),
-                "document_id": _text("evidence_only"),
-                "document_version": _text("evidence_only"),
-                "chunk_id": _text("evidence_only"),
+                "document_id": _text("evidence_only", length=1024),
+                "document_version": _text("evidence_only", length=1024),
+                "chunk_id": _text("evidence_only", length=1024),
                 "rank": _number(int, "evidence_only"),
                 "score": _number(float, "evidence_only"),
                 "content_hash": _text("derived_digest", length=71),

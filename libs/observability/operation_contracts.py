@@ -35,7 +35,7 @@ class FieldRule:
             raise ValueError("invalid fact destinations")
         if self.max_length is not None and (
             self.value_type is not str or type(self.max_length) is not int
-            or not 0 < self.max_length <= 128
+            or not 0 < self.max_length <= (128 if 'otel_safe' in self.destinations else 1024)
         ):
             raise ValueError("invalid fact length bound")
 
@@ -143,7 +143,7 @@ class OperationRecord:
         if len(self.facts) > _MAX_FIELDS or any(
             not isinstance(name, str) or not _NAME.fullmatch(name)
             or type(value) not in (str, int, float, bool)
-            or isinstance(value, str) and len(value) > 128
+            or isinstance(value, str) and len(value) > 1024
             or isinstance(value, float) and not math.isfinite(value)
             for name, value in self.facts.items()
         ):

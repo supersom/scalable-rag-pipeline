@@ -131,7 +131,7 @@ def test_tool_io_policy_and_derived_provenance(terminal_event, monkeypatch, tool
     evidence = collector(run_id)
     monkeypatch.setitem(tool.TOOL_REGISTRY, tool_name, {'handler': lambda value: result})
     async def run():
-        with bind_capture(session), bind_collector(evidence):
+        with bind_instrumentation(evidence, session):
             outcome = await tool.tool_node({'tool_name': tool_name, 'tool_input': expression})
         assert outcome['documents'] == [result]
     asyncio.run(run())

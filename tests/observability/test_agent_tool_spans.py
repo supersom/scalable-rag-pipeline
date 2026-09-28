@@ -3,9 +3,28 @@ import json
 
 import httpx
 import pytest
+from uuid import uuid4
 from opentelemetry import trace
 from opentelemetry.trace import StatusCode
 from qdrant_client.http.models import ScoredPoint
+
+
+def test_tool_domain_records_preserve_specialized_trajectory(route):
+    from services.api.app.agents.nodes.tool import tool_node
+    from services.api.app.evaluation.context import RunEvidenceCollector
+    from services.api.app.evaluation.instrumentation_adapter import bind_instrumentation
+    from services.api.app.evaluation.models import ConfigurationFingerprint
+
+    collector = RunEvidenceCollector(run_id=str(uuid4()), session_id='s', input_text='2+6',
+                                     configuration=ConfigurationFingerprint())
+    async def run():
+        with bind_instrumentation(collector, None):
+            return await tool_node({'tool_name': 'calculator', 'tool_input': '2+6'})
+    assert asyncio.run(run())['documents'] == ['8']
+    event = collector.finish('success')
+    assert [part.phase for part in event.operation_events] == ['request', 'result']
+    assert len(event.trajectory) == 1
+    assert event.trajectory[0].tool_name == 'calculator'
 
 
 @pytest.mark.parametrize("expression,status", [("1/0", "error"), ("2+6", "success")])

@@ -3,7 +3,7 @@ import asyncio
 import logging
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timezone
 import httpx
@@ -36,7 +36,7 @@ _active_operation = ContextVar("active_domain_operation", default=None)
 
 
 class _InertProvenance:
-    def source(self, value):
+    def source(self, value, **context):
         return None
 
     def template(self, value, *, template_id):
@@ -47,6 +47,12 @@ class _InertProvenance:
 
     def messages(self, messages, *, explicit=None):
         return None
+
+    def effective(self, operation_id, proof):
+        return proof
+
+    def bind(self, proof):
+        return nullcontext()
 
     def combine(self, *proofs):
         return None

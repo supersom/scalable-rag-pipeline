@@ -71,10 +71,17 @@ def test_string_and_fact_count_bounds_are_enforced_before_copy():
 
 
 def test_schema_cannot_allow_strings_larger_than_record_contract():
-    from libs.observability.operation_contracts import FieldRule
+    from libs.observability.operation_contracts import FieldRule, OperationSchema, PhaseRule, validate_record
 
     with pytest.raises(ValueError, match="invalid fact length bound"):
-        FieldRule(str, frozenset({"evidence_only"}), max_length=129)
+        FieldRule(str, frozenset({"evidence_only"}), max_length=1025)
+    with pytest.raises(ValueError, match="invalid fact length bound"):
+        FieldRule(str, frozenset({"otel_safe"}), max_length=129)
+    schema = OperationSchema('test.long.identifier', 1, {
+        'hit': PhaseRule({'document_id': FieldRule(str, frozenset({'evidence_only'}), max_length=512)}, frozenset()),
+    })
+    value = 'd' * 300
+    assert validate_record(schema, 'hit', {'document_id': value}, ()) == {'document_id': value}
 
 
 def test_record_is_immutable_metadata_and_candidate_keeps_content_separate():

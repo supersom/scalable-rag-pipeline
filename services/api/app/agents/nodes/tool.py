@@ -3,69 +3,51 @@ import asyncio
 import inspect
 import logging
 import time
-from datetime import datetime, timezone
+import hashlib
+import json
 from services.api.app.agents.state import AgentState
 from services.api.app.tools.registry import TOOL_REGISTRY
 from libs.observability.tracing import domain_span, failure_status, mark_failure
 from langchain_core.runnables import RunnableConfig
-from services.api.app.evaluation.context import bind_collector, collector_from_config, content_hash
-from services.api.app.evaluation.capture import current_capture, bind_capture
-from services.api.app.evaluation.delivery_models import PayloadSlot
 
 logger = logging.getLogger(__name__)
 
+
+def _content_hash(value):
+    raw = value if isinstance(value, str) else json.dumps(value, sort_keys=True, separators=(',', ':'))
+    return 'sha256:' + hashlib.sha256(raw.encode()).hexdigest()
+
 async def tool_node(state: AgentState, config: RunnableConfig = None) -> dict:
     name = state.get("tool_name", "")
-    collector = collector_from_config(config)
-    capture = current_capture.get()
-    provenance = None
-    if capture is not None:
-        ordinal = capture.next_ordinal('tool')
-        provenance = capture.source(state.get('tool_input', '')).model_copy(update={'tool_name': name})
-        arguments = PayloadSlot(kind='tool_arguments', ordinal=ordinal)
-        if name == 'calculator':
-            capture.record(arguments, {'expression': state.get('tool_input', '')}, provenance)
-        else:
-            capture.omit(arguments, 'unapproved_tool')
-            provenance = capture.unknown()
-    started_at, started = datetime.now(timezone.utc), time.perf_counter()
-    with bind_capture(capture, provenance), bind_collector(collector, purpose="graph_search" if name == "graph_search" else "tool"), domain_span("tool.execute", attributes={"tool.name": name if name in TOOL_REGISTRY else "unknown"}) as span:
+    started = time.perf_counter()
+    with domain_span("tool.execute", attributes={"tool.name": name if name in TOOL_REGISTRY else "unknown"}, schema_version=1) as span:
+        tool_input = state.get('tool_input', '')
+        provenance = span.provenance.source(tool_input, tool_name=name)
+        span.record('request', facts={
+            'tool_name': name if name in TOOL_REGISTRY else 'unknown',
+            'registered': name in TOOL_REGISTRY,
+            'arguments_hash': _content_hash(tool_input),
+        }, content={'arguments': span.content({'expression': tool_input}, provenance=provenance)})
+        provenance = span.provenance.effective(span.operation_id, provenance)
         if name not in TOOL_REGISTRY:
             mark_failure(span, ValueError(), status="invalid")
         result = None
         try:
-            result = await _execute(state)
-            if capture is not None:
-                slot = PayloadSlot(kind='tool_result', ordinal=ordinal)
-                if name == 'calculator' and not capture.has_payload(arguments):
-                    # A result derived from denied arguments is never captured.
-                    capture.omit(slot, 'unapproved_source')
-                    provenance = capture.unknown()
-                elif name == 'calculator':
-                    capture.record(slot, {'value': result['documents'][0]}, provenance)
-                    # An unsupported/error calculator result cannot authorize a prompt.
-                    if not capture.has_payload(slot):
-                        provenance = capture.unknown()
-                else:
-                    capture.omit(slot, 'unapproved_tool')
-                    provenance = capture.unknown()
-                for document in result['documents']:
-                    capture.remember(document, provenance)
-                for message in result['messages']:
-                    capture.remember(message['content'], provenance)
+            with span.provenance.bind(provenance):
+                result = await _execute(state)
             return result
         except BaseException as exc:
-            if capture is not None:
-                capture.omit(PayloadSlot(kind='tool_result', ordinal=ordinal), 'not_observed')
             mark_failure(span, exc)
             raise
         finally:
-            if collector is not None:
-                collector.record_tool_step(tool_name=name if name in TOOL_REGISTRY else "unknown", registered=name in TOOL_REGISTRY,
-                    arguments_hash=content_hash(state.get("tool_input", "")),
-                    result_hash=content_hash(result["documents"]) if result is not None else None,
-                    started_at=started_at, latency_ms=(time.perf_counter() - started) * 1000,
-                    status=span.attributes["operation.status"], error_type=span.attributes.get("error.type"))
+            span.record('result', facts={key: value for key, value in {
+                'result_hash': _content_hash(result['documents']) if result is not None else None,
+                'status': span.attributes['operation.status'],
+                'error_type': span.attributes.get('error.type'),
+                'retry_count': 0, 'latency_ms': (time.perf_counter() - started) * 1000,
+            }.items() if value is not None}, content={
+                'result': span.content(result, provenance=provenance)
+            } if result is not None else None)
 
 
 async def _execute(state: AgentState) -> dict:

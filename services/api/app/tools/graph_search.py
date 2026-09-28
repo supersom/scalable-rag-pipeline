@@ -29,7 +29,8 @@ async def search_graph_tool(question: str) -> str:
                 {"role": "system", "content": SYSTEM_PROMPT.replace("{question}", question)}
             ],
             temperature=0.0,
-            json_mode=True
+            json_mode=True,
+            purpose="graph_search",
         )
         data = json.loads(response.text)
         entities = data.get("entities", [])

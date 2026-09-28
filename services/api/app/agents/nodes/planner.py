@@ -8,8 +8,6 @@ from services.api.app.tools.registry import TOOL_REGISTRY
 from libs.observability.tracing import domain_span, mark_failure, set_span_attribute
 from opentelemetry import trace
 from langchain_core.runnables import RunnableConfig
-from services.api.app.evaluation.context import bind_collector, collector_from_config
-from services.api.app.evaluation.capture import current_capture
 
 logger = logging.getLogger(__name__)
 
@@ -81,15 +79,19 @@ def _extract_json(text: str) -> dict:
 SYSTEM_PROMPT = _build_system_prompt()
 
 async def planner_node(state: AgentState, config: RunnableConfig = None) -> dict:
-    with bind_collector(collector_from_config(config), purpose="planner"), domain_span("planner") as span:
-        result = await _plan(state)
+    with domain_span("planner", schema_version=1) as span:
+        result = await _plan(state, span)
         span.set_attribute("planner.action", result["action"])
         if result["tool_name"] in TOOL_REGISTRY:
             span.set_attribute("tool.name", result["tool_name"])
+        span.record('result', facts={
+            'action': result['action'], 'fallback': bool(span.attributes.get('planner.fallback', False)),
+            **({'tool_name': result['tool_name']} if result['tool_name'] in TOOL_REGISTRY else {}),
+        })
         return result
 
 
-async def _plan(state: AgentState) -> dict:
+async def _plan(state: AgentState, span) -> dict:
     """
     Decides the path through the LangGraph.
     """
@@ -102,9 +104,8 @@ async def _plan(state: AgentState) -> dict:
 
     # Call LLM to plan
     try:
-        capture = current_capture.get()
-        provenance = (capture.combine(capture.source(user_query),
-            capture.proof('template', SYSTEM_PROMPT, template_id='planner-v1')) if capture else None)
+        provenance = span.provenance.combine(span.provenance.source(user_query),
+            span.provenance.template(SYSTEM_PROMPT, template_id='planner-v1'))
         response = await llm_client.chat_completion_result(
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -113,6 +114,7 @@ async def _plan(state: AgentState) -> dict:
             temperature=0.0,
             max_tokens=300,
             provenance=provenance,
+            purpose='planner',
         )
         
         # _extract_json strips markdown fences and returns the first JSON object
@@ -139,9 +141,7 @@ async def _plan(state: AgentState) -> dict:
             action = "retrieve"
             tool_name = ""
         refined_query = plan.get("refined_query") or plan.get("query") or user_query
-        capture = current_capture.get()
-        if capture is not None:
-            capture.remember(refined_query, capture.source(response.text))
+        span.provenance.remember(refined_query, span.provenance.source(response.text))
         logger.info(f"Plan derived: {action}" + (f" / tool: {tool_name}" if tool_name else ""))
 
         return {

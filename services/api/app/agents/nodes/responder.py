@@ -4,9 +4,6 @@ from services.api.app.agents.state import AgentState
 from services.api.app.clients.ray_llm import llm_client
 from libs.observability.tracing import domain_span
 from langchain_core.runnables import RunnableConfig
-from services.api.app.evaluation.context import bind_collector, collector_from_config
-from services.api.app.evaluation.capture import current_capture
-from services.api.app.evaluation.delivery_models import PayloadSlot
 
 DIRECT_TEMPLATE = """You are a friendly assistant. Respond naturally and briefly to the user's message.
 
@@ -34,11 +31,11 @@ Instructions:
 logger = logging.getLogger(__name__)
 
 async def generate_node(state: AgentState, config: RunnableConfig = None) -> dict:
-    with bind_collector(collector_from_config(config), purpose="responder"), domain_span("responder", attributes={"response.type": state.get("action", "retrieve")}):
-        return await _generate(state)
+    with domain_span("responder", attributes={"response.type": state.get("action", "retrieve")}, schema_version=1) as span:
+        return await _generate(state, span)
 
 
-async def _generate(state: AgentState) -> dict:
+async def _generate(state: AgentState, span) -> dict:
     """
     Synthesizes the final answer using retrieved documents or tool output.
     """
@@ -55,21 +52,20 @@ async def _generate(state: AgentState) -> dict:
     else:
         template, template_id = RETRIEVAL_TEMPLATE, 'responder-retrieve-v1'
     prompt = template.format(query=query, context_str=context_str)
-    capture = current_capture.get()
-    provenance = None
-    if capture is not None:
-        provenance = capture.combine(capture.source(query),
-            capture.proof('template', template, template_id=template_id),
-            *(capture.source(document) for document in documents if action != 'direct_answer'))
+    provenance = span.provenance.combine(span.provenance.source(query),
+        span.provenance.template(template, template_id=template_id),
+        *(span.provenance.source(document) for document in documents if action != 'direct_answer'))
     
     logger.info("Responder Node: generating answer with %d docs", len(documents))
     answer = await llm_client.chat_completion_result(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
         provenance=provenance,
+        purpose='responder',
     )
-    if capture is not None:
-        capture.record(PayloadSlot(kind='output', ordinal=1), {'text': answer.text}, capture.source(answer.text))
+    span.record('result', facts={'response_type': action, 'status': 'success'},
+                content={'answer': span.content({'text': answer.text},
+                                                provenance=span.provenance.source(answer.text))})
     logger.info("Responder Node: answer generated")
 
     return {
