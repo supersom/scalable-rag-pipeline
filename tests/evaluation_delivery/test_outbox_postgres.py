@@ -428,6 +428,27 @@ def test_begin_upload_conflicts_with_any_overlapping_namespace(repo, clock):
     asyncio.run(scenario())
 
 
+def test_uploads_resume_under_a_parent_once_its_cleanup_completes(repo, clock):
+    async def scenario():
+        claim = await repo.claim_orphan(TENANT_PREFIX, clock())
+        blocked = uuid4()
+        with pytest.raises(EvidenceConflict):  # parent cleanup in progress
+            await repo.begin_upload(blocked, namespace_for(blocked), lease_seconds=60)
+        clock.now = claim.expires_at
+        with pytest.raises(EvidenceConflict):  # lease lapsed but deletion may still be running
+            await repo.begin_upload(blocked, namespace_for(blocked), lease_seconds=60)
+        resumed = await repo.claim_orphan(TENANT_PREFIX, clock())
+        assert await repo.complete_cleanup(resumed) is True
+        fresh = uuid4()
+        intent = await repo.begin_upload(fresh, namespace_for(fresh), lease_seconds=60)
+        assert intent.state == "open"
+        # The resumed upload is protected in turn: the parent cannot be re-claimed over it.
+        assert await repo.claim_orphan(TENANT_PREFIX, clock()) is None
+        with pytest.raises(EvidenceConflict):  # the completed marker's own namespace is never reused
+            await repo.begin_upload(uuid4(), TENANT_PREFIX, lease_seconds=60)
+    asyncio.run(scenario())
+
+
 def test_concurrent_parent_claim_and_child_upload_are_exclusive(repo_factory, clock):
     async def scenario():
         for index in range(5):

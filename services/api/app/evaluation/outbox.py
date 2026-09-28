@@ -153,6 +153,8 @@ WHERE export_version = :export_version AND run_schema_version = :run_schema_vers
 # descendant namespace as overlapping: a claim on "a/" must not cover live work under "a/b/", and a
 # claim on "a/b/" must not delete in-flight keys of an open intent for "a/". Upload/cleanup row
 # creation is serialized by one advisory lock because overlapping namespaces are different rows.
+# This relies on READ COMMITTED (the PostgreSQL default): each statement after the lock sees rows
+# committed by the previous lock holder. One global key is coarse; revisit if load tests show contention.
 _COORDINATION_LOCK_KEY = int.from_bytes(
     hashlib.sha256(b"scalable-rag:evaluation-namespace-coordination").digest()[:8], "big", signed=True)
 _COORDINATION_LOCK_SQL = text("SELECT pg_advisory_xact_lock(:key)")
@@ -161,6 +163,17 @@ _OVERLAP_WHERE = "(namespace IN :ancestors OR namespace LIKE :descendants)"
 _OVERLAP_INTENTS = ("SELECT namespace, state, expires_at, cleanup_token, cleanup_lease_until "
                     f"FROM evaluation_upload_intents WHERE {_OVERLAP_WHERE}")
 _OVERLAP_INTENTS_SQL = text(_OVERLAP_INTENTS).bindparams(bindparam("ancestors", expanding=True))
+
+# New uploads conflict with the same or any descendant namespace in any state, and with ancestors
+# unless the ancestor is a cleanup marker whose deletion has completed. A lapsed-but-incomplete
+# cleanup still blocks: its cleaner may still be deleting under the prefix.
+_UPLOAD_CONFLICT_SQL = text("""
+SELECT 1 FROM evaluation_upload_intents
+WHERE namespace LIKE :descendants
+   OR (namespace IN :ancestors AND NOT (state = 'cleanup_owned' AND cleanup_token IS NULL
+                                        AND cleanup_completed_at IS NOT NULL))
+LIMIT 1
+""").bindparams(bindparam("ancestors", expanding=True))
 _OVERLAP_INTENTS_FOR_UPDATE_SQL = text(_OVERLAP_INTENTS + " ORDER BY namespace FOR UPDATE").bindparams(
     bindparam("ancestors", expanding=True))
 
@@ -272,8 +285,7 @@ class OutboxRepository:
         ).on_conflict_do_nothing(index_elements=["namespace"]).returning(EvidenceUploadIntent.namespace)
         async with self._transaction() as session:
             await session.execute(_COORDINATION_LOCK_SQL, {"key": _COORDINATION_LOCK_KEY})
-            # Any overlapping intent or cleanup marker (same, ancestor or descendant namespace) conflicts.
-            overlapping = (await session.execute(_OVERLAP_INTENTS_SQL, params)).first()
+            overlapping = (await session.execute(_UPLOAD_CONFLICT_SQL, params)).first()
             inserted = None if overlapping else (await session.execute(statement)).first()
         if inserted is None:
             raise EvidenceConflict()
