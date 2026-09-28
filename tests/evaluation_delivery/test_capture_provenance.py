@@ -8,10 +8,13 @@ from services.api.app.evaluation.context import RunEvidenceCollector, bind_colle
 from services.api.app.evaluation.delivery_models import ExportPolicy, FixtureRecord, PayloadSlot
 from services.api.app.evaluation.models import ConfigurationFingerprint
 from services.api.app.evaluation.provenance import Provenance
+from services.api.app.evaluation.instrumentation_adapter import bind_instrumentation
+from services.api.app.evaluation.operation_schemas import register_api_operation_schemas
 from test_capture import config
 
 
 def fixture_policy(*sources):
+    register_api_operation_schemas()
     return ExportPolicy(identity_key='local-evidence-only', allowed_models=('fake-chat',),
         allowed_tools=('calculator',), synthetic_sources=tuple(FixtureRecord(
             tenant_id='synthetic-tenant', case_id='case', source_id=str(i),
@@ -43,7 +46,7 @@ def test_reverse_model_completion_preserves_slot_mapping(terminal_event, monkeyp
                 release.set()
             return LLMResult(text=text + '-answer')
         monkeypatch.setattr(client, '_completion', complete)
-        with bind_capture(session), bind_collector(evidence):
+        with bind_instrumentation(evidence, session):
             results = await asyncio.gather(client.chat_completion_result([{'role': 'user', 'content': 'first'}]),
                                            client.chat_completion_result([{'role': 'user', 'content': 'second'}]))
         assert [r.text for r in results] == ['first-answer', 'second-answer']
@@ -78,7 +81,7 @@ def test_flattened_context_cannot_launder_sources(terminal_event, monkeypatch, a
     monkeypatch.setattr(client, '_completion', complete)
     monkeypatch.setattr(responder, 'llm_client', client)
     async def run():
-        with bind_capture(session), bind_collector(evidence):
+        with bind_instrumentation(evidence, session):
             session.record(PayloadSlot(kind='input', ordinal=1), {'text': 'question'}, session.source('question'))
             result = await responder.generate_node({'current_query': 'question', 'documents': ['context']})
         assert result == {'messages': [{'role': 'assistant', 'content': 'answer'}]}
@@ -94,8 +97,9 @@ def test_flattened_context_cannot_launder_sources(terminal_event, monkeypatch, a
 
 @pytest.mark.parametrize('approved_filename', [False, True])
 def test_retrieval_filename_proof_precedes_flattening(terminal_event, approved_filename):
-    from services.api.app.agents.nodes.retriever import _record_evidence, _item, RetrievalResult, CITATION_TEMPLATE, settings
-    from services.api.app.evaluation.capture import CapturePool, bind_capture
+    from services.api.app.agents.nodes.retriever import _record_result, _item, RetrievalResult, CITATION_TEMPLATE, settings
+    from libs.observability.tracing import domain_span
+    from services.api.app.evaluation.capture import CapturePool
     sources = [('input', 'query', {}), ('retrieval_chunk', 'chunk',
         {'collection': settings.QDRANT_COLLECTION, 'document_id': 'doc'}),
         ('template', CITATION_TEMPLATE, {'template_id': 'retrieval-citation-v1'})]
@@ -104,8 +108,12 @@ def test_retrieval_filename_proof_precedes_flattening(terminal_event, approved_f
     session = CapturePool(config(), fixture_policy(*sources)).open(uuid4(), 'synthetic-tenant', 'case')
     result = RetrievalResult([_item('qdrant', {'text': 'chunk', 'document_id': 'doc',
                                              'filename': 'synthetic.txt', 'safe': True}, 1)])
-    with bind_capture(session):
-        _record_evidence('query', result)
+    with bind_instrumentation(collector(session.run_id), session):
+        with domain_span('retrieval', schema_version=1) as span:
+            span.record('request', facts={'query_hash': content_hash('query'),
+                                          'collection': settings.QDRANT_COLLECTION},
+                        content={'query': span.content('query', provenance=span.provenance.source('query'))})
+            _record_result(span, result)
     assert session.has_payload(PayloadSlot(kind='retrieval_chunk', ordinal=1, item_ordinal=1))
     assert session.approved(session.source('chunk [Source: synthetic.txt]')) == approved_filename
     assert not session.approved(session.source('chunk [Source: forged.txt]'))
@@ -155,7 +163,7 @@ def test_planner_does_not_inherit_input_approval_for_template(terminal_event, mo
     monkeypatch.setattr(client, '_completion', complete)
     monkeypatch.setattr(planner, 'llm_client', client)
     async def run():
-        with bind_capture(session, session.source('question')):
+        with bind_capture(session, session.source('question')), bind_instrumentation(collector(session.run_id), session):
             result = await planner.planner_node({'messages': [{'role': 'user', 'content': 'question'}]})
         assert result['current_query'] == 'derived query'
     asyncio.run(run())
@@ -193,7 +201,7 @@ def test_unapproved_tool_taints_nested_model_even_with_approved_outer_input(term
     monkeypatch.setattr(client, '_completion', complete)
     monkeypatch.setitem(tool.TOOL_REGISTRY, 'graph_search', {'handler': handler})
     async def run():
-        with bind_capture(session, session.source('question')):
+        with bind_capture(session, session.source('question')), bind_instrumentation(collector(session.run_id), session):
             result = await tool.tool_node({'tool_name': 'graph_search', 'tool_input': 'question'})
         assert result['documents'] == ['nested answer']
     asyncio.run(run())
@@ -213,7 +221,7 @@ def test_outer_binding_cannot_launder_inner_model_content(terminal_event, monkey
         return LLMResult(text='inner answer')
     monkeypatch.setattr(client, '_completion', complete)
     async def run():
-        with bind_capture(session, session.source('question')):
+        with bind_capture(session, session.source('question')), bind_instrumentation(collector(session.run_id), session):
             assert session.approved(session.source('question'))
             await client.chat_completion_result([{'role': 'user', 'content': content}])
     asyncio.run(run())
@@ -234,7 +242,7 @@ def test_explicit_call_provenance_cannot_escape_outer_denial(terminal_event, mon
         return LLMResult(text='inner answer')
     monkeypatch.setattr(client, '_completion', complete)
     async def run():
-        with bind_capture(session, session.unknown()):
+        with bind_capture(session, session.unknown()), bind_instrumentation(collector(session.run_id), session):
             await client.chat_completion_result([{'role': 'user', 'content': 'question'}],
                                                 provenance=session.source('question'))
     asyncio.run(run())

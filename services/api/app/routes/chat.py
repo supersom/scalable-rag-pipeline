@@ -12,8 +12,8 @@ import anyio
 from opentelemetry import context, trace
 from opentelemetry.trace import Status, StatusCode
 from libs.observability.tracing import domain_span
-from services.api.app.evaluation.context import RunEvidenceCollector, bind_collector
-from services.api.app.evaluation.capture import bind_capture
+from services.api.app.evaluation.context import RunEvidenceCollector
+from services.api.app.evaluation.instrumentation_adapter import EvidenceInstrumentation, bind_instrumentation
 from services.api.app.evaluation.delivery_models import PayloadSlot
 from services.api.app.evaluation.runtime import active_runtime
 from services.api.app.evaluation.configuration import configuration_fingerprint
@@ -128,6 +128,7 @@ async def chat_stream(
             if capture is not None:
                 capture.close()
             capture = None
+    instrumentation = EvidenceInstrumentation(collector, capture)
 
     def finish_run(outcome):
         nonlocal finished
@@ -227,7 +228,7 @@ async def chat_stream(
             while True:
                 # Attach only while advancing the generator. Holding a context token
                 # across yield can leak context or fail when ASGI closes another task.
-                with bind_collector(collector), bind_capture(capture), trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
+                with bind_instrumentation(collector, capture, adapter=instrumentation), trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
                     try:
                         event = await anext(events)
                     except StopAsyncIteration:
@@ -245,7 +246,7 @@ async def chat_stream(
             yield encode_event(type="error", content="An internal error occurred.")
         finally:
             try:
-                with bind_collector(collector), bind_capture(capture), trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
+                with bind_instrumentation(collector, capture, adapter=instrumentation), trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
                     await events.aclose()
             finally:
                 finish_run(outcome)

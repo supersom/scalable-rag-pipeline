@@ -11,10 +11,6 @@ from services.api.app.clients.neo4j import neo4j_client
 from services.api.app.clients.ray_embed import embed_client
 from services.api.app.config import settings
 from langchain_core.runnables import RunnableConfig
-from services.api.app.evaluation.context import bind_collector, collector_from_config, current_collector, content_hash
-from services.api.app.evaluation.models import RetrievalEvidence, RetrievedEvidence
-from services.api.app.evaluation.capture import current_capture
-from services.api.app.evaluation.delivery_models import PayloadSlot
 
 CITATION_TEMPLATE = '{text} [Source: {filename}]'
 
@@ -68,11 +64,15 @@ def _deduplicate(items):
 
 
 async def retrieve_context(query: str) -> RetrievalResult:
-    with domain_span("retrieval") as span:
+    with domain_span("retrieval", schema_version=1) as span:
+        span.record('request', facts={
+            'query_hash': 'sha256:' + hashlib.sha256(query.encode()).hexdigest(),
+            'collection': settings.QDRANT_COLLECTION,
+        }, content={'query': span.content(query, provenance=span.provenance.source(query))})
         try:
             query_vector = await embed_client.embed_query(query)
         except BaseException as exc:
-            _record_evidence(query, RetrievalResult([], vector_status=failure_status(exc), graph_status="skipped"))
+            _record_result(span, RetrievalResult([], vector_status=failure_status(exc), graph_status="skipped"))
             raise
         async def vector_search():
             results = await qdrant_client.search(vector=query_vector, limit=5)
@@ -104,7 +104,7 @@ async def retrieve_context(query: str) -> RetrievalResult:
             vector, graph = await asyncio.gather(*tasks, return_exceptions=True)
             vector_items = vector if isinstance(vector, list) else []
             graph_items, graph_error = graph if isinstance(graph, tuple) else ([], graph)
-            _record_evidence(query, RetrievalResult(
+            _record_result(span, RetrievalResult(
                 _deduplicate(vector_items + graph_items),
                 vector_status="success" if isinstance(vector, list) else failure_status(vector),
                 graph_status=failure_status(graph_error) if graph_error is not None else "success",
@@ -119,44 +119,35 @@ async def retrieve_context(query: str) -> RetrievalResult:
         span.set_attribute("retrieval.graph_status", failure_status(error) if error is not None else "success")
         result = RetrievalResult(items, graph_status=failure_status(error) if error is not None else "success",
                                  graph_error_type=type(error).__name__ if error is not None else None)
-        _record_evidence(query, result)
+        _record_result(span, result)
         return result
 
 
-def _record_evidence(query, result):
-    capture = current_capture.get()
-    if capture is not None:
-        ordinal = capture.next_ordinal('retrieval')
-        capture.record(PayloadSlot(kind='retrieval_query', ordinal=ordinal),
-                       {'text': query}, capture.source(query))
-        for index, item in enumerate(result.items, 1):
-            proof = capture.proof('retrieval_chunk', item.content,
-                                  collection=settings.QDRANT_COLLECTION, document_id=item.document_id)
-            capture.record(PayloadSlot(kind='retrieval_chunk', ordinal=ordinal, item_ordinal=index),
-                           {'text': item.content}, proof)
-            if item.retrieval_source == 'qdrant':
-                filename = item.metadata.get('filename', 'unknown')
-                formatted = CITATION_TEMPLATE.format(text=item.content, filename=filename)
-                proof = capture.combine(proof, capture.proof('filename', filename),
-                    capture.proof('template', CITATION_TEMPLATE, template_id='retrieval-citation-v1'))
-            else:
-                formatted = item.content
-            capture.remember(formatted, proof)
-    collector = current_collector.get()
-    if collector is not None:
-        collector.record_retrieval(RetrievalEvidence(
-            query_hash=content_hash(query), collection=settings.QDRANT_COLLECTION,
-            vector_status=result.vector_status, graph_status=result.graph_status,
-            graph_error_type=result.graph_error_type,
-            items=[RetrievedEvidence(retrieval_source=i.retrieval_source, document_id=i.document_id,
-                document_version=i.document_version, chunk_id=i.chunk_id, rank=i.rank,
-                score=i.score, content_hash=i.content_hash) for i in result.items],
-        ))
+def _record_result(span, result):
+    for item in result.items:
+        proof = span.provenance.proof('retrieval_chunk', item.content,
+                                    collection=settings.QDRANT_COLLECTION, document_id=item.document_id)
+        span.record('hit', facts={key: value for key, value in {
+            'retrieval_source': item.retrieval_source, 'document_id': item.document_id,
+            'document_version': item.document_version, 'chunk_id': item.chunk_id,
+            'rank': item.rank, 'score': item.score, 'content_hash': item.content_hash,
+        }.items() if value is not None}, content={'chunk': span.content(item.content, provenance=proof)})
+        if item.retrieval_source == 'qdrant':
+            filename = item.metadata.get('filename', 'unknown')
+            formatted = CITATION_TEMPLATE.format(text=item.content, filename=filename)
+            proof = span.provenance.combine(proof, span.provenance.proof('filename', filename),
+                span.provenance.template(CITATION_TEMPLATE, template_id='retrieval-citation-v1'))
+        else:
+            formatted = item.content
+        span.provenance.remember(formatted, proof)
+    span.record('result', facts={key: value for key, value in {
+        'collection': settings.QDRANT_COLLECTION, 'vector_status': result.vector_status,
+        'graph_status': result.graph_status, 'graph_error_type': result.graph_error_type,
+    }.items() if value is not None})
 
 
 async def retrieve_node(state: AgentState, config: RunnableConfig = None) -> dict:
-    with bind_collector(collector_from_config(config)):
-        result = await retrieve_context(state["current_query"])
+    result = await retrieve_context(state["current_query"])
     return {"documents": [
         f"{item.content} [Source: {item.metadata.get('filename', 'unknown')}]"
         if item.retrieval_source == "qdrant" else item.content

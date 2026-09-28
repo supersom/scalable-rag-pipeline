@@ -10,7 +10,10 @@ from qdrant_client.http.models import ScoredPoint
 
 def test_disabled_capture_preserves_reverse_completion_order_and_schema(route, monkeypatch):
     from services.api.app.clients.ray_llm import RayLLMClient, LLMResult
-    from services.api.app.evaluation.context import RunEvidenceCollector, bind_collector, content_hash
+    from services.api.app.evaluation.context import RunEvidenceCollector, content_hash
+    from services.api.app.evaluation.instrumentation_adapter import bind_instrumentation
+    from services.api.app.evaluation.operation_schemas import register_api_operation_schemas
+    register_api_operation_schemas()
     from services.api.app.evaluation.capture import current_capture
     from services.api.app.evaluation.models import ConfigurationFingerprint
     evidence = RunEvidenceCollector(run_id='r', session_id='s', input_text='q',
@@ -26,13 +29,14 @@ def test_disabled_capture_preserves_reverse_completion_order_and_schema(route, m
                 released.set()
             return LLMResult(text=value)
         monkeypatch.setattr(client, '_completion', complete)
-        with bind_collector(evidence):
+        with bind_instrumentation(evidence, None):
             assert current_capture.get() is None
             await asyncio.gather(*(client.chat_completion_result([{'role': 'user', 'content': text}])
                                    for text in ('first', 'second')))
     asyncio.run(run())
     event = evidence.finish('success')
-    assert event.schema_version == '1.0'
+    assert event.schema_version == '1.1'
+    assert [record.phase for record in event.operation_events] == ['request', 'request', 'result', 'result']
     assert [m.request_hash for m in event.model_calls] == [content_hash({
         'messages': [{'role': 'user', 'content': text}], 'temperature': 0.7, 'max_tokens': 1024})
         for text in ('second', 'first')]
@@ -98,6 +102,9 @@ def test_malformed_provider_response_is_explicit_and_safe(route, body):
 def test_transient_model_retries_are_bounded_and_observable(route, recover):
     from services.api.app.clients.ray_llm import RayLLMClient
     from services.api.app.evaluation.context import RunEvidenceCollector, bind_collector
+    from services.api.app.evaluation.instrumentation_adapter import bind_instrumentation
+    from services.api.app.evaluation.operation_schemas import register_api_operation_schemas
+    register_api_operation_schemas()
     from services.api.app.evaluation.models import ConfigurationFingerprint
     _, _, exporter = route
     collector = RunEvidenceCollector(run_id="r", session_id="s", input_text="q",
@@ -110,7 +117,7 @@ def test_transient_model_retries_are_bounded_and_observable(route, recover):
         return httpx.Response(200, json={"choices": [{"message": {"content": "answer"}}]})
     async def run():
         client = RayLLMClient()
-        with bind_collector(collector, purpose="planner"):
+        with bind_instrumentation(collector, None), bind_collector(collector, purpose="planner"):
             async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client.client:
                 if recover:
                     assert await client.chat_completion([]) == "answer"

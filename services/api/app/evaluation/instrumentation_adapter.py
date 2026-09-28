@@ -7,8 +7,8 @@ from contextlib import contextmanager
 from libs.observability import tracing
 from libs.observability.operation_contracts import ContentCandidate, OperationRecord
 
-from .capture import bind_capture
-from .context import bind_collector
+from .capture import bind_capture, current_provenance
+from .context import bind_collector, model_purpose
 from .delivery_models import PayloadSlot
 from .models import ContentSlotRef, ModelCall, OperationEvidence, RetrievalEvidence, RetrievedEvidence
 
@@ -24,6 +24,14 @@ class CaptureProvenance:
 
     def template(self, value, *, template_id):
         return self._capture.proof('template', value, template_id=template_id)
+
+    def proof(self, kind, value, **identity):
+        return self._capture.proof(kind, value, **identity)
+
+    def messages(self, messages, *, explicit=None):
+        proof = explicit if explicit is not None else self._capture.messages_provenance(messages)
+        ambient = current_provenance.get()
+        return self._capture.combine(ambient, proof) if ambient is not None else proof
 
     def combine(self, *proofs):
         return self._capture.combine(*proofs)
@@ -95,17 +103,19 @@ class EvidenceInstrumentation:
             if self.capture is not None:
                 ordinal = self.capture.begin_model(provenance)
                 self._capture_slot(PayloadSlot(kind='model_request', ordinal=ordinal), content.get('request'))
+                if not self.capture.has_payload(PayloadSlot(kind='model_request', ordinal=ordinal)):
+                    provenance = self.capture.unknown()
             else:
                 self._model_next += 1
                 ordinal = self._model_next
-            self._model_requests[record.operation_id] = (fields, ordinal)
+            self._model_requests[record.operation_id] = (fields, ordinal, provenance)
         elif record.phase == 'result':
             request = self._model_requests.pop(record.operation_id, None)
             if request is None:
                 return
-            request_fields, ordinal = request
+            request_fields, ordinal, provenance = request
             index = self.collector.record_model_call(ModelCall(
-                purpose=request_fields.get('purpose', 'unspecified'),
+                purpose=request_fields.get('purpose') or model_purpose.get() or 'unspecified',
                 request_hash=request_fields['request_hash'],
                 requested_model=request_fields.get('requested_model'),
                 model=fields.get('model'), input_tokens=fields.get('input_tokens'),
@@ -117,7 +127,11 @@ class EvidenceInstrumentation:
                 retry_count=fields.get('retry_count', 0), latency_ms=fields.get('latency_ms'),
             ))
             if self.capture is not None:
-                self._capture_slot(PayloadSlot(kind='model_response', ordinal=ordinal), content.get('response'))
+                candidate = content.get('response')
+                response = ContentCandidate(candidate.value, provenance) if candidate is not None else None
+                self._capture_slot(PayloadSlot(kind='model_response', ordinal=ordinal), response)
+                if response is not None:
+                    self.capture.remember(response.value['text'], provenance)
                 self.capture.finish_model(ordinal, index)
 
     def _retrieval(self, record, fields, content):
@@ -175,10 +189,12 @@ class EvidenceInstrumentation:
 @contextmanager
 def bind_instrumentation(collector, capture, *, adapter: EvidenceInstrumentation | None = None):
     """Bind both old and rich observers only while a request is executing."""
+    from .operation_schemas import register_api_operation_schemas
+    register_api_operation_schemas()
     owned = adapter or EvidenceInstrumentation(collector, capture)
     if owned.collector is not collector or owned.capture is not capture:
         raise ValueError('instrumentation adapter belongs to another run')
-    with bind_collector(collector), bind_capture(capture):
+    with bind_collector(collector), bind_capture(capture, current_provenance.get()):
         record_token = tracing.record_observer.set(owned.record)
         proof_token = tracing.provenance_port.set(CaptureProvenance(capture) if capture is not None else None)
         try:

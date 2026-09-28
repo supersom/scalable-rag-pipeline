@@ -42,6 +42,12 @@ class _InertProvenance:
     def template(self, value, *, template_id):
         return None
 
+    def proof(self, kind, value, **identity):
+        return None
+
+    def messages(self, messages, *, explicit=None):
+        return None
+
     def combine(self, *proofs):
         return None
 
