@@ -632,6 +632,8 @@ Split the work into reviewable changes. Each pull request should leave the servi
 
 ### PR 5: Production deployment and operating controls
 
+**Design:** [PR 5 production evidence design](pr-05-production-evidence-design.md), split into 5a (metadata-only production activation, scheduled for implementation) and 5b (content-capture enablement, designed but blocked on retrieval ACL enforcement).
+
 - Deploy or configure the OpenTelemetry Collector.
 - Add IAM, KMS, lifecycle, network policy, secrets, dashboards, and alerts.
 - Run load tests for latency overhead, payload size, event loss, queue lag, and exporter backpressure.
