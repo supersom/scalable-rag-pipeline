@@ -187,6 +187,14 @@ Evidence is local. It covers no AWS IAM, KMS enforcement, private networking, re
 
 ### Remaining Gap 1 delivery
 
+### Unified domain-span instrumentation (Tasks 1–8)
+
+The local implementation now uses one `domain_span` interface for structured operation facts and optional content candidates. Each operation kind owns a versioned schema; `ObservedSpan.record()` validates facts before projecting trace-safe scalars to OTel and dispatching the accepted record to the API evidence adapter. The adapter preserves generic operation events alongside the existing retrieval, model-call, and tool-trajectory contracts. Content remains outside OTel and is retained only when the existing synthetic-fixture capture policy approves its provenance.
+
+The adapter is bound per run only while the chat generator advances. Sampling does not suppress evidence, context bindings reset on exceptions and disconnects, and terminal evidence admission remains exactly once. API call sites for retrieval, model calls, tools, planner, and responder no longer import evaluation internals. A reviewer schema example demonstrates adding a new operation without adding a tracing-library method.
+
+Tasks 1–8 are implemented and verified locally. Final verification on 2026-09-28: `pytest -q` reported 766 passed and 73 opt-in skips; `python -m compileall -q libs services/api` and `git diff --check` were clean. See [domain-span-instrumentation.md](domain-span-instrumentation.md) for the developer recipe and the plan/ledger for task-level history. This closes the instrumentation refactor, not the wider production-readiness work: production identity/ACL/index provenance, deployment controls, exporter and queue outage behavior, and cloud security enforcement remain separate follow-up gates.
+
 | Slice | Status | Next outcome |
 |---|---|---|
 | PR 1: Trace plumbing and run identity | Committed; verified locally | Run identity and root domain spans verified; domain child spans follow in PR 2. |
