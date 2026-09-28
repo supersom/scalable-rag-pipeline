@@ -133,6 +133,10 @@ def test_tool_io_policy_and_derived_provenance(terminal_event, monkeypatch, tool
     if tool_name != 'calculator':
         assert [e.reason for e in captured.prepared.unavailable] == ['unapproved_tool', 'unapproved_tool']
     assert (len(captured.prepared.payloads) == 2) == approved
+    kinds = {p.slot.kind for p in captured.prepared.payloads}
+    # A result derived from denied arguments is never captured, even if it looks safe.
+    assert ('tool_result' in kinds) == approved
+    assert len(captured.prepared.payloads) + len(captured.prepared.unavailable) == 2
 
 
 @pytest.mark.parametrize('approved_template', [False, True])
@@ -196,3 +200,43 @@ def test_unapproved_tool_taints_nested_model_even_with_approved_outer_input(term
     assert not session.has_payload(PayloadSlot(kind='model_request', ordinal=1))
     assert not session.has_payload(PayloadSlot(kind='model_response', ordinal=1))
     assert not session.approved(session.source('nested answer'))
+
+
+@pytest.mark.parametrize('content, approved', [('UNAPPROVED DOC CONTENT', False), ('question', True)])
+def test_outer_binding_cannot_launder_inner_model_content(terminal_event, monkeypatch, content, approved):
+    from services.api.app.clients.ray_llm import RayLLMClient, LLMResult, settings
+    from services.api.app.evaluation.capture import CapturePool, bind_capture
+    monkeypatch.setattr(settings, 'LLM_MODEL_ID', 'fake-chat')
+    session = CapturePool(config(), fixture_policy(('input', 'question', {}))).open(uuid4(), 'synthetic-tenant', 'case')
+    client = RayLLMClient()
+    async def complete(*args):
+        return LLMResult(text='inner answer')
+    monkeypatch.setattr(client, '_completion', complete)
+    async def run():
+        with bind_capture(session, session.source('question')):
+            assert session.approved(session.source('question'))
+            await client.chat_completion_result([{'role': 'user', 'content': content}])
+    asyncio.run(run())
+    assert session.has_payload(PayloadSlot(kind='model_request', ordinal=1)) == approved
+    assert session.has_payload(PayloadSlot(kind='model_response', ordinal=1)) == approved
+    assert session.approved(session.source('inner answer')) == approved
+    if not approved:
+        assert [e.reason for e in session.unavailable] == ['unapproved_source', 'unapproved_source']
+
+
+def test_explicit_call_provenance_cannot_escape_outer_denial(terminal_event, monkeypatch):
+    from services.api.app.clients.ray_llm import RayLLMClient, LLMResult, settings
+    from services.api.app.evaluation.capture import CapturePool, bind_capture
+    monkeypatch.setattr(settings, 'LLM_MODEL_ID', 'fake-chat')
+    session = CapturePool(config(), fixture_policy(('input', 'question', {}))).open(uuid4(), 'synthetic-tenant', 'case')
+    client = RayLLMClient()
+    async def complete(*args):
+        return LLMResult(text='inner answer')
+    monkeypatch.setattr(client, '_completion', complete)
+    async def run():
+        with bind_capture(session, session.unknown()):
+            await client.chat_completion_result([{'role': 'user', 'content': 'question'}],
+                                                provenance=session.source('question'))
+    asyncio.run(run())
+    assert not session.has_payload(PayloadSlot(kind='model_request', ordinal=1))
+    assert not session.approved(session.source('inner answer'))

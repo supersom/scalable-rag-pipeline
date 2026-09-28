@@ -9,7 +9,7 @@ from libs.observability.tracing import domain_span, mark_failure, set_span_attri
 from opentelemetry import trace
 from langchain_core.runnables import RunnableConfig
 from services.api.app.evaluation.context import bind_collector, collector_from_config
-from services.api.app.evaluation.capture import current_capture, bind_capture
+from services.api.app.evaluation.capture import current_capture
 
 logger = logging.getLogger(__name__)
 
@@ -105,15 +105,15 @@ async def _plan(state: AgentState) -> dict:
         capture = current_capture.get()
         provenance = (capture.combine(capture.source(user_query),
             capture.proof('template', SYSTEM_PROMPT, template_id='planner-v1')) if capture else None)
-        with bind_capture(capture, provenance):
-            response = await llm_client.chat_completion_result(
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_query}
-                ],
-                temperature=0.0,
-                max_tokens=300,
-            )
+        response = await llm_client.chat_completion_result(
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_query}
+            ],
+            temperature=0.0,
+            max_tokens=300,
+            provenance=provenance,
+        )
         
         # _extract_json strips markdown fences and returns the first JSON object
         plan = _extract_json(response.text)

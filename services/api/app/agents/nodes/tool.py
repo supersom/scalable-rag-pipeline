@@ -37,10 +37,14 @@ async def tool_node(state: AgentState, config: RunnableConfig = None) -> dict:
             result = await _execute(state)
             if capture is not None:
                 slot = PayloadSlot(kind='tool_result', ordinal=ordinal)
-                if name == 'calculator':
+                if name == 'calculator' and not capture.has_payload(arguments):
+                    # A result derived from denied arguments is never captured.
+                    capture.omit(slot, 'unapproved_source')
+                    provenance = capture.unknown()
+                elif name == 'calculator':
                     capture.record(slot, {'value': result['documents'][0]}, provenance)
                     # An unsupported/error calculator result cannot authorize a prompt.
-                    if not capture.has_payload(arguments) or not capture.has_payload(slot):
+                    if not capture.has_payload(slot):
                         provenance = capture.unknown()
                 else:
                     capture.omit(slot, 'unapproved_tool')

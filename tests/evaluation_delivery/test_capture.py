@@ -178,3 +178,40 @@ def test_reverse_mapping_stays_correct_after_64_completions(policy, approved_inp
     captured = session.detach(event)
     assert [m.ordinal for m in captured.prepared.safe_run.model_calls][-64:] == list(range(64, 0, -1))
     assert len({m.ordinal for m in captured.prepared.safe_run.model_calls}) == 100
+
+
+def test_redaction_runs_outside_the_process_global_pool_lock(policy, approved_input, monkeypatch):
+    import threading
+    from services.api.app.evaluation import capture
+    pool = capture.CapturePool(config(), policy)
+    session = pool.open(uuid4(), 'synthetic-tenant', 'literal')
+    real, observed = capture.redact_payload, []
+    def probe(*args):
+        acquired = []
+        def other_session():
+            acquired.append(pool._lock.acquire(timeout=1))
+            if acquired[0]:
+                pool._lock.release()
+        worker = threading.Thread(target=other_session)
+        worker.start()
+        worker.join()
+        observed.append(acquired[0])
+        return real(*args)
+    monkeypatch.setattr(capture, 'redact_payload', probe)
+    session.record(PayloadSlot(kind='output', ordinal=1), {'text': 'safe'}, approved_input)
+    assert observed == [True]
+    assert session.has_payload(PayloadSlot(kind='output', ordinal=1))
+
+
+def test_record_after_close_during_redaction_stores_nothing(policy, approved_input, monkeypatch):
+    from services.api.app.evaluation import capture
+    pool = capture.CapturePool(config(), policy)
+    session = pool.open(uuid4(), 'synthetic-tenant', 'literal')
+    real = capture.redact_payload
+    def close_then_redact(*args):
+        session.close()
+        return real(*args)
+    monkeypatch.setattr(capture, 'redact_payload', close_then_redact)
+    session.record(PayloadSlot(kind='output', ordinal=1), {'text': 'safe'}, approved_input)
+    assert (session.resident_bytes, pool.resident_bytes, pool.active_runs) == (0, 0, 0)
+    assert not session.has_payload(PayloadSlot(kind='output', ordinal=1))

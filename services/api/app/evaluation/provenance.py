@@ -1,8 +1,12 @@
 """Explicit local fixture ownership; callers must select cases in trusted configuration."""
+import re
 from pathlib import Path
 from typing import Literal
 
 from .delivery_models import Contract, ExportPolicy, FixtureRecord
+
+# Bounded opaque tenant identifier shared by the JWT adapter and capture sessions.
+tenant_pattern = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
 
 
 class SyntheticManifest(Contract):

@@ -5,7 +5,7 @@ from services.api.app.clients.ray_llm import llm_client
 from libs.observability.tracing import domain_span
 from langchain_core.runnables import RunnableConfig
 from services.api.app.evaluation.context import bind_collector, collector_from_config
-from services.api.app.evaluation.capture import current_capture, bind_capture
+from services.api.app.evaluation.capture import current_capture
 from services.api.app.evaluation.delivery_models import PayloadSlot
 
 DIRECT_TEMPLATE = """You are a friendly assistant. Respond naturally and briefly to the user's message.
@@ -63,11 +63,11 @@ async def _generate(state: AgentState) -> dict:
             *(capture.source(document) for document in documents if action != 'direct_answer'))
     
     logger.info("Responder Node: generating answer with %d docs", len(documents))
-    with bind_capture(capture, provenance):
-        answer = await llm_client.chat_completion_result(
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
-        )
+    answer = await llm_client.chat_completion_result(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+        provenance=provenance,
+    )
     if capture is not None:
         capture.record(PayloadSlot(kind='output', ordinal=1), {'text': answer.text}, capture.source(answer.text))
     logger.info("Responder Node: answer generated")

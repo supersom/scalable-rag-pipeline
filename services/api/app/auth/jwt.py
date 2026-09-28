@@ -3,10 +3,8 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from services.api.app.config import settings
+from services.api.app.evaluation.provenance import tenant_pattern
 import time
-import re
-
-tenant_pattern = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
 
 # OAuth2 scheme tells Swagger UI where to send the token
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")

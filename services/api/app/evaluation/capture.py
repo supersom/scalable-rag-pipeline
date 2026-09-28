@@ -8,11 +8,10 @@ from contextvars import ContextVar
 from threading import RLock
 from uuid import UUID
 import hashlib
-import re
 
 from .delivery_models import CapturedRun, ManifestEntry, PayloadSlot
 from .metadata_export import prepare_export
-from .provenance import Provenance, SourceProof
+from .provenance import Provenance, SourceProof, tenant_pattern
 from .redaction import redact_payload
 
 current_capture = ContextVar('evaluation_capture', default=None)
@@ -62,7 +61,7 @@ class CapturePool:
     def open(self, run_id, tenant, fixture_case):
         if not self.config.enabled or not self.config.capture_content:
             return None
-        if not isinstance(tenant, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', tenant):
+        if not isinstance(tenant, str) or not tenant_pattern.fullmatch(tenant):
             return None
         if not isinstance(fixture_case, str) or len(fixture_case) > 128:
             return None
@@ -234,14 +233,18 @@ class CaptureSession:
             if len(self._payloads) + len(self._unavailable) >= self.pool.policy.payload_slots:
                 self._store(slot, None)
                 return
-            if not self.approved(provenance):
-                result = ManifestEntry(slot=slot, state='unavailable', reason='unapproved_source')
-            else:
-                try:
-                    result = redact_payload(slot, value, provenance, self.pool.policy)
-                except Exception:
-                    result = ManifestEntry(slot=slot, state='unavailable', reason='redaction_failed')
-            self._store(slot, result)
+        # Redaction (up to 64 KiB of regex work) runs outside the process-global lock so
+        # sessions do not serialize on it; state is re-checked when the result is stored.
+        if not self.approved(provenance):
+            result = ManifestEntry(slot=slot, state='unavailable', reason='unapproved_source')
+        else:
+            try:
+                result = redact_payload(slot, value, provenance, self.pool.policy)
+            except Exception:
+                result = ManifestEntry(slot=slot, state='unavailable', reason='redaction_failed')
+        with self.pool._lock:
+            if not self._closed:
+                self._store(slot, result)
 
     def detach(self, event):
         with self.pool._lock:

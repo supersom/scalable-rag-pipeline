@@ -251,3 +251,39 @@ def test_calculator_result_non_finite_or_error_denied(policy, provenance_for, va
     calc = provenance_for(tool_name='calculator')
     out = redact_payload(PayloadSlot(kind='tool_result', ordinal=1), {'value': value}, calc, policy)
     assert out.reason == 'unsupported_shape'
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('client_secret=abc123', 'client_secret=[REDACTED_SECRET]'),
+    ('CLIENT_SECRET: abc', 'CLIENT_SECRET: [REDACTED_SECRET]'),
+    ('aws_secret_access_key=abc', 'aws_secret_access_key=[REDACTED_SECRET]'),
+    ('auth_token=abc', 'auth_token=[REDACTED_SECRET]'),
+    ('id_token=abc', 'id_token=[REDACTED_SECRET]'),
+    ('session_token=abc', 'session_token=[REDACTED_SECRET]'),
+    ('secret_key=abc', 'secret_key=[REDACTED_SECRET]'),
+    ('clientSecret=abc', 'clientSecret=[REDACTED_SECRET]'),
+    ('access_token=abc', 'access_token=[REDACTED_SECRET]'),
+    ('x-api-key=abc', 'x-api-key=[REDACTED_SECRET]'),
+    ('apikey=abc', 'apikey=[REDACTED_SECRET]'),
+    ('mode=fast client_secret=abc', 'mode=fast client_secret=[REDACTED_SECRET]'),
+    ('label=client_secret=abc', 'label=client_secret=[REDACTED_SECRET]'),
+])
+def test_compound_assignment_labels_redacted(policy, approved_input, text, expected):
+    out = redact_payload(PayloadSlot(kind='output', ordinal=1), {'text': text}, approved_input, policy)
+    assert out.data == ('{"text":"' + expected + '"}').encode()
+
+
+@pytest.mark.parametrize('text', ['mode=fast', 'user_name=alice', 'tokens are words'])
+def test_non_credential_labels_untouched(policy, approved_input, text):
+    out = redact_payload(PayloadSlot(kind='output', ordinal=1), {'text': text}, approved_input, policy)
+    assert out.data == ('{"text":"' + text + '"}').encode()
+
+
+@pytest.mark.parametrize('adversarial', [
+    'a_' * 32000, 'a-' * 32000, 'token_' * 10000, 'x' * 60000, 'a ' * 32000,
+    ('_' * 120 + 'secret ') * 480, 'client_secret' * 4900, 'token:' * 10000,
+])
+def test_assignment_pattern_is_bounded_against_adversarial_input(policy, approved_input, adversarial):
+    started = time.perf_counter()
+    redact_payload(PayloadSlot(kind='output', ordinal=1), {'text': adversarial}, approved_input, policy)
+    assert time.perf_counter() - started < 1.0

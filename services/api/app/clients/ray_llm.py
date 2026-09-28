@@ -69,15 +69,21 @@ class RayLLMClient:
     async def _request(self, payload):
         return await self.client.post(self.endpoint, json=payload)
 
-    async def chat_completion_result(self, messages: List[Dict], temperature: float = 0.7, json_mode: bool = False, max_tokens: int = 1024) -> LLMResult:
+    async def chat_completion_result(self, messages: List[Dict], temperature: float = 0.7, json_mode: bool = False, max_tokens: int = 1024, *, provenance=None) -> LLMResult:
+        """`provenance` proves these exact messages (e.g. a flattened, component-proven prompt);
+        without it, provenance is derived from the message bytes themselves."""
         started = time.perf_counter()
         collector = current_collector.get()
         capture = current_capture.get()
-        ordinal = provenance = None
+        ordinal = None
         if capture is not None:
-            provenance = current_provenance.get()
             if provenance is None:
                 provenance = capture.messages_provenance(messages)
+            # An ambient binding from an enclosing scope can only deny, never approve:
+            # it describes the outer scope, not these messages.
+            ambient = current_provenance.get()
+            if ambient is not None:
+                provenance = capture.combine(ambient, provenance)
             ordinal = capture.begin_model(provenance)
             capture.record(PayloadSlot(kind='model_request', ordinal=ordinal), {
                 'messages': messages, 'model': settings.LLM_MODEL_ID or settings.LLM_MODEL_NAME,
