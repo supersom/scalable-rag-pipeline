@@ -23,14 +23,15 @@ def namespace_for(run_id):
     return f"evidence/test/synthetic-tenant/{run_id}/"
 
 
-def make_envelope(base, *, run_id=None, refs=0, created=None, completeness=None):
+def make_envelope(base, *, run_id=None, refs=0, created=None, completeness=None, namespace=None):
     run_id = run_id or uuid4()
+    namespace = namespace or namespace_for(run_id)
     safe_run = base.safe_run.model_copy(update={"run_id": run_id})
     manifest = []
     for ordinal in range(1, refs + 1):
         slot = PayloadSlot(kind=PayloadKind.retrieval_chunk, ordinal=1, item_ordinal=ordinal)
         ref = PayloadRef(bucket="synthetic-evidence-payloads",
-                         key=f"{namespace_for(run_id)}2026-01-01/retrieval_chunk/1/{ordinal}",
+                         key=f"{namespace}2026-01-01/retrieval_chunk/1/{ordinal}",
                          version_id=f"v{ordinal}", tenant_partition="synthetic-tenant", slot=slot,
                          byte_size=10, sha256="b" * 64, policy_version=base.redaction_policy_version,
                          created_at=created, expires_at=created + timedelta(days=30))
@@ -217,6 +218,25 @@ def test_retry_backoff_then_exhaustion_quarantines(repo_factory, pg_engine, enve
     asyncio.run(scenario())
 
 
+def test_lapsed_leases_count_toward_the_attempt_cap(repo_factory, pg_engine, envelope, clock):
+    async def scenario():
+        # Dispatchers killed mid-send never call schedule_retry; the cap must still hold.
+        repo = repo_factory(max_attempts=2)
+        await repo.enqueue(envelope, intent=None)
+        for attempt in (1, 2):
+            [claim] = await repo.claim_batch(limit=1, lease_seconds=60)
+            assert claim.attempts == attempt
+            clock.advance(seconds=60)
+        assert await repo.claim_batch(limit=1, lease_seconds=60) == ()
+        assert await rows(pg_engine, "SELECT state, error_class, lease_token FROM evaluation_outbox") == [
+            ("quarantined", "retry_exhausted", None)]
+        assert await repo.mark_delivered(claim, ACK) is False
+        assert await repo.retry_quarantined(EventIdentity(run_id=envelope.run_id)) is True
+        [again] = await repo.claim_batch(limit=1, lease_seconds=60)
+        assert again.attempts == 1 and again.envelope_bytes == envelope.canonical_bytes()
+    asyncio.run(scenario())
+
+
 def test_permanent_failure_quarantines_immediately_with_safe_class(repo, pg_engine, envelope):
     async def scenario():
         await repo.enqueue(envelope, intent=None)
@@ -336,6 +356,89 @@ def test_cleanup_ownership_denies_commit_even_before_the_committers_clock_expire
         assert await repo.claim_orphan(namespace, clock() + timedelta(hours=25)) is not None
         receipt = await repo.enqueue(make_envelope(envelope, run_id=run_id, refs=1, created=clock()), intent=intent)
         assert (receipt.status, receipt.reason) == ("failed", DeliveryReason.intent_failed)
+    asyncio.run(scenario())
+
+
+TENANT_PREFIX = "evidence/test/synthetic-tenant/"
+
+
+def test_parent_prefix_claim_cannot_cover_live_child_intent_or_reference(repo, pg_engine, envelope, clock):
+    async def scenario():
+        open_run, committed_run = uuid4(), uuid4()
+        await repo.begin_upload(open_run, namespace_for(open_run), lease_seconds=60)
+        intent = await repo.begin_upload(committed_run, namespace_for(committed_run), lease_seconds=60)
+        assert (await repo.enqueue(make_envelope(envelope, run_id=committed_run, refs=1, created=clock()),
+                                   intent=intent)).status == "committed"
+        for parent in (TENANT_PREFIX, "evidence/test/", "evidence/"):
+            assert await repo.inspect_cleanup(parent, clock()) is None
+            assert await repo.claim_orphan(parent, clock()) is None
+        # Past the open child's grace, the committed child's live reference still protects the parent.
+        clock.advance(days=2)
+        assert await repo.claim_orphan(TENANT_PREFIX, clock()) is None
+        assert set(await rows(pg_engine, "SELECT namespace, state FROM evaluation_upload_intents")) == {
+            (namespace_for(open_run), "open"), (namespace_for(committed_run), "closed")}
+    asyncio.run(scenario())
+
+
+def test_child_prefix_claim_cannot_delete_in_flight_keys_of_parent_intent(repo, pg_engine, envelope, clock):
+    async def scenario():
+        run_id = uuid4()
+        parent = namespace_for(run_id)
+        child = parent + "2026-01-01/"
+        intent = await repo.begin_upload(run_id, parent, lease_seconds=60)
+        assert await repo.inspect_cleanup(child, clock()) is None
+        assert await repo.claim_orphan(child, clock()) is None
+        assert await count(pg_engine, "evaluation_upload_intents") == 1
+        receipt = await repo.enqueue(make_envelope(envelope, run_id=run_id, refs=1, created=clock()), intent=intent)
+        assert receipt.status == "committed"
+        clock.advance(days=2)  # parent intent now expired past grace, but its reference is live
+        assert await repo.claim_orphan(child, clock()) is None
+    asyncio.run(scenario())
+
+
+def test_parent_claim_takes_ownership_of_expired_child_intents(repo, pg_engine, envelope, clock):
+    async def scenario():
+        run_id = uuid4()
+        intent = await repo.begin_upload(run_id, namespace_for(run_id), lease_seconds=60)
+        stored = make_envelope(envelope, run_id=run_id, refs=1, created=clock())
+        claim = await repo.claim_orphan(TENANT_PREFIX, clock() + timedelta(hours=25))
+        assert claim is not None and claim.namespace == TENANT_PREFIX
+        assert set(await rows(pg_engine, "SELECT namespace, state FROM evaluation_upload_intents")) == {
+            (TENANT_PREFIX, "cleanup_owned"), (namespace_for(run_id), "cleanup_owned")}
+        # The committer's clock still sees its intent as live; only the ownership state denies it.
+        receipt = await repo.enqueue(stored, intent=intent)
+        assert (receipt.status, receipt.reason) == ("failed", DeliveryReason.intent_failed)
+    asyncio.run(scenario())
+
+
+def test_begin_upload_conflicts_with_any_overlapping_namespace(repo, clock):
+    async def scenario():
+        run_id = uuid4()
+        await repo.begin_upload(run_id, namespace_for(run_id), lease_seconds=60)
+        with pytest.raises(EvidenceConflict):  # ancestor of an existing intent
+            await repo.begin_upload(uuid4(), TENANT_PREFIX, lease_seconds=60)
+        with pytest.raises(EvidenceConflict):  # descendant of an existing intent
+            await repo.begin_upload(run_id, namespace_for(run_id) + "nested/", lease_seconds=60)
+        other_tenant = "evidence/test/other-tenant/"
+        assert await repo.claim_orphan(other_tenant, clock()) is not None
+        with pytest.raises(EvidenceConflict):  # descendant of a cleanup marker
+            await repo.begin_upload(run_id, f"{other_tenant}{run_id}/", lease_seconds=60)
+        sibling = uuid4()
+        assert (await repo.begin_upload(sibling, namespace_for(sibling), lease_seconds=60)).state == "open"
+    asyncio.run(scenario())
+
+
+def test_concurrent_parent_claim_and_child_upload_are_exclusive(repo_factory, clock):
+    async def scenario():
+        for index in range(5):
+            run_id = uuid4()
+            parent = f"evidence/race-{index}/"
+            upload, orphan = await asyncio.gather(
+                repo_factory().begin_upload(run_id, f"{parent}{run_id}/", lease_seconds=60),
+                repo_factory().claim_orphan(parent, clock()), return_exceptions=True)
+            granted_upload = not isinstance(upload, BaseException)
+            granted_cleanup = orphan is not None and not isinstance(orphan, BaseException)
+            assert granted_upload != granted_cleanup
     asyncio.run(scenario())
 
 

@@ -70,6 +70,8 @@ CREATE TABLE evaluation_payload_refs (
 CREATE UNIQUE INDEX evaluation_payload_refs_slot_key
     ON evaluation_payload_refs (run_pk, kind, ordinal, COALESCE(item_ordinal, 0));
 CREATE INDEX evaluation_payload_refs_namespace_idx ON evaluation_payload_refs (namespace, expires_at);
+-- Prefix (LIKE 'ns%') lookups: live references at or below a cleanup namespace.
+CREATE INDEX evaluation_payload_refs_key_prefix_idx ON evaluation_payload_refs (object_key text_pattern_ops);
 
 -- One row per generated object-key namespace. An open row is an upload lease; a cleanup_owned row
 -- (with or without a run) is the exclusion marker that forbids later uploads/commits there.
@@ -92,3 +94,5 @@ CREATE TABLE evaluation_upload_intents (
 );
 
 CREATE INDEX evaluation_upload_intents_expiry_idx ON evaluation_upload_intents (state, expires_at);
+-- Prefix (LIKE 'ns%') lookups: descendant namespaces that overlap a claim.
+CREATE INDEX evaluation_upload_intents_prefix_idx ON evaluation_upload_intents (namespace text_pattern_ops);

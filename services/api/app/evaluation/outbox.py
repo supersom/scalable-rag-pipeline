@@ -1,11 +1,14 @@
 """Transactional evidence outbox, upload intents, and orphan-cleanup coordination.
 
-Every operation is one short PostgreSQL transaction; no lock is held across S3/SQS IO. Database
+Every operation is one short PostgreSQL transaction; no lock is held across S3/SQS IO.
+Lease and expiry comparisons use the injected application clock (bound ``:now``), not the database
+clock, so retention tests can control time; hosts sharing this database need NTP-level agreement. Database
 failures surface only as fixed-message ``EvidencePersistenceError`` subclasses so statement text
 and bound parameters (which include envelope bytes) never reach logs or callers.
 """
 from __future__ import annotations
 
+import hashlib
 import random
 import re
 from collections.abc import Callable
@@ -69,7 +72,7 @@ def retry_delay(attempts: int, *, base: float, cap: float, jitter: Callable[[], 
 
 
 _CLAIM_SQL = text("""
-SELECT o.id FROM evaluation_outbox AS o
+SELECT o.id, o.attempts FROM evaluation_outbox AS o
 JOIN evaluation_runs AS r ON r.id = o.run_pk
 WHERE o.state IN ('pending', 'leased') AND o.next_attempt_at <= :now
   AND (o.lease_until IS NULL OR o.lease_until <= :now)
@@ -87,6 +90,15 @@ FROM evaluation_runs AS r
 WHERE r.id = o.run_pk AND o.id IN :ids
 RETURNING r.export_version, r.run_schema_version, r.run_id, r.export_hash, r.envelope, r.expires_at,
           o.lease_token, o.lease_until, o.attempts
+""").bindparams(bindparam("ids", expanding=True))
+
+# A lapsed lease with no recorded outcome (e.g. the dispatcher was killed mid-send) still spent an
+# attempt; enforcing the cap here keeps the attempt bound even when schedule_retry never runs.
+_EXHAUST_SQL = text("""
+UPDATE evaluation_outbox
+SET state = 'quarantined', error_class = 'retry_exhausted', lease_token = NULL, lease_until = NULL,
+    updated_at = :now
+WHERE id IN :ids
 """).bindparams(bindparam("ids", expanding=True))
 
 # Token AND unexpired lease: a stale or lapsed claimant can never overwrite a newer claim.
@@ -137,14 +149,30 @@ SELECT export_hash FROM evaluation_runs
 WHERE export_version = :export_version AND run_schema_version = :run_schema_version AND run_id = :run_id
 """)
 
-_INTENT_ROW = ("SELECT state, expires_at, cleanup_token, cleanup_lease_until "
-               "FROM evaluation_upload_intents WHERE namespace = :namespace")
-_INTENT_SQL = text(_INTENT_ROW)
-_INTENT_FOR_UPDATE_SQL = text(_INTENT_ROW + " FOR UPDATE")
+# Namespaces are hierarchical key prefixes ending in "/". Coordination treats every ancestor and
+# descendant namespace as overlapping: a claim on "a/" must not cover live work under "a/b/", and a
+# claim on "a/b/" must not delete in-flight keys of an open intent for "a/". Upload/cleanup row
+# creation is serialized by one advisory lock because overlapping namespaces are different rows.
+_COORDINATION_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"scalable-rag:evaluation-namespace-coordination").digest()[:8], "big", signed=True)
+_COORDINATION_LOCK_SQL = text("SELECT pg_advisory_xact_lock(:key)")
 
+_OVERLAP_WHERE = "(namespace IN :ancestors OR namespace LIKE :descendants)"
+_OVERLAP_INTENTS = ("SELECT namespace, state, expires_at, cleanup_token, cleanup_lease_until "
+                    f"FROM evaluation_upload_intents WHERE {_OVERLAP_WHERE}")
+_OVERLAP_INTENTS_SQL = text(_OVERLAP_INTENTS).bindparams(bindparam("ancestors", expanding=True))
+_OVERLAP_INTENTS_FOR_UPDATE_SQL = text(_OVERLAP_INTENTS + " ORDER BY namespace FOR UPDATE").bindparams(
+    bindparam("ancestors", expanding=True))
+
+# Any unexpired reference to an object at or below the namespace, whichever intent recorded it.
 _LIVE_REF_SQL = text("""
-SELECT 1 FROM evaluation_payload_refs WHERE namespace = :namespace AND expires_at > :now LIMIT 1
+SELECT 1 FROM evaluation_payload_refs WHERE object_key LIKE :descendants AND expires_at > :now LIMIT 1
 """)
+
+_EXCLUDE_OVERLAPS_SQL = text(f"""
+UPDATE evaluation_upload_intents SET state = 'cleanup_owned'
+WHERE {_OVERLAP_WHERE} AND namespace <> :namespace AND state <> 'cleanup_owned'
+""").bindparams(bindparam("ancestors", expanding=True))
 
 _TAKE_CLEANUP_SQL = text("""
 UPDATE evaluation_upload_intents
@@ -175,6 +203,17 @@ def _utc(value: datetime) -> datetime:
     return value
 
 
+def _namespace_params(namespace: str) -> dict:
+    """Validate a namespace and build its ancestor list and escaped descendant LIKE pattern."""
+    if (not isinstance(namespace, str) or not namespace.endswith("/") or namespace.startswith("/")
+            or "//" in namespace or len(namespace) > 1024):
+        raise ValueError("namespace must be a relative key prefix ending in '/'")
+    parts = namespace.split("/")[:-1]
+    escaped = namespace.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return {"namespace": namespace, "ancestors": ["/".join(parts[:i]) + "/" for i in range(1, len(parts) + 1)],
+            "descendants": escaped + "%"}
+
+
 def _identity_params(identity: EventIdentity) -> dict:
     return {"export_version": identity.export_version, "run_schema_version": identity.run_schema_version,
             "run_id": identity.run_id}
@@ -183,10 +222,11 @@ def _identity_params(identity: EventIdentity) -> dict:
 class OutboxRepository:
     def __init__(self, session_factory: Callable, clock: Callable[[], datetime], *,
                  max_attempts: int = 8, backoff_base_seconds: float = 1.0, backoff_cap_seconds: float = 60.0,
-                 metadata_retention_days: int = 90, orphan_grace_seconds: float = 86400,
+                 metadata_retention_days: int = 90, content_retention_days: int = 30,
+                 orphan_grace_seconds: float = 86400,
                  cleanup_lease_seconds: float = 300, jitter: Callable[[], float] = random.random) -> None:
         if min(max_attempts, backoff_base_seconds, backoff_cap_seconds, metadata_retention_days,
-               orphan_grace_seconds, cleanup_lease_seconds) <= 0:
+               content_retention_days, orphan_grace_seconds, cleanup_lease_seconds) <= 0:
             raise ValueError("outbox limits must be positive")
         self._sessions = session_factory
         self._clock = clock
@@ -194,6 +234,7 @@ class OutboxRepository:
         self._backoff_base = backoff_base_seconds
         self._backoff_cap = backoff_cap_seconds
         self._retention = timedelta(days=metadata_retention_days)
+        self._content_retention = timedelta(days=content_retention_days)
         self._grace = timedelta(seconds=orphan_grace_seconds)
         self._cleanup_lease = timedelta(seconds=cleanup_lease_seconds)
         self._jitter = jitter
@@ -219,8 +260,9 @@ class OutboxRepository:
     # --- upload intents -----------------------------------------------------------
 
     async def begin_upload(self, run_id: UUID, namespace: str, lease_seconds: float) -> UploadIntent:
-        if not namespace or lease_seconds <= 0:
-            raise ValueError("upload intent requires a namespace and positive lease")
+        params = _namespace_params(namespace)
+        if lease_seconds <= 0:
+            raise ValueError("upload intent requires a positive lease")
         now = self._now()
         intent = UploadIntent(run_id=run_id, namespace=namespace, lease_token=uuid4(),
                               expires_at=now + timedelta(seconds=lease_seconds))
@@ -229,8 +271,11 @@ class OutboxRepository:
             expires_at=intent.expires_at, created_at=now,
         ).on_conflict_do_nothing(index_elements=["namespace"]).returning(EvidenceUploadIntent.namespace)
         async with self._transaction() as session:
-            inserted = (await session.execute(statement)).first()
-        if inserted is None:  # reused namespace or an existing cleanup exclusion marker
+            await session.execute(_COORDINATION_LOCK_SQL, {"key": _COORDINATION_LOCK_KEY})
+            # Any overlapping intent or cleanup marker (same, ancestor or descendant namespace) conflicts.
+            overlapping = (await session.execute(_OVERLAP_INTENTS_SQL, params)).first()
+            inserted = None if overlapping else (await session.execute(statement)).first()
+        if inserted is None:
             raise EvidenceConflict()
         return intent
 
@@ -254,6 +299,8 @@ class OutboxRepository:
                 return failed(DeliveryReason.intent_failed)
             if any(not ref.key.startswith(intent.namespace) for ref in refs):
                 return failed(DeliveryReason.metadata_invalid)
+            if any(ref.expires_at > ref.created_at + self._content_retention for ref in refs):
+                return failed(DeliveryReason.metadata_invalid)
         elif refs:
             return failed(DeliveryReason.intent_failed)
 
@@ -267,7 +314,9 @@ class OutboxRepository:
             async with self._transaction() as session:
                 run_pk = (await session.execute(run_insert)).scalar()
                 if run_pk is None:
-                    # Duplicate: the first commit wins; expiry and bytes are never rewritten.
+                    # Duplicate: the first commit wins; expiry and bytes are never rewritten. A fresh
+                    # intent passed with a duplicate stays open on purpose: its objects are unreferenced
+                    # and orphan cleanup removes them once the intent expires plus the grace period.
                     existing = (await session.execute(_EXISTING_HASH_SQL, _identity_params(identity))).scalar()
                     if existing != envelope.export_hash:
                         raise _Abort(DeliveryReason.identity_conflict)
@@ -306,11 +355,15 @@ class OutboxRepository:
             raise ValueError("claim limit and lease must be positive")
         now = self._now()
         async with self._transaction() as session:
-            ids = (await session.execute(_CLAIM_SQL, {"now": now, "limit": limit})).scalars().all()
+            selected = (await session.execute(_CLAIM_SQL, {"now": now, "limit": limit})).all()
+            exhausted = [row.id for row in selected if row.attempts >= self._max_attempts]
+            ids = [row.id for row in selected if row.attempts < self._max_attempts]
+            if exhausted:
+                await session.execute(_EXHAUST_SQL, {"ids": exhausted, "now": now})
             if not ids:
                 return ()
             leased = (await session.execute(_LEASE_SQL, {
-                "ids": list(ids), "now": now, "lease_until": now + timedelta(seconds=lease_seconds)})).all()
+                "ids": ids, "now": now, "lease_until": now + timedelta(seconds=lease_seconds)})).all()
         return tuple(OutboxClaim(
             identity=EventIdentity(export_version=row.export_version, run_schema_version=row.run_schema_version,
                                    run_id=row.run_id),
@@ -364,41 +417,42 @@ class OutboxRepository:
     async def inspect_cleanup(self, namespace: str, now: datetime) -> CleanupClaim | None:
         """Read-only eligibility preview; its token is never persisted and grants nothing."""
         now = _utc(now)
+        params = _namespace_params(namespace)
         async with self._transaction() as session:
-            if (await session.execute(_LIVE_REF_SQL, {"namespace": namespace, "now": now})).first():
+            if (await session.execute(_LIVE_REF_SQL, {**params, "now": now})).first():
                 return None
-            row = (await session.execute(_INTENT_SQL, {"namespace": namespace})).first()
-        if row is not None and not self._cleanup_allowed(row, now):
+            rows = (await session.execute(_OVERLAP_INTENTS_SQL, params)).all()
+        if not all(self._cleanup_allowed(row, now) for row in rows):
             return None
         return CleanupClaim(namespace=namespace, lease_token=uuid4(), expires_at=now)
 
     async def claim_orphan(self, namespace: str, now: datetime) -> CleanupClaim | None:
         """Commit cleanup ownership (an exclusion marker) before any remote deletion.
 
+        Every overlapping intent must be eligible, and no unexpired reference may exist at or below
+        the namespace. Overlapping intents are marked cleanup-owned too, so none of them can commit.
         Database failures raise ``EvidenceUnavailable``: no claim, no cleanup permission.
         """
         now = _utc(now)
+        params = _namespace_params(namespace)
         claim = CleanupClaim(namespace=namespace, lease_token=uuid4(), expires_at=now + self._cleanup_lease)
         async with self._transaction() as session:
-            row = (await session.execute(_INTENT_FOR_UPDATE_SQL, {"namespace": namespace})).first()
-            if row is None:
-                if (await session.execute(_LIVE_REF_SQL, {"namespace": namespace, "now": now})).first():
-                    return None
-                marker = pg_insert(EvidenceUploadIntent).values(
+            await session.execute(_COORDINATION_LOCK_SQL, {"key": _COORDINATION_LOCK_KEY})
+            # Row locks make a concurrent commit (which holds its intent row) either fully visible to
+            # the reference check below or unable to close its intent afterwards.
+            rows = (await session.execute(_OVERLAP_INTENTS_FOR_UPDATE_SQL, params)).all()
+            if (await session.execute(_LIVE_REF_SQL, {**params, "now": now})).first():
+                return None
+            if not all(self._cleanup_allowed(row, now) for row in rows):
+                return None
+            if any(row.namespace == namespace for row in rows):
+                await session.execute(_TAKE_CLEANUP_SQL, {"namespace": namespace, "token": claim.lease_token,
+                                                          "lease_until": claim.expires_at})
+            else:
+                await session.execute(pg_insert(EvidenceUploadIntent).values(
                     namespace=namespace, run_id=None, state="cleanup_owned", created_at=now,
-                    cleanup_token=claim.lease_token, cleanup_lease_until=claim.expires_at,
-                ).on_conflict_do_nothing(index_elements=["namespace"]).returning(EvidenceUploadIntent.namespace)
-                if (await session.execute(marker)).first() is not None:
-                    return claim
-                row = (await session.execute(_INTENT_FOR_UPDATE_SQL, {"namespace": namespace})).first()
-            # Checked while holding the intent row lock, so a concurrent commit is either
-            # fully visible here or will find the intent cleanup-owned and roll back.
-            if (await session.execute(_LIVE_REF_SQL, {"namespace": namespace, "now": now})).first():
-                return None
-            if not self._cleanup_allowed(row, now):
-                return None
-            await session.execute(_TAKE_CLEANUP_SQL, {"namespace": namespace, "token": claim.lease_token,
-                                                      "lease_until": claim.expires_at})
+                    cleanup_token=claim.lease_token, cleanup_lease_until=claim.expires_at))
+            await session.execute(_EXCLUDE_OVERLAPS_SQL, params)
         return claim
 
     async def complete_cleanup(self, claim: CleanupClaim) -> bool:

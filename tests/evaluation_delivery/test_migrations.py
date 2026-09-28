@@ -47,6 +47,8 @@ def test_migration_sql_is_additive_and_never_touches_chat_history():
 
 
 def test_evidence_metadata_is_independent_of_chat_history_base(terminal_event):
+    # terminal_event is requested only for its required-settings env vars: importing the chat
+    # module constructs Settings and an engine at import time.
     from services.api.app.memory.postgres import Base as ChatBase
     assert EVIDENCE_METADATA is not ChatBase.metadata
     assert set(EVIDENCE_METADATA.tables) == EVIDENCE_TABLES

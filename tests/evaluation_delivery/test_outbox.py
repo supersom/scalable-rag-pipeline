@@ -151,3 +151,32 @@ def test_retry_delay_is_capped_jittered_exponential():
 ])
 def test_error_classes_are_restricted_to_safe_identifiers(value, expected):
     assert safe_error_class(value) == expected
+
+
+@pytest.mark.parametrize("namespace", ["", "no-trailing-slash", "/absolute/", "double//slash/", pytest.param("x" * 1100 + "/", id="too-long")])
+def test_malformed_namespaces_are_rejected_before_io(clock, namespace):
+    repo = OutboxRepository(untouched_sessions(), clock)
+    for operation in (lambda: repo.claim_orphan(namespace, clock()), lambda: repo.inspect_cleanup(namespace, clock()),
+                      lambda: repo.begin_upload(uuid4(), namespace, lease_seconds=60)):
+        with pytest.raises(ValueError):
+            asyncio.run(operation())
+
+
+def test_namespace_overlap_parameters_cover_ancestors_and_escape_like():
+    from services.api.app.evaluation.outbox import _namespace_params
+    params = _namespace_params("evidence/t_1%/run/")
+    assert params["ancestors"] == ["evidence/", "evidence/t_1%/", "evidence/t_1%/run/"]
+    assert params["descendants"] == "evidence/t\\_1\\%/run/%"
+
+
+def test_reference_expiry_beyond_content_retention_is_rejected(envelope, clock):
+    repo = OutboxRepository(untouched_sessions(), clock)
+    intent = intent_for(envelope, clock)
+    stored = stored_envelope(envelope, intent.namespace, created=clock())
+    entry = stored.manifest[0]
+    stretched = entry.model_copy(update={"reference": entry.reference.model_copy(
+        update={"expires_at": entry.reference.created_at + timedelta(days=31)})})
+    tampered = ExportEnvelope(run_id=stored.run_id, safe_run=stored.safe_run, manifest=(stretched,),
+                              redaction_policy_version=stored.redaction_policy_version, completeness="complete")
+    receipt = asyncio.run(repo.enqueue(tampered, intent=intent))
+    assert (receipt.status, receipt.reason) == ("failed", DeliveryReason.metadata_invalid)
