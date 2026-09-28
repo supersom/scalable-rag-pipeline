@@ -12,6 +12,7 @@ from services.api.app.clients.ray_embed import embed_client
 from services.api.app.clients.ray_llm import llm_client
 from services.api.app.config import settings
 from services.api.app.evaluation.delivery_config import DeliveryConfig
+from services.api.app.evaluation.operation_schemas import register_api_operation_schemas
 from services.api.app.evaluation.runtime import install_runtime, start_evidence_runtime
 from services.api.app.memory.postgres import Base, engine
 from services.api.app.routes import chat, health, upload
@@ -26,6 +27,7 @@ async def lifespan(app: FastAPI):
     """
     evidence = None
     try:
+        register_api_operation_schemas()
         print("Initializing clients...")
         neo4j_client.connect()
         await redis_client.connect()

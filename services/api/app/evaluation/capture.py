@@ -182,7 +182,7 @@ class CaptureSession:
 
     def next_ordinal(self, kind):
         with self.pool._lock:
-            if kind not in ('retrieval', 'tool'):
+            if kind not in ('retrieval', 'tool', 'operation'):
                 raise ValueError('unsupported capture ordinal')
             self._counters[kind] = self._counters.get(kind, 0) + 1
             return self._counters[kind]
