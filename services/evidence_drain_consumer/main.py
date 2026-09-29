@@ -60,11 +60,15 @@ def main() -> int:
     try:
         import boto3
         from urllib.parse import urlsplit
+        from services.api.app.evaluation.delivery_metrics import start_metrics_server
         from services.evidence_drain_consumer.consumer import DrainConsumer
         parts = urlsplit(queue_url)
         sqs_client = boto3.client("sqs", region_name=region, endpoint_url=f"{parts.scheme}://{parts.netloc}")
         s3_client = boto3.client("s3", region_name=region)
         consumer = DrainConsumer(s3_client, bucket=bucket, kms_key_id=kms_key_id)
+        # Own process/pod from the delivery worker, so port 9090 doesn't collide. Serves the
+        # default REGISTRY that DrainConsumer registers evidence_archive_conflicts_total onto.
+        start_metrics_server(9090)
         stop_event = asyncio.Event()
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

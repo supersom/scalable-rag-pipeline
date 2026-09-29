@@ -28,6 +28,9 @@ spec:
               value: EVIDENCE_BUCKET_NAME_VALUE
             - name: EVIDENCE_ARCHIVE_KMS_KEY_ID
               value: EVIDENCE_KMS_KEY_ID_VALUE
+          ports:
+            - name: metrics
+              containerPort: 9090
           resources:
             requests: {cpu: 100m, memory: 256Mi}
             limits: {cpu: 500m, memory: 512Mi}

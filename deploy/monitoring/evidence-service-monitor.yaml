@@ -24,3 +24,51 @@ spec:
     - port: http
       path: /metrics
       interval: 30s
+
+---
+# evidence-worker (services/evaluation_delivery/worker.py) starts its own prometheus_client HTTP
+# server on port 9090 (named "metrics" on the Deployment's container, matching
+# deploy/k8s/evidence-delivery-worker.yaml) — it is not part of the API process, so it needs its
+# own PodMonitor. Exposes evidence_quarantine_records / evidence_quarantine_oldest_age_seconds,
+# the design's named bake-period signals.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: evidence-worker-metrics
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - default
+  selector:
+    matchLabels:
+      app: evidence-worker
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+
+---
+# evidence-drain-consumer (services/evidence_drain_consumer/main.py) likewise starts its own
+# prometheus_client HTTP server on port 9090 (deploy/k8s/evidence-drain-consumer.yaml). Exposes
+# evidence_archive_conflicts_total.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: evidence-drain-consumer-metrics
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - default
+  selector:
+    matchLabels:
+      app: evidence-drain-consumer
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s

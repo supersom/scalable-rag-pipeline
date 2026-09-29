@@ -185,13 +185,17 @@ async def serve(config, publisher) -> int:
     """Own the engine, repository and worker; always drain, unregister signals and dispose on exit."""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from services.api.app.evaluation.delivery_metrics import default_metrics
+    from services.api.app.evaluation.delivery_metrics import default_metrics, start_metrics_server
     from services.api.app.evaluation.outbox import OutboxRepository
 
     loop = asyncio.get_running_loop()
     engine = None
     worker = None
     metrics = default_metrics()
+    # Serves the process's default REGISTRY (no registry arg passed to start_http_server) — the
+    # same global registry default_metrics() registers onto above, so quarantine gauges set
+    # during the poll loop are visible here without any extra wiring.
+    start_metrics_server(9090)
     try:
         engine = create_async_engine(config.database_url, pool_size=config.send_workers + 1, pool_pre_ping=True)
         repo = OutboxRepository(
