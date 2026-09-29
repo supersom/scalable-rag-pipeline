@@ -43,7 +43,7 @@ ECR_BASE="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 # --start N          : run stage N only (end defaults to start)
 # (no flags)         : run all stages
 
-MAX_STAGE=14
+MAX_STAGE=15
 START=1
 END=$MAX_STAGE
 _start_set=false
@@ -224,6 +224,11 @@ fi
 if stage_active 14; then
   echo "--- 14. Queue-backed ingestion ---"
   bash scripts/deploy_ingestion.sh
+fi
+
+if stage_active 15; then
+  echo "--- 15. Evidence delivery (dark-launched: EVAL_EVIDENCE_ENABLED stays false) ---"
+  bash scripts/deploy_evidence_delivery.sh
 fi
 
 echo ""
