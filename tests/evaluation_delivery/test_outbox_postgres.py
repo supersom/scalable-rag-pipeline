@@ -642,3 +642,18 @@ def test_count_expired_runs_is_bounded_read_only_and_exact_at_expiry(repo, pg_en
         with pytest.raises(ValueError):
             await repo.count_expired_runs(expiry, 0)
     asyncio.run(scenario())
+
+
+def test_quarantine_summary_reports_count_and_oldest_age(repo_factory, pg_engine, envelope, clock):
+    async def scenario():
+        repo = repo_factory(max_attempts=1)
+        assert await repo.quarantine_summary(clock()) == (0, 0.0)
+        await repo.enqueue(envelope, intent=None)
+        [claim] = await repo.claim_batch(limit=1, lease_seconds=60)
+        assert await repo.schedule_retry(claim, "broker_denied", permanent=True) is True
+        assert await rows(pg_engine, "SELECT state FROM evaluation_outbox") == [("quarantined",)]
+        clock.advance(seconds=90)
+        count, age = await repo.quarantine_summary(clock())
+        assert count == 1
+        assert 89 <= age <= 91
+    asyncio.run(scenario())
