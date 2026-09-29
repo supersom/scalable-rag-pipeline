@@ -2078,25 +2078,29 @@ git commit -m "feat(deploy): stand up the staging-evidence namespace for validat
 
 ## Task 13: Staging validation (requires live AWS access and explicit go-ahead)
 
-**This task runs real commands against real AWS infrastructure.** Every command below needs the user's explicit go-ahead immediately before it runs, and needs AWS credentials with access to the `rag-platform-cluster` account — confirm both are available before starting. Do not proceed past Step 1 without that confirmation.
+**This task runs real commands against real AWS infrastructure.** Every command below needs the user's explicit go-ahead immediately before it runs, and needs AWS credentials with access to the `rag-platform-cluster` account — confirm both are available before starting. Run commands one at a time; do not paste the sequence as a batch. Stop after each plan, review it with the user, and get fresh explicit approval immediately before each apply. Do not proceed past Step 1 without that confirmation. The canonical owner state is `infra/terraform`; `infra/terraform-staging` is lookup-only and must not create or adopt EKS.
 
 **Files:** none (validation only; may produce a small fix commit if staging surfaces a bug in an earlier task's code).
 
-- [ ] **Step 1: Confirm access, then apply staging Terraform**
+- [ ] **Step 1: Confirm access, provision/reconcile the shared cluster, then apply staging Terraform**
 
-Confirm with the user: AWS credentials are active, and they approve applying `infra/terraform-staging` now.
+Confirm with the user: AWS credentials are active and they approve proceeding with the reviewed plans and applies below. Check the AWS account and region before planning. If an EKS cluster exists outside the canonical Terraform state, stop for a deliberate import/reconciliation decision; do not let the staging state adopt it.
 
-Run: `cd infra/terraform-staging && terraform init && terraform plan`
+Run: `terraform -chdir=infra/terraform init` and `terraform -chdir=infra/terraform plan`.
 
-Review the plan output with the user before applying — in particular confirm `data.aws_db_subnet_group.existing`'s name resolved correctly (Task 8, Step 3) and the KMS/S3/SQS/IAM resource count matches what Task 8 wrote.
+Review the complete canonical owner-state plan with the user. It may include non-EKS resources; do not use `-target` to conceal them. Apply only after the full plan has been explicitly approved: `terraform -chdir=infra/terraform apply`.
 
-Run (after explicit approval of the plan): `terraform apply`
+Run `bash scripts/bootstrap_cluster.sh --start 1 --end 1` to update kubeconfig only. Do not run bootstrap stages 2–3 (Karpenter) or 7 (KubeRay). The existing two-node `m6i.large` baseline managed node group remains active.
+
+Then run: `terraform -chdir=infra/terraform-staging init` and `terraform -chdir=infra/terraform-staging plan`.
+
+Review the staging plan output with the user before applying — in particular confirm `data.aws_db_subnet_group.existing`'s name resolved correctly (Task 8, Step 3) and the KMS/S3/SQS/IAM resource count matches what Task 8 wrote. Apply only after explicit approval: `terraform -chdir=infra/terraform-staging apply`.
 
 - [ ] **Step 2: Push images and deploy the staging stack**
 
 Confirm `services/api` and `services/fake-models` images exist in ECR (build and push if not, following the existing image-build process this repo already uses for those images).
 
-Run: `bash scripts/deploy_staging_evidence.sh`
+Run: `bash scripts/deploy_staging_evidence.sh`. Its preflight requires `rag-platform-cluster` to be `ACTIVE` before it makes ECR lookups or Kubernetes changes. The script does not create the cluster or apply either Terraform root automatically.
 
 - [ ] **Step 3: Exercise the signed synthetic path**
 
@@ -2187,16 +2191,25 @@ Confirm with the user, then run: `cd infra/terraform && terraform plan` (review 
 
 Confirm with the user, then run: `bash scripts/bootstrap_cluster.sh --start 15 --end 15` (or `bash scripts/deploy_evidence_delivery.sh` directly — same effect).
 
-Confirm `EVAL_EVIDENCE_ENABLED` is not in `app-env-secret` yet (or is `false`):
+Confirm `EVAL_EVIDENCE_ENABLED` is not in `app-env-secret` yet (or is `false`), and verify that
+the worker is intentionally at zero replicas for the dark launch:
 
 Run: `kubectl get secret app-env-secret -o jsonpath='{.data.EVAL_EVIDENCE_ENABLED}' | base64 -d 2>/dev/null; echo`
 Expected: empty or `false`
+
+Run: `kubectl get deployment evidence-worker -n default -o jsonpath='{.spec.replicas}'`
+Expected: `0`. The worker is deliberately not started while evidence delivery is disabled; its
+entrypoint treats a disabled configuration as an error, so zero replicas are the safe dark-launch
+state. The drain consumer may run idle against the empty queue.
 
 Apply the PodMonitor: `kubectl apply -f deploy/monitoring/evidence-service-monitor.yaml`
 
 - [ ] **Step 3: Bake period with delivery disabled**
 
-Watch `kubectl logs -f deployment/evidence-worker` and `kubectl logs -f deployment/evidence-drain-consumer` briefly to confirm both start cleanly with no errors, even though there's nothing to claim yet.
+Watch `kubectl logs -f deployment/evidence-drain-consumer` briefly to confirm the drain consumer
+starts cleanly and remains idle while the API delivery flag is disabled. The evidence worker is
+expected to have zero replicas at this point, so there are no worker logs to inspect; it is started
+only in Step 4 after the API is enabled and healthy.
 
 - [ ] **Step 4: Generate and set `EVAL_IDENTITY_HASH_KEY`, then flip the flag**
 
@@ -2209,6 +2222,18 @@ kubectl patch secret app-env-secret --type merge -p \
 kubectl rollout restart deployment/api
 kubectl rollout status deployment/api --timeout=5m
 ```
+
+Only after the API rollout succeeds, start the worker and verify its rollout:
+
+```bash
+kubectl scale deployment/evidence-worker --replicas=1 -n default
+kubectl rollout status deployment/evidence-worker -n default --timeout=5m
+```
+
+This worker scale-up is required: `scripts/deploy_evidence_delivery.sh` defaults
+`WORKER_REPLICAS=0` in production so the dark launch does not crash-loop. The API may briefly
+publish queued metadata before the worker starts; the queue buffers it during this bounded
+rollout.
 
 - [ ] **Step 5: Watch the bake period**
 
