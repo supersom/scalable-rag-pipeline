@@ -50,7 +50,7 @@ def test_deadline_and_lease_windows_are_consistent():
 
 
 def test_from_settings_preserves_disabled_startup(monkeypatch):
-    for name, value in {"DATABASE_URL": "postgresql+asyncpg://local/db", "REDIS_URL": "redis://localhost",
+    for name, value in {"DATABASE_URL": "postgresql+asyncpg://local/db",
                         "NEO4J_PASSWORD": "synthetic", "S3_BUCKET_NAME": "documents",
                         "JWT_SECRET_KEY": "jwt-secret"}.items():
         monkeypatch.setenv(name, value)
@@ -83,7 +83,7 @@ def test_content_capture_requires_a_bounded_server_fixture_case():
 
 
 def test_fixture_case_comes_only_from_server_settings(monkeypatch):
-    for name, value in {"DATABASE_URL": "postgresql+asyncpg://local/db", "REDIS_URL": "redis://localhost",
+    for name, value in {"DATABASE_URL": "postgresql+asyncpg://local/db",
                         "NEO4J_PASSWORD": "synthetic", "S3_BUCKET_NAME": "documents",
                         "JWT_SECRET_KEY": "jwt-secret", "EVAL_FIXTURE_CASE": "literal"}.items():
         monkeypatch.setenv(name, value)

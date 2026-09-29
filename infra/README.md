@@ -10,9 +10,9 @@ The Terraform configuration in `terraform/` provisions the following key resourc
 
 -   **Networking (`vpc.tf`):** A secure, multi-AZ Virtual Private Cloud (VPC) with public and private subnets.
 -   **Kubernetes (`eks.tf`):** A managed Amazon EKS cluster that serves as the foundation for all our services.
--   **Databases (`rds.tf`, `redis.tf`, `neo4j.tf`):**
+-   **Redis (`../deploy/helm/redis/`):** One primary and one replica on EKS, deployed by bootstrap stage 15; Terraform does not provision ElastiCache.
+-   **Databases (`rds.tf`, `neo4j.tf`):**
     -   An AWS Aurora (PostgreSQL) Serverless v2 cluster for chat history.
-    -   An AWS ElastiCache (Redis) cluster for semantic caching and rate limiting.
     -   Security groups and prerequisites for a self-hosted Neo4j cluster.
 -   **Storage (`s3.tf`):** An S3 bucket configured with versioning and Transfer Acceleration for document uploads.
 -   **Permissions (`iam.tf`):** Fine-grained IAM Roles for Service Accounts (IRSA) to ensure pods have least-privilege access to AWS resources.

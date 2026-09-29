@@ -75,12 +75,12 @@ around it exists to ingest documents at scale (Ray Data), serve models elastical
 | Vector DB | Qdrant (`rag_collection` + `semantic_cache` collections) |
 | Graph DB | Neo4j (Bolt; fulltext `entity_index`; Helm chart in EKS, container locally) |
 | Chat memory | Postgres (local container) / Aurora Serverless v2 (prod), SQLAlchemy async |
-| Cache infra | Redis client wired in lifespan; semantic cache itself is Qdrant-backed |
+| Cache infra | Semantic cache is Qdrant-backed; a separate Redis primary and replica run on EKS but have no API consumer yet |
 | Ingestion | Ray Data pipeline; `unstructured` for PDF, python-docx, BeautifulSoup, python-pptx |
 | Serving platform | Ray Serve via KubeRay RayServices (LLM + embed), Ray Jobs for ingestion |
 | Auth | JWT (HS256) validated per-request; scripts pass `AUTH_TOKEN` |
-| Ingress | Nginx / Kong manifests with Lua rate limiting |
-| Infra as code | Terraform: VPC, EKS 1.30, Karpenter, Aurora, ElastiCache, S3, ECR, SQS, IRSA |
+| Ingress | Nginx / Kong manifests |
+| Infra as code | Terraform: VPC, EKS 1.30, Karpenter, Aurora, S3, ECR, SQS, IRSA; Redis via Helm |
 | Node autoscaling | Karpenter — CPU pool (m6i/c6i/r6i, spot) + GPU pool (g5.2xlarge, on-demand) |
 | Evaluation | LLM-as-judge (1–5 grading), RAGAS harness, Locust load test |
 
@@ -91,14 +91,13 @@ services/api/            FastAPI app: routes, LangGraph agent, tools, clients, a
   app/agents/            graph.py (StateGraph), state.py, nodes/{planner,retriever,tool,responder}
   app/tools/             registry.py + calculator, web_search, graph_search, sandbox, vector_search
   app/clients/           qdrant, neo4j, ray_llm (OpenAI-compatible), ray_embed (Ollama-style)
-  app/cache/             redis client + semantic cache (Qdrant-backed)
+  app/cache/             semantic cache (Qdrant-backed)
   app/memory/            Postgres chat history (SQLAlchemy async, create_all at startup)
   app/enhancers/         hyde.py, query_rewriter.py — implemented but NOT wired into the graph
   app/models/            vllm_engine.py, embedding_engine.py (Ray Serve deployments)
 services/models/serve.py Local/cloud Ray Serve entrypoint mirroring Ollama's API on :8001
 services/ingestion/      Dockerfile + constraints for the ingestion Ray image
 services/sandbox/        Hardened code-exec container (runner, limits, network policy)
-services/gateway/        rate_limit.lua for the ingress
 pipelines/ingestion/     Ray Data pipeline: loaders, chunking, embedding, graph, indexing
 pipelines/jobs/          sqs_ingestion_worker.py — SQS consumer submitting Ray jobs
 scripts/                 ingest_local.py, batch_ingest_loop.py, bootstrap_cluster.sh,
@@ -109,7 +108,7 @@ deploy/                  Helm (api, qdrant, neo4j), RayService/RayCluster YAMLs,
 infra/                   Terraform stack + Karpenter NodePools + ARCHITECTURE.md
 eval/                    llm_judge.py, ragas/run.py, datasets/ (noisy → ingested → digested)
 ui/streamlit_app.py      Chat UI: mints JWTs, streams NDJSON events, shows routing trace
-docker-compose.yml       Local infra: Postgres, Redis, Qdrant, Neo4j, MinIO
+docker-compose.yml       Local infra: Postgres, Qdrant, Neo4j, MinIO
 ```
 
 ---
@@ -298,7 +297,7 @@ Terraform-managed (`infra/terraform/`), documented in depth in `infra/ARCHITECTU
   `nvidia.com/gpu` taint). Consolidation has evicted Ray heads and stateful pods —
   `do-not-disrupt` annotations are a tracked follow-up.
 - **Data services**: Aurora Serverless v2 Postgres (chat history, managed master
-  password), ElastiCache Redis, Neo4j via Helm (gp3 PVC, no public LB), Qdrant via
+  password), Neo4j via Helm (gp3 PVC, no public LB), Qdrant via
   Helm (3-replica StatefulSet).
 - **Images**: built locally, tarball'd to S3, then synced to ECR
   (`build_push_image.sh` / `sync_s3_to_ecr.sh`, with post-push cleanup of stale
@@ -309,7 +308,7 @@ Terraform-managed (`infra/terraform/`), documented in depth in `infra/ARCHITECTU
 - **Security**: JWT on all API routes; DBs in private subnets; IRSA least-privilege
   (ingestion can write S3, API cannot); sandbox execution in a no-network hardened
   container; secrets via External Secrets / Secrets Manager.
-- **Ingress**: Nginx/Kong with a Lua rate limiter (`services/gateway/rate_limit.lua`).
+- **Ingress**: Nginx/Kong manifests.
 - **Observability**: Prometheus PodMonitors for Ray heads/workers are written
   (`deploy/monitoring/`) but not yet deployed; metric objects exist in
   `libs/observability/metrics.py` but no `/metrics` route is wired. Health checking is

@@ -8,7 +8,6 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 def route(monkeypatch):
     for key, value in {
         "DATABASE_URL": "postgresql+asyncpg://test:test@localhost/test",
-        "REDIS_URL": "redis://localhost:6379/0",
         "NEO4J_PASSWORD": "test",
         "S3_BUCKET_NAME": "test",
         "JWT_SECRET_KEY": "test-secret",

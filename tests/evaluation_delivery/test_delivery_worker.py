@@ -585,7 +585,7 @@ def cli_env(tmp_path, **overrides):
     env = {k: v for k, v in os.environ.items() if not k.startswith(('EVAL_', 'AWS_'))}
     env.update({
         'PYTHONPATH': str(REPO_ROOT), 'DATABASE_URL': f'postgresql+asyncpg://u:{SENTINEL}@127.0.0.1:1/none',
-        'REDIS_URL': 'redis://127.0.0.1:1/0', 'NEO4J_PASSWORD': 'synthetic', 'S3_BUCKET_NAME': 'synthetic',
+        'NEO4J_PASSWORD': 'synthetic', 'S3_BUCKET_NAME': 'synthetic',
         'JWT_SECRET_KEY': 'synthetic-jwt', 'AWS_ACCESS_KEY_ID': 'synthetic', 'AWS_SECRET_ACCESS_KEY': 'synthetic',
         'AWS_EC2_METADATA_DISABLED': 'true', 'EVAL_EVIDENCE_ENABLED': 'true', 'EVAL_IDENTITY_HASH_KEY': 'synthetic-id',
         'EVAL_QUEUE_URL': 'http://127.0.0.1:1/123456789012/eval-runs', 'EVAL_SHUTDOWN_DRAIN_SECONDS': '2',

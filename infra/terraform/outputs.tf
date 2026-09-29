@@ -15,11 +15,6 @@ output "db_endpoint" {
   value       = local.db_endpoint
 }
 
-output "redis_primary_endpoint" {
-  description = "The primary endpoint for the ElastiCache Redis cluster."
-  value       = aws_elasticache_replication_group.redis.primary_endpoint_address
-}
-
 output "s3_documents_bucket_name" {
   description = "The name of the S3 bucket for document storage."
   value       = aws_s3_bucket.documents.id

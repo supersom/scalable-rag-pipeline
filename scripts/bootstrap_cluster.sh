@@ -17,14 +17,12 @@ export API_IMAGE_TAG=$(aws ecr describe-images --repository-name services/api --
 export RAY_IMAGE_TAG=$(aws ecr describe-images --repository-name services/ray-serve --region us-east-1 --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' --output text)
 export DB_SECRET_ARN=$(terraform -chdir=infra/terraform output -raw db_secret_arn)
 export DB_ENDPOINT=$(terraform -chdir=infra/terraform output -raw db_endpoint)
-export REDIS_URL="rediss://$(terraform -chdir=infra/terraform output -raw redis_primary_endpoint):6379"
 export S3_BUCKET=$(terraform -chdir=infra/terraform output -raw s3_documents_bucket_name)
 export JWT_SECRET_KEY=$(openssl rand -hex 32)
 echo "API_IMAGE_TAG    = $API_IMAGE_TAG"
 echo "RAY_IMAGE_TAG    = $RAY_IMAGE_TAG"
 echo "DB_SECRET_ARN    = $DB_SECRET_ARN"
 echo "DB_ENDPOINT      = $DB_ENDPOINT"
-echo "REDIS_URL        = $REDIS_URL"
 echo "S3_BUCKET        = $S3_BUCKET"
 echo "JWT_SECRET_KEY   = $JWT_SECRET_KEY"
 bash scripts/bootstrap_cluster.sh
@@ -43,7 +41,7 @@ ECR_BASE="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 # --start N          : run stage N only (end defaults to start)
 # (no flags)         : run all stages
 
-MAX_STAGE=14
+MAX_STAGE=15
 START=1
 END=$MAX_STAGE
 _start_set=false
@@ -154,7 +152,6 @@ if stage_active 11; then
   echo "--- 11. app-env-secret ---"
   : "${DB_SECRET_ARN:?DB_SECRET_ARN is required for stage 11}"
   : "${DB_ENDPOINT:?DB_ENDPOINT is required for stage 11}"
-  : "${REDIS_URL:?REDIS_URL is required for stage 11}"
   : "${S3_BUCKET:?S3_BUCKET is required for stage 11}"
   : "${JWT_SECRET_KEY:?JWT_SECRET_KEY is required for stage 11 (generate with: openssl rand -hex 32)}"
 
@@ -179,7 +176,6 @@ if stage_active 11; then
 
   kubectl create secret generic app-env-secret \
     --from-literal=DATABASE_URL="postgresql+asyncpg://ragadmin:${DB_PASSWORD}@${DB_ENDPOINT}/rag_db" \
-    --from-literal=REDIS_URL="${REDIS_URL}" \
     --from-literal=S3_BUCKET_NAME="${S3_BUCKET}" \
     --from-literal=NEO4J_URI="bolt://neo4j-cluster:7687" \
     --from-literal=NEO4J_PASSWORD="password" \
@@ -224,6 +220,14 @@ fi
 if stage_active 14; then
   echo "--- 14. Queue-backed ingestion ---"
   bash scripts/deploy_ingestion.sh
+fi
+
+if stage_active 15; then
+  echo "--- 15. Redis (primary + one replica) ---"
+  helm repo add bitnami https://charts.bitnami.com/bitnami --force-update
+  helm repo update bitnami
+  helm upgrade --install redis bitnami/redis --version 28.3.0 \
+    -f deploy/helm/redis/values.yaml --wait --timeout 10m
 fi
 
 echo ""

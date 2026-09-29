@@ -9,7 +9,6 @@ The `eval-local` Docker Compose profile runs the API and every dependency needed
 | API | `http://127.0.0.1:18000` | Containerized FastAPI service using repository-pinned dependencies |
 | Fake models | `http://127.0.0.1:8001` | Deterministic OpenAI-compatible chat and embedding responses |
 | PostgreSQL | `127.0.0.1:15432` | Chat history and, in evidence mode, the transactional outbox |
-| Redis | `127.0.0.1:16379` | Semantic-cache coordination |
 | Qdrant | `http://127.0.0.1:16333` | Vector retrieval and semantic cache |
 | Neo4j | `bolt://127.0.0.1:17687` | Graph retrieval |
 | Moto S3 and SQS | `http://127.0.0.1:14566` | Credential-free evidence payload storage and evaluation queues |
@@ -19,7 +18,7 @@ The `eval-local` Docker Compose profile runs the API and every dependency needed
 
 All published ports bind to loopback. The local services are not exposed to the LAN.
 
-The stack uses the separate Compose project name `scalable-rag-eval` and alternate host ports, so it can coexist with PostgreSQL, Redis, Qdrant, or Neo4j instances already running on their standard ports.
+The stack uses the separate Compose project name `scalable-rag-eval` and alternate host ports, so it can coexist with PostgreSQL, Qdrant, or Neo4j instances already running on their standard ports.
 
 ## Start and verify the stack
 
@@ -35,7 +34,7 @@ Build and start the stack:
 make local-up
 ```
 
-The command waits until the API, fake models, PostgreSQL, Redis, S3 emulator, and other Compose services are ready.
+The command waits until the API, fake models, PostgreSQL, S3 emulator, and other Compose services are ready.
 
 Exercise the running stack:
 

@@ -192,7 +192,7 @@ async def _states(engine):
 @pytest.mark.parametrize("argv", [["cleanup", "--dry-run", "--limit", "1"], retry_argv(uuid4())])
 def test_configuration_failure_exits_2_before_any_resource(capsys, monkeypatch, argv):
     for name, value in {"DATABASE_URL": "postgresql+asyncpg://test:test@localhost/test",
-                        "REDIS_URL": "redis://localhost:6379/0", "NEO4J_PASSWORD": "synthetic-password",
+                        "NEO4J_PASSWORD": "synthetic-password",
                         "S3_BUCKET_NAME": "synthetic-documents", "JWT_SECRET_KEY": "synthetic-jwt-secret"}.items():
         monkeypatch.setenv(name, value)  # importing the settings module builds module-level settings
     import services.api.app.config as config_module

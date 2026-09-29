@@ -198,7 +198,6 @@ Create the Kubernetes Secret containing database credentials and keys.
 ```bash
 kubectl create secret generic app-env-secret \
   --from-literal=DATABASE_URL="postgresql+asyncpg://ragadmin:YourStrongPassword#123@rag-platform-cluster-postgres.cluster-xxxx.us-east-1.rds.amazonaws.com:5432/rag_db" \
-  --from-literal=REDIS_URL="redis://rag-redis-prod.xxxx.ng.0001.use1.cache.amazonaws.com:6379/0" \
   --from-literal=NEO4J_PASSWORD="password" \
   --from-literal=JWT_SECRET_KEY="$(openssl rand -hex 32)" \
   --from-literal=QDRANT_HOST="qdrant" \
@@ -265,7 +264,7 @@ Normally triggered by S3 Events, we can manually submit the job to the Ray Clust
 Verify the API connects to all subsystems.
 ```bash
 curl https://<YOUR_ALB_DNS>/health/readiness
-# Expected: {"redis": "up", "neo4j": "up"}
+# Expected: {"neo4j": "up"}
 ```
 
 ### 9.2. End-to-End Chat Test

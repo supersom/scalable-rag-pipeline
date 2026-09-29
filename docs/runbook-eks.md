@@ -11,7 +11,7 @@ Internet → (ALB/Ingress) → FastAPI (EKS, ECR image)
                          → Qdrant (StatefulSet, gp3 PVCs)
                          → Neo4j  (StatefulSet, gp3 PVC)
                          → Aurora PostgreSQL (Serverless v2, Secrets Manager password)
-                         → ElastiCache Redis (TLS, rediss://)
+                         → Redis (EKS primary + replica, Helm)
                          → Ray Serve on g5 GPU nodes (Karpenter on-demand)
                               ├── llm-service  (vLLM + Llama-3-8B, port 8000 /llm/chat/completions)
                               └── embed-service (BGE-M3,           port 8000 /embed/embeddings)
@@ -37,7 +37,6 @@ terraform apply   # supply db_password when prompted
 Key outputs needed for bootstrap:
 ```bash
 terraform output -raw db_endpoint                # DB_ENDPOINT (Aurora or RDS depending on db_tier)
-terraform output -raw redis_primary_endpoint     # REDIS_URL (prepend rediss://)
 terraform output -raw s3_documents_bucket_name   # S3_BUCKET
 terraform output -raw s3_models_bucket_name      # MODEL_CACHE_BUCKET (for scripts/cache_models_s3.py)
 ```
@@ -112,7 +111,6 @@ export API_IMAGE_TAG=${GIT_SHA}
 export RAY_IMAGE_TAG=${GIT_SHA}
 export DB_SECRET_ARN=<from terraform output>
 export DB_ENDPOINT=<from terraform output db_endpoint>
-export REDIS_URL=rediss://<from terraform output>
 export S3_BUCKET=<from terraform output>
 
 bash scripts/bootstrap_cluster.sh
@@ -490,4 +488,4 @@ helm uninstall api qdrant neo4j-cluster kuberay-operator
 cd infra/terraform && terraform destroy
 ```
 
-> **Cost note:** The Aurora Serverless v2 cluster continues billing at minimum ACU even when idle. The ElastiCache instance also runs continuously. If dev work is paused for >24h, consider pausing Aurora (AWS Console → RDS → Stop temporarily) or destroying and restoring from the final snapshot.
+> **Cost note:** The Aurora Serverless v2 cluster continues billing at minimum ACU even when idle. If dev work is paused for >24h, consider pausing Aurora (AWS Console → RDS → Stop temporarily) or destroying and restoring from the final snapshot.

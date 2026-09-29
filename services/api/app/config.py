@@ -68,9 +68,6 @@ class Settings(BaseSettings):
     # Database (Aurora Postgres)
     DATABASE_URL: str  # e.g., postgresql+asyncpg://user:pass@host:5432/db
     
-    # Redis (Cache)
-    REDIS_URL: str     # e.g., redis://elasticache-endpoint:6379/0
-    
     # Vector DB (Qdrant)
     QDRANT_HOST: str = "qdrant-service"
     QDRANT_PORT: int = 6333

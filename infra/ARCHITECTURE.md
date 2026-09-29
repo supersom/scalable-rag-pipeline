@@ -102,15 +102,6 @@ AWS account / us-east-1
     │   ├── PostgreSQL security group
     │   │   Allows internal VPC connections to PostgreSQL port 5432.
     │   │
-    │   ├── ElastiCache Redis
-    │   │   Provides semantic caching and rate-limiting storage.
-    │   │   ├── cache.t4g.medium primary
-    │   │   ├── One replica for failover
-    │   │   └── Encryption at rest and in transit
-    │   │
-    │   └── Redis security group
-    │       Allows internal VPC connections to Redis port 6379.
-    │
     ├── VPC endpoints
     │   Keep selected AWS service traffic on the AWS private network and
     │   reduce NAT Gateway usage.
@@ -179,7 +170,6 @@ User
     -> EKS application pods
       ├── S3 documents and model cache
       ├── PostgreSQL chat and application data
-      ├── Redis cache and rate limits
       └── Neo4j graph data
 
 Pending Kubernetes pod
@@ -217,10 +207,6 @@ replaces that with a two-instance Aurora Serverless v2 cluster. Changing tiers
 on an existing environment destroys the old database, so required data must be
 migrated first.
 
-Redis is always provisioned as an encrypted, two-node replication group. It is
-intended for semantic caching and rate limiting rather than durable primary
-storage.
-
 The document bucket supports versioned source-document storage, accelerated
 uploads, browser CORS, and automatic storage-tier optimization. The separate
 model bucket caches replaceable model snapshots so new GPU nodes can retrieve
@@ -246,7 +232,6 @@ Karpenter's permission to launch EC2 instances.
 | --- | --- |
 | VPC endpoint security group | Allows HTTPS from the VPC to private ECR, STS, and Secrets Manager endpoints. |
 | RDS PostgreSQL security group | Allows internal PostgreSQL traffic on port 5432. |
-| Redis security group | Allows internal Redis traffic on port 6379. |
 | Neo4j security group | Allows internal Bolt and HTTP traffic on ports 7687 and 7474. |
 | EKS-managed security groups | Control communication between the EKS control plane and worker nodes. |
 
@@ -275,7 +260,7 @@ radius.
 | Karpenter controller and node IAM roles | Terraform |
 | Karpenter Helm release | `scripts/bootstrap_cluster.sh` |
 | Karpenter EC2NodeClass and NodePools | YAML under `infra/karpenter/`, applied by the bootstrap script |
-| RDS or Aurora, Redis, and S3 buckets | Terraform |
+| RDS or Aurora and S3 buckets | Terraform |
 | Neo4j network security group | Terraform |
 | Neo4j application deployment | Helm outside this folder |
 
@@ -285,7 +270,6 @@ Terraform exposes:
 
 - EKS cluster name and API endpoint.
 - The active RDS or Aurora writer endpoint.
-- The Redis primary endpoint.
 - Document and model-cache bucket names.
 - The Karpenter controller role ARN.
 - The Karpenter node role name.
@@ -299,7 +283,7 @@ At the time of review:
 
 - `terraform validate` passed.
 - `terraform fmt -check -diff` reported formatting-only differences in
-  `eks.tf`, `iam.tf`, `karpenter.tf`, `main.tf`, `redis.tf`, and `vpc.tf`.
+  `eks.tf`, `iam.tf`, `karpenter.tf`, `main.tf`, and `vpc.tf`.
 
 ## Review findings
 
@@ -318,7 +302,7 @@ At the time of review:
 4. **The EKS API endpoint is public.** Authentication is protected by AWS IAM,
    but no source CIDR restriction is configured for the public endpoint.
 
-5. **Database security groups are broad.** PostgreSQL, Redis, and Neo4j accept
+5. **Database security groups are broad.** PostgreSQL and Neo4j accept
    their service ports from the entire VPC rather than only from specific EKS
    worker or workload security groups.
 
@@ -372,7 +356,6 @@ At the time of review:
 - `karpenter/provisioner-cpu.yaml`: shared EC2NodeClass and CPU NodePool.
 - `karpenter/provisioner-gpu.yaml`: GPU NodePool.
 - `terraform/rds.tf`: selectable RDS or Aurora PostgreSQL database.
-- `terraform/redis.tf`: ElastiCache Redis replication group.
 - `terraform/neo4j.tf`: Neo4j network security group.
 - `terraform/s3.tf`: document and model-cache buckets.
 - `terraform/iam.tf`: Ray worker document-bucket IRSA policy and role.

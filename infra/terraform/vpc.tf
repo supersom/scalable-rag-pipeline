@@ -14,10 +14,10 @@ module "vpc" {
   # PUBLIC SUBNETS: For Load Balancers and NAT Gateways
   public_subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
 
-  # PRIVATE SUBNETS: For EKS Nodes, RDS, and Redis (Security Best Practice)
+  # PRIVATE SUBNETS: For EKS Nodes and RDS (Security Best Practice)
   private_subnets = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
 
-  # DATABASE SUBNETS: Specific isolation for Aurora/Redis
+  # DATABASE SUBNETS: Specific isolation for Aurora
   database_subnets = ["10.0.201.0/24", "10.0.202.0/24", "10.0.203.0/24"]
 
   # Enable NAT Gateway for residual internet traffic (pip installs, HuggingFace, etc.)

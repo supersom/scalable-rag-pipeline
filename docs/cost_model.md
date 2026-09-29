@@ -11,5 +11,5 @@
     - NAT Gateway
 - **Cost Optimization Strategies:**
     - **Spot Instances:** Karpenter is configured to prefer Spot instances (~70% savings).
-    - **Semantic Caching:** Reduces GPU inference costs by serving repeat queries from Redis.
+    - **Semantic Caching:** Reduces GPU inference costs by serving repeat queries from Qdrant.
     - **Scale-to-Zero:** Ray Serve and Karpenter can scale GPU nodes down to 0 during off-peak hours.

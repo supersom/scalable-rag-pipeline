@@ -8,11 +8,10 @@ This details the journey of a user's chat message through the system.
 2.  **Load Balancer:** AWS ALB receives the request and forwards it to the EKS Ingress.
 3.  **Ingress Controller (Nginx/Kong):**
     *   Applies TLS termination.
-    *   Executes Lua script for rate limiting.
     *   Routes the request to the `api-service`.
 4.  **FastAPI Orchestrator (`chat.py`):**
     *   **Auth:** `jwt.py` validates the Bearer token.
-    *   **Semantic Cache:** `semantic.py` embeds the query and checks Qdrant/Redis for a similar past query. If a match > 0.95 is found, the cached answer is streamed back immediately (**Path A - Fast Path**).
+    *   **Semantic Cache:** `semantic.py` embeds the query and checks Qdrant for a similar past query. If a match > 0.95 is found, the cached answer is streamed back immediately (**Path A - Fast Path**).
 5.  **LangGraph Execution (Path B - RAG Path):**
     *   **Planner Node:** The query is sent to Llama-3 to be refined or to decide on a tool.
     *   **Retriever Node:**

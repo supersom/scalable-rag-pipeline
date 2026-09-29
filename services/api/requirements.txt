@@ -10,7 +10,6 @@ simpleeval==0.9.13  # Safe math evaluation
 # Async Database & Cache
 sqlalchemy==2.0.25
 asyncpg==0.29.0
-redis==5.0.1
 
 # AI & LLM Clients
 openai==1.10.0   # Standard client often used for compatible endpoints

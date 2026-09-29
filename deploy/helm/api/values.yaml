@@ -62,7 +62,6 @@ env:
 secretName: app-env-secret
 secretEnvKeys:
   - DATABASE_URL
-  - REDIS_URL
   - NEO4J_PASSWORD
   - S3_BUCKET_NAME
   - JWT_SECRET_KEY

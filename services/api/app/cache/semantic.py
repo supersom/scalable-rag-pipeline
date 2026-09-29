@@ -41,7 +41,6 @@ class SemanticCache:
             vector = await embed_client.embed_query(query)
             
             # 2. Search in a specific 'cache' collection in Qdrant 
-            # (or Redis Vector if configured)
             results = await qdrant_client.search(
                 collection_name="semantic_cache",
                 vector=vector,

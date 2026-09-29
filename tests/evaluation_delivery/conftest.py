@@ -103,7 +103,6 @@ def s3_client(aws_env, evidence_bucket):
 def terminal_event(monkeypatch):
     for name, value in {
         "DATABASE_URL": "postgresql+asyncpg://test:test@localhost/test",
-        "REDIS_URL": "redis://localhost:6379/0",
         "NEO4J_PASSWORD": "synthetic-password",
         "S3_BUCKET_NAME": "synthetic-documents",
         "JWT_SECRET_KEY": "synthetic-jwt-secret",

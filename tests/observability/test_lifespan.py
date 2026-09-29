@@ -18,7 +18,6 @@ def test_real_app_lifespan_flushes_spans_even_when_startup_fails(route, monkeypa
     from services.api import main
     monkeypatch.setattr(main.app.state, "tracer_provider", provider)
     monkeypatch.setattr(main, "neo4j_client", SimpleNamespace(connect=Mock(), close=AsyncMock()))
-    monkeypatch.setattr(main, "redis_client", SimpleNamespace(connect=AsyncMock(), close=AsyncMock()))
     for name in ("llm_client", "embed_client"):
         monkeypatch.setattr(main, name, SimpleNamespace(start=AsyncMock(), close=AsyncMock()))
     @asynccontextmanager
@@ -44,7 +43,6 @@ def test_real_app_lifespan_flushes_spans_even_when_startup_fails(route, monkeypa
 
 def _stub_clients(main, monkeypatch, closed):
     monkeypatch.setattr(main, "neo4j_client", SimpleNamespace(connect=Mock(), close=AsyncMock(side_effect=lambda: closed.append("neo4j"))))
-    monkeypatch.setattr(main, "redis_client", SimpleNamespace(connect=AsyncMock(), close=AsyncMock()))
     for name in ("llm_client", "embed_client"):
         monkeypatch.setattr(main, name, SimpleNamespace(start=AsyncMock(), close=AsyncMock()))
     @asynccontextmanager
