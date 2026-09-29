@@ -8,8 +8,11 @@
 #     entrypoints, not a separate image).
 #   - app-env-secret exists in the target namespace with DATABASE_URL and EVAL_IDENTITY_HASH_KEY set.
 #
-# EVAL_EVIDENCE_ENABLED is NOT set by this script. Ships dark: components run with delivery
-# disabled until a separate, explicit change flips the flag in app-env-secret (see Task 14).
+# EVAL_EVIDENCE_ENABLED is NOT set by this script. Ships dark: the worker Deployment defaults to
+# WORKER_REPLICAS=0 (override via the env var) so it can't crash-loop while delivery is disabled;
+# a separate, explicit change flips the flag in app-env-secret and scales the Deployment up
+# together (see Task 14). Callers that already enable delivery (deploy_staging_evidence.sh) pass
+# WORKER_REPLICAS=1.
 #
 # All values can be exported explicitly. When omitted, this script derives them from AWS/ECR
 # and Terraform outputs.
@@ -23,6 +26,10 @@ REGION="${REGION:-us-east-1}"
 NAMESPACE="${NAMESPACE:-default}"
 TERRAFORM_DIR="${TERRAFORM_DIR:-${ROOT_DIR}/infra/terraform}"
 MAINTENANCE_LIMIT="${MAINTENANCE_LIMIT:-100}"
+# Dark-launch default: production ships with the worker at 0 replicas since EVAL_EVIDENCE_ENABLED
+# is unset there (see deploy/k8s/evidence-delivery-worker.yaml). Callers that already enable
+# delivery in app-env-secret (deploy_staging_evidence.sh) override this to 1.
+WORKER_REPLICAS="${WORKER_REPLICAS:-0}"
 
 for command in aws kubectl terraform sed; do
   command -v "$command" >/dev/null 2>&1 || {
@@ -77,6 +84,7 @@ echo "Bucket        : ${EVIDENCE_BUCKET_NAME}"
 echo "KMS key       : ${EVIDENCE_KMS_KEY_ID}"
 echo "Worker role   : ${EVIDENCE_WORKER_ROLE_ARN}"
 echo "Consumer role : ${EVIDENCE_CONSUMER_ROLE_ARN}"
+echo "Worker replicas: ${WORKER_REPLICAS}"
 
 echo "--- 1. Service accounts ---"
 for name_role in "evidence-worker:${EVIDENCE_WORKER_ROLE_ARN}" "evidence-drain-consumer:${EVIDENCE_CONSUMER_ROLE_ARN}"; do
@@ -101,6 +109,7 @@ sed \
   -e "s|namespace: default|namespace: ${NAMESPACE}|" \
   -e "s|API_IMAGE|${API_IMAGE}|g" \
   -e "s|EVIDENCE_QUEUE_URL_VALUE|${EVIDENCE_QUEUE_URL}|g" \
+  -e "s|WORKER_REPLICAS_VALUE|${WORKER_REPLICAS}|g" \
   "${ROOT_DIR}/deploy/k8s/evidence-delivery-worker.yaml" | kubectl apply -f -
 
 kubectl rollout status deployment/evidence-worker --namespace "$NAMESPACE" --timeout=5m
@@ -125,5 +134,6 @@ sed \
 
 echo "--- Evidence delivery deployment complete ---"
 echo "EVAL_EVIDENCE_ENABLED was not touched — delivery stays disabled until app-env-secret is updated explicitly."
+echo "evidence-worker replicas: ${WORKER_REPLICAS} — Task 14 must scale this up in production at the same time it flips EVAL_EVIDENCE_ENABLED."
 echo "Watch worker logs:   kubectl logs -f deployment/evidence-worker -n ${NAMESPACE}"
 echo "Watch consumer logs: kubectl logs -f deployment/evidence-drain-consumer -n ${NAMESPACE}"

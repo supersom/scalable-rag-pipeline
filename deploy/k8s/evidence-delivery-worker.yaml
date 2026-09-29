@@ -4,7 +4,14 @@ metadata:
   name: evidence-worker
   namespace: default
 spec:
-  replicas: 1
+  # Dark-launched in production: EVAL_EVIDENCE_ENABLED is unset/false there, and worker.main()
+  # exits 2 immediately in that state, so replicas: 1 would crash-loop. deploy_evidence_delivery.sh
+  # substitutes this to 0 for production (the default, matching the dark-launch design) and to 1
+  # for staging, where EVAL_EVIDENCE_ENABLED is already set in app-env-secret (see
+  # deploy_staging_evidence.sh) so the pod can actually run. Task 14 (separate, human-run against
+  # real infra) scales production to 1+ at the same time it flips EVAL_EVIDENCE_ENABLED there —
+  # those two changes must land together.
+  replicas: WORKER_REPLICAS_VALUE
   selector:
     matchLabels:
       app: evidence-worker

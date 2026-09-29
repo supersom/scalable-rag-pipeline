@@ -154,7 +154,10 @@ rm -f "$STAGING_VALUES_FILE"
 trap - EXIT
 
 echo "--- 4. Evidence delivery components ---"
-NAMESPACE="$NAMESPACE" TERRAFORM_DIR="$TERRAFORM_DIR" bash "${SCRIPT_DIR}/deploy_evidence_delivery.sh"
+# Unlike production's dark launch, staging's app-env-secret already has EVAL_EVIDENCE_ENABLED=true
+# (step 2 above) — the worker needs to actually run here to validate delivery, so override the
+# 0-replica dark-launch default.
+NAMESPACE="$NAMESPACE" TERRAFORM_DIR="$TERRAFORM_DIR" WORKER_REPLICAS=1 bash "${SCRIPT_DIR}/deploy_evidence_delivery.sh"
 
 echo "--- Staging evidence stack deployed ---"
 echo "Port-forward the staging API: kubectl port-forward -n ${NAMESPACE} deployment/api-staging 18000:8000"
