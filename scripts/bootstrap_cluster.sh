@@ -41,7 +41,7 @@ ECR_BASE="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 # --start N          : run stage N only (end defaults to start)
 # (no flags)         : run all stages
 
-MAX_STAGE=15
+MAX_STAGE=16
 START=1
 END=$MAX_STAGE
 _start_set=false
@@ -228,6 +228,11 @@ if stage_active 15; then
   helm repo update bitnami
   helm upgrade --install redis bitnami/redis --version 28.3.0 \
     -f deploy/helm/redis/values.yaml --wait --timeout 10m
+fi
+
+if stage_active 16; then
+  echo "--- 16. Evidence delivery (dark-launched: EVAL_EVIDENCE_ENABLED stays false) ---"
+  bash scripts/deploy_evidence_delivery.sh
 fi
 
 echo ""

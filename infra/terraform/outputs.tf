@@ -64,3 +64,28 @@ output "ui_ecr_repository_url" {
   description = "ECR repository URL for the Streamlit UI image."
   value       = aws_ecr_repository.ui.repository_url
 }
+
+output "evidence_queue_url" {
+  description = "SQS queue for committed evidence envelopes."
+  value       = aws_sqs_queue.evidence.id
+}
+
+output "evidence_bucket_name" {
+  description = "S3 bucket for the drain consumer's queue-archive objects (and future PR 5b payload content)."
+  value       = aws_s3_bucket.evidence.id
+}
+
+output "evidence_kms_key_arn" {
+  description = "KMS key ARN required on every write to the evidence bucket."
+  value       = aws_kms_key.evidence.arn
+}
+
+output "evidence_worker_irsa_role_arn" {
+  description = "IAM role used by the evidence delivery worker."
+  value       = module.evidence_worker_irsa_role.iam_role_arn
+}
+
+output "evidence_drain_consumer_irsa_role_arn" {
+  description = "IAM role used by the evidence drain consumer."
+  value       = module.evidence_drain_consumer_irsa_role.iam_role_arn
+}

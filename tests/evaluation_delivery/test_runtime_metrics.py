@@ -189,3 +189,25 @@ def test_publisher_observes_latency_and_bytes(envelope):
         'component': 'publisher', 'outcome': 'failed', 'reason': 'broker_transient'}) == 1
     assert registry.get_sample_value('evidence_delivery_events_total', {
         'component': 'publisher', 'outcome': 'attempted', 'reason': 'none'}) == 2
+
+
+def test_start_metrics_server_is_idempotent_per_port():
+    """worker.serve()/drain_consumer.main() may run more than once in the same process (as the
+    test suite itself does); a second start on the same port must be a no-op, not crash with
+    'Address already in use'."""
+    import socket
+    import urllib.request
+
+    from services.api.app.evaluation.delivery_metrics import start_metrics_server
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(('127.0.0.1', 0))
+        port = probe.getsockname()[1]
+
+    start_metrics_server(port)
+    start_metrics_server(port)  # must not raise OSError: Address already in use
+
+    with urllib.request.urlopen(f'http://127.0.0.1:{port}/metrics', timeout=5) as response:
+        body = response.read().decode()
+    assert response.status == 200
+    assert 'evidence_delivery_events_total' in body

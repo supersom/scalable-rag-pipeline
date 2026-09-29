@@ -87,6 +87,13 @@ class FakeRepo:
             expires_at=expires_at or self.clock() + timedelta(days=90), next_attempt_at=self.clock()))
         return self.rows[-1]
 
+    async def quarantine_summary(self, now):
+        quarantined = [r for r in self.rows if r.state == "quarantined"]
+        if not quarantined:
+            return 0, 0.0
+        oldest = min(r.next_attempt_at for r in quarantined)
+        return len(quarantined), max(0.0, (now - oldest).total_seconds())
+
     def _owned(self, claim):
         now = self.clock()
         for row in self.rows:
@@ -577,6 +584,24 @@ def test_close_waits_for_in_flight_sends_that_finish_in_time(repo, clock, envelo
         return await once
     assert asyncio.run(scenario()) == 1
     assert row.state == 'delivered'
+
+
+def repo_claim_sync(repo, clock):
+    return asyncio.run(repo.claim_batch(limit=1, lease_seconds=60))
+
+
+def test_quarantine_gauges_update_once_per_cycle(repo, clock, envelope):
+    from prometheus_client import CollectorRegistry
+    from services.api.app.evaluation.delivery_metrics import DeliveryMetrics
+    registry = CollectorRegistry()
+    metrics = DeliveryMetrics(registry)
+    repo.add(envelope, expires_at=clock() + timedelta(days=1))
+    [claim] = repo_claim_sync(repo, clock)
+    asyncio.run(repo.schedule_retry(claim, "broker_denied", permanent=True))
+    worker = DeliveryWorker(repo, FakeBroker(), clock, batch=1, metrics=metrics)
+    asyncio.run(worker.run_once())
+    assert registry.get_sample_value("evidence_quarantine_records") == 1
+    assert registry.get_sample_value("evidence_quarantine_oldest_age_seconds") is not None
 
 
 # --- CLI ------------------------------------------------------------------------------------

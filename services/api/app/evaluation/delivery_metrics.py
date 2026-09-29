@@ -88,3 +88,24 @@ def default_metrics() -> DeliveryMetrics:
         if _default is None:
             _default = DeliveryMetrics(REGISTRY)
         return _default
+
+
+_metrics_server_ports: set[int] = set()
+_metrics_server_lock = Lock()
+
+
+def start_metrics_server(port: int) -> None:
+    """Serve the default REGISTRY over HTTP; idempotent per process and per port.
+
+    prometheus_client.start_http_server binds a real socket with no way to stop or detect an
+    already-running instance, so a second call for the same port in the same process (e.g. a
+    worker/consumer entrypoint invoked more than once in-process, as the test suite does) would
+    otherwise crash with "Address already in use" instead of being a harmless no-op.
+    """
+    global _metrics_server_ports
+    with _metrics_server_lock:
+        if port in _metrics_server_ports:
+            return
+        from prometheus_client import start_http_server
+        start_http_server(port)
+        _metrics_server_ports.add(port)

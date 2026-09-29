@@ -519,3 +519,14 @@ class OutboxRepository:
         async with self._transaction() as session:
             result = await session.execute(_EXPIRE_SQL, {"now": _utc(now), "limit": limit})
         return result.rowcount
+
+    async def quarantine_summary(self, now: datetime) -> tuple[int, float]:
+        """Read-only count and oldest age (seconds) of currently quarantined outbox rows."""
+        async with self._transaction() as session:
+            result = await session.execute(text(
+                "SELECT count(*), min(created_at) FROM evaluation_outbox WHERE state = 'quarantined'"))
+            row = result.one()
+        count = row[0] or 0
+        if count == 0 or row[1] is None:
+            return 0, 0.0
+        return count, max(0.0, (_utc(now) - _utc(row[1])).total_seconds())

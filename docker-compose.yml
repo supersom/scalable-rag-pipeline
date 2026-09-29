@@ -18,7 +18,18 @@ services:
       timeout: 5s
       retries: 12
 
-  # 2. Qdrant (Vector DB)
+  # 2. Redis (Cache) for the local application stack
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${LOCAL_BIND_ADDRESS:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # 3. Qdrant (Vector DB)
   qdrant:
     image: qdrant/qdrant:v1.7.3
     ports:
@@ -26,7 +37,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
-  # 3. Neo4j (Graph DB)
+  # 4. Neo4j (Graph DB)
   neo4j:
     image: neo4j:5.16.0-community
     environment:
@@ -38,7 +49,7 @@ services:
     volumes:
       - neo4j_data:/data
 
-  # 5. Moto S3 + SQS on one port - local evidence payload store and evaluation queues,
+  # 6. Moto S3 + SQS on one port - local evidence payload store and evaluation queues,
   #    no AWS account or auth token required
   s3-emulator:
     build:

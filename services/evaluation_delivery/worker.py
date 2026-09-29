@@ -100,6 +100,13 @@ class DeliveryWorker:
             logger.warning("evidence delivery claim failed reason=%s", DeliveryReason.database_unavailable.value)
             self._count("failed", DeliveryReason.database_unavailable)
             return 0
+        if self._metrics is not None:
+            try:
+                count, age = await self._repo.quarantine_summary(self._clock())
+                self._metrics.quarantine(count, age)
+            except EvidencePersistenceError:
+                logger.warning("evidence delivery quarantine summary failed reason=%s",
+                               DeliveryReason.database_unavailable.value)
         slots = asyncio.Semaphore(self._send_workers)
 
         async def settle(claim: OutboxClaim) -> None:
@@ -178,11 +185,17 @@ async def serve(config, publisher) -> int:
     """Own the engine, repository and worker; always drain, unregister signals and dispose on exit."""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+    from services.api.app.evaluation.delivery_metrics import default_metrics, start_metrics_server
     from services.api.app.evaluation.outbox import OutboxRepository
 
     loop = asyncio.get_running_loop()
     engine = None
     worker = None
+    metrics = default_metrics()
+    # Serves the process's default REGISTRY (no registry arg passed to start_http_server) — the
+    # same global registry default_metrics() registers onto above, so quarantine gauges set
+    # during the poll loop are visible here without any extra wiring.
+    start_metrics_server(9090)
     try:
         engine = create_async_engine(config.database_url, pool_size=config.send_workers + 1, pool_pre_ping=True)
         repo = OutboxRepository(
@@ -194,7 +207,7 @@ async def serve(config, publisher) -> int:
             repo, publisher, utc_now, batch=config.delivery_batch, send_workers=config.send_workers,
             lease_seconds=config.claim_lease_seconds, ack_reserve_seconds=config.ack_reserve_seconds,
             send_timeout_seconds=config.sdk_attempts * (config.sdk_connect_timeout_seconds
-                                                        + config.sdk_read_timeout_seconds))
+                                                        + config.sdk_read_timeout_seconds), metrics=metrics)
         stop = asyncio.Event()
         for signum in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(signum, stop.set)
@@ -226,11 +239,12 @@ def main() -> int:
     """
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(name)s %(message)s")
     from services.api.app.evaluation.delivery_config import DeliveryConfig
+    from services.api.app.evaluation.delivery_metrics import default_metrics
     from services.api.app.evaluation.publisher import RunEvidencePublisher
     try:
         from services.api.app.config import Settings
         config = DeliveryConfig.from_settings(Settings())
-        publisher = RunEvidencePublisher.from_config(config) if config.enabled else None
+        publisher = RunEvidencePublisher.from_config(config, metrics=default_metrics()) if config.enabled else None
     except Exception:
         logger.error("evidence delivery configuration invalid")
         return EXIT_CONFIGURATION

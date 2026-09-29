@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from functools import partial
 from uuid import UUID
 
+from services.api.app.evaluation.delivery_metrics import default_metrics
 from services.api.app.evaluation.delivery_models import EventIdentity
 from services.api.app.evaluation.retention import RUN_NAMESPACE, RetentionService
 
@@ -129,7 +130,7 @@ async def open_configured_resources(config):
 
 async def _cleanup(args, resources) -> int:
     async with resources() as (repo, store, clock):
-        report = await RetentionService(repo, store, clock).run_once(
+        report = await RetentionService(repo, store, clock, metrics=default_metrics()).run_once(
             apply=args.apply, limit=args.limit, namespaces=tuple(args.namespaces) if args.namespaces else None)
     counts = " ".join(f"{key}={getattr(report, key)}" for key in _REPORT_KEYS)
     print(f"cleanup mode={'apply' if args.apply else 'dry-run'} {counts}")

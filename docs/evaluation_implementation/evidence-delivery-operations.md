@@ -201,6 +201,48 @@ docker run --rm --entrypoint sh -v "$PWD:/repo:ro" -w /repo <api-local image> -c
 
 Recorded counts for PR 4 are in the [Gap 1 verification record](gap-01-production-run-instrumentation.md#pr-4-verification).
 
+## Shared EKS prerequisite for staging
+
+The shared `rag-platform-cluster` has one Terraform owner: `infra/terraform`. The staging root
+(`infra/terraform-staging`) is a consumer; it looks up the existing EKS cluster and related VPC,
+OIDC, and subnet resources and must not create or adopt a cluster. If a cluster exists in AWS but
+is not tracked by the canonical state, stop and deliberately import/reconcile it there before
+continuing. Do not let a second Terraform state manage the same EKS cluster.
+
+Review the complete canonical plan before applying it. This root owns resources beyond EKS, so its
+plan can include unrelated platform changes; do not hide them with `-target`. Apply only after the
+full plan has been reviewed and explicitly approved:
+
+Run this sequence one command at a time; do not paste it as a batch. Stop after each `plan` to
+review its complete output, and obtain explicit approval immediately before the corresponding
+`apply`.
+
+```bash
+terraform -chdir=infra/terraform init
+terraform -chdir=infra/terraform plan
+# Review the complete plan; it may include non-EKS resources owned by this root.
+# Only after review/approval:
+terraform -chdir=infra/terraform apply
+
+bash scripts/bootstrap_cluster.sh --start 1 --end 1
+terraform -chdir=infra/terraform-staging init
+terraform -chdir=infra/terraform-staging plan
+# Review the staging plan, then apply it explicitly:
+terraform -chdir=infra/terraform-staging apply
+
+bash scripts/deploy_staging_evidence.sh
+```
+
+Bootstrap stage 1 only updates local kubeconfig. The baseline managed nodes carry the
+`CriticalAddonsOnly=true:NoSchedule` taint, so ordinary staging pods cannot run on them. Before
+deploying staging workloads, run bootstrap stages 2–3 to install the shared-cluster Karpenter
+controller and CPU/GPU NodePools. The CPU NodePool supplies untainted capacity on demand; this can
+launch billable Spot or on-demand EC2 instances. KubeRay stage 7 remains unnecessary for staging.
+Evidence delivery is bootstrap stage 16; Redis retains stage 15.
+`deploy_staging_evidence.sh` checks that the shared cluster is `ACTIVE` before ECR lookups or
+Kubernetes changes. It fails with an actionable message if it cannot verify the cluster or if the
+cluster is not active; it never applies Terraform or creates the cluster automatically.
+
 ## Production gates that local success does not satisfy
 
 Local Moto proves version, reference, and request-parameter contracts. It does not prove AWS IAM, KMS key policy, bucket versioning enforcement, private networking, or SQS authentication. The following are PR 5 gates and are not implemented or authorized here:
