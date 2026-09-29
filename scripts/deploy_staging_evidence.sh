@@ -45,6 +45,10 @@ echo "--- 1b. Redis (required by the API's /health/readiness probe; not otherwis
 kubectl apply -f "${ROOT_DIR}/deploy/k8s/staging-redis.yaml"
 kubectl rollout status deployment/redis --namespace "$NAMESPACE" --timeout=5m
 
+echo "--- 1c. Qdrant (required by lifespan()'s eager ensure_collection() call; not otherwise used) ---"
+kubectl apply -f "${ROOT_DIR}/deploy/k8s/staging-qdrant.yaml"
+kubectl rollout status deployment/qdrant --namespace "$NAMESPACE" --timeout=5m
+
 echo "--- 2. Staging app-env-secret ---"
 STAGING_DB_ENDPOINT="$(terraform -chdir="$TERRAFORM_DIR" output -raw staging_db_endpoint)"
 STAGING_DB_SECRET_ARN="$(terraform -chdir="$TERRAFORM_DIR" output -raw staging_db_secret_arn)"
@@ -79,21 +83,68 @@ kubectl create secret generic app-env-secret --namespace "$NAMESPACE" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "--- 3. Staging API Helm release ---"
+STAGING_EVIDENCE_QUEUE_URL="$(terraform -chdir="$TERRAFORM_DIR" output -raw staging_evidence_queue_url)"
+
+# Helm's list-valued fields (like `env`) cannot be safely patched by scalar `--set-string
+# env[N]...` calls: deploy/helm/api/values.yaml's default `env` list has 13 entries and
+# deploy/helm/api/templates/deployment.yaml's `{{- range .Values.env }}` renders every entry with
+# no de-duplication by name, so K8s' last-wins env-var precedence means any chart-default entry
+# the script doesn't happen to overwrite by index (e.g. RAY_LLM_ENDPOINT/RAY_EMBED_ENDPOINT at
+# indices 8-9, pointing at production Ray Serve) survives untouched in the rendered pod spec —
+# silently routing staging evidence traffic at production model-serving infrastructure. A `-f`
+# values file, unlike `--set`, fully replaces a list field, so the whole `env` array is written
+# out explicitly below: every chart default is either carried over unchanged or replaced with its
+# staging value, and nothing from the chart's own default list can leak through by accident.
+STAGING_VALUES_FILE="$(mktemp)"
+trap 'rm -f "$STAGING_VALUES_FILE"' EXIT
+
+cat > "$STAGING_VALUES_FILE" <<EOF
+env:
+  - name: ENV
+    value: "local"
+  - name: LOG_LEVEL
+    value: "INFO"
+  - name: QDRANT_HOST
+    value: "qdrant"
+  - name: QDRANT_PORT
+    value: "6333"
+  - name: QDRANT_COLLECTION
+    value: "rag_collection"
+  - name: NEO4J_URI
+    value: "bolt://neo4j-cluster:7687"
+  - name: NEO4J_USER
+    value: "neo4j"
+  - name: AWS_REGION
+    value: "${REGION}"
+  - name: RAY_LLM_ENDPOINT
+    value: "http://fake-models:8000/v1/chat/completions"
+  - name: RAY_EMBED_ENDPOINT
+    value: "http://fake-models:8000/api/embeddings"
+  - name: EMBED_DIM
+    value: "1024"
+  - name: EMBED_MODEL_NAME
+    value: "BAAI/bge-m3"
+  - name: JWT_ALGORITHM
+    value: "HS256"
+  - name: EVAL_EVIDENCE_ENABLED
+    value: "true"
+  - name: EVAL_CAPTURE_CONTENT
+    value: "false"
+  - name: EVAL_QUEUE_URL
+    value: "${STAGING_EVIDENCE_QUEUE_URL}"
+EOF
+
 helm upgrade --install api-staging "${ROOT_DIR}/deploy/helm/api" \
   --namespace "$NAMESPACE" \
   --set image.repository="${ECR_BASE}/services/api" \
   --set image.tag="${API_IMAGE_TAG}" \
   --set replicaCount=1 \
   --set fullnameOverride=api-staging \
-  --set-string env[0].name=ENV --set-string env[0].value=local \
-  --set-string env[1].name=LOG_LEVEL --set-string env[1].value=INFO \
-  --set-string env[2].name=AWS_REGION --set-string env[2].value="$REGION" \
-  --set-string env[3].name=RAY_LLM_ENDPOINT --set-string env[3].value="http://fake-models:8000/v1/chat/completions" \
-  --set-string env[4].name=RAY_EMBED_ENDPOINT --set-string env[4].value="http://fake-models:8000/api/embeddings" \
-  --set-string env[5].name=EVAL_EVIDENCE_ENABLED --set-string env[5].value="true" \
-  --set-string env[6].name=EVAL_CAPTURE_CONTENT --set-string env[6].value="false" \
-  --set-string env[7].name=EVAL_QUEUE_URL --set-string env[7].value="$(terraform -chdir="$TERRAFORM_DIR" output -raw staging_evidence_queue_url)" \
+  -f "$STAGING_VALUES_FILE" \
   --wait --timeout 5m
+
+rm -f "$STAGING_VALUES_FILE"
+trap - EXIT
 
 echo "--- 4. Evidence delivery components ---"
 NAMESPACE="$NAMESPACE" TERRAFORM_DIR="$TERRAFORM_DIR" bash "${SCRIPT_DIR}/deploy_evidence_delivery.sh"
