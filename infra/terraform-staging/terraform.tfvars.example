@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars and adjust if the existing cluster's name/region/VPC CIDR differ
+# from infra/terraform's defaults. terraform.tfvars is gitignored.
+
+aws_region   = "us-east-1"
+cluster_name = "rag-platform-cluster"
+vpc_cidr     = "10.0.0.0/16"
