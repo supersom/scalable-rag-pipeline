@@ -166,6 +166,16 @@ resource "aws_iam_policy" "staging_evidence_drain_consumer" {
         ]
       },
       {
+        Action   = ["s3:ListBucket"]
+        Effect   = "Allow"
+        Resource = aws_s3_bucket.staging_evidence.arn
+        Condition = {
+          StringLike = {
+            "s3:prefix" = ["queue-archive/*"]
+          }
+        }
+      },
+      {
         Action   = ["kms:GenerateDataKey", "kms:Encrypt", "kms:Decrypt"]
         Effect   = "Allow"
         Resource = aws_kms_key.staging_evidence.arn
