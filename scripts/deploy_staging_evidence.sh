@@ -23,6 +23,17 @@ done
 ACCOUNT_ID="${ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
 ECR_BASE="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 
+CLUSTER_NAME="${CLUSTER_NAME:-rag-platform-cluster}"
+if ! CLUSTER_STATUS="$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$REGION" \
+  --query 'cluster.status' --output text 2>/dev/null)"; then
+  echo "ERROR: cannot verify EKS cluster ${CLUSTER_NAME}; check AWS account, region, and EKS access. If it is not provisioned, review and apply the canonical infra/terraform plan first." >&2
+  exit 1
+fi
+if [[ "$CLUSTER_STATUS" != "ACTIVE" ]]; then
+  echo "ERROR: EKS cluster ${CLUSTER_NAME} is ${CLUSTER_STATUS}, not ACTIVE; wait for the canonical infra/terraform owner state to finish before deploying staging." >&2
+  exit 1
+fi
+
 API_IMAGE_TAG="${API_IMAGE_TAG:-$(aws ecr describe-images --repository-name services/api --region "$REGION" \
   --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' --output text)}"
 FAKE_MODELS_IMAGE_TAG="${FAKE_MODELS_IMAGE_TAG:-$(aws ecr describe-images --repository-name services/fake-models \
