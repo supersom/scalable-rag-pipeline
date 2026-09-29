@@ -3,6 +3,7 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 import services.api.app.logging  # noqa: F401 — activates JSON log handler
 from services.api.app.cache.redis import redis_client
@@ -63,6 +64,14 @@ setup_observability(app)
 app.include_router(chat.router, prefix="/api/v1/chat", tags=["Chat"])
 app.include_router(upload.router, prefix="/api/v1/upload", tags=["Upload"])
 app.include_router(health.router, prefix="/health", tags=["Health"])
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus scrape endpoint. Cluster-internal only (PodMonitor), no auth — matches other
+    in-cluster-only endpoints; nothing here is derived from request content."""
+    from fastapi import Response
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 if __name__ == "__main__":
     import uvicorn
