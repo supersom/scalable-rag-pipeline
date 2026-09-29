@@ -46,7 +46,7 @@ class DrainConsumer:
             conflict_key = f"queue-archive-conflict/{envelope.run_id}-{_short_token()}.json"
             self._put(conflict_key, body)
             self._conflicts.inc()
-            logger.warning("evidence archive conflict run_id=%s", envelope.run_id)
+            logger.warning("evidence archive conflict")
             return CONFLICT
         self._put(key, body)
         return ARCHIVED
