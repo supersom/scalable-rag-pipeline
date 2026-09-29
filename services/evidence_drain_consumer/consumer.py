@@ -23,9 +23,11 @@ INVALID = "invalid"
 
 
 class DrainConsumer:
-    def __init__(self, client: Any, *, bucket: str, registry: CollectorRegistry = REGISTRY) -> None:
+    def __init__(self, client: Any, *, bucket: str, kms_key_id: str | None = None,
+                registry: CollectorRegistry = REGISTRY) -> None:
         self._client = client
         self._bucket = bucket
+        self._kms_key_id = kms_key_id
         self._conflicts = Counter("evidence_archive_conflicts_total",
                                   "Envelopes whose run_id already had different archived content",
                                   registry=registry)
@@ -60,8 +62,11 @@ class DrainConsumer:
             raise
 
     def _put(self, key: str, body: bytes) -> None:
-        self._client.put_object(Bucket=self._bucket, Key=key, Body=body,
-                                ServerSideEncryption="aws:kms", ContentType="application/json")
+        kwargs: dict[str, Any] = {"Bucket": self._bucket, "Key": key, "Body": body,
+                                  "ServerSideEncryption": "aws:kms", "ContentType": "application/json"}
+        if self._kms_key_id:
+            kwargs["SSEKMSKeyId"] = self._kms_key_id
+        self._client.put_object(**kwargs)
 
 
 def _short_token() -> str:
