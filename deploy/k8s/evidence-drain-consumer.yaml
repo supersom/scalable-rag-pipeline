@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evidence-drain-consumer
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: evidence-drain-consumer
+  template:
+    metadata:
+      labels:
+        app: evidence-drain-consumer
+    spec:
+      serviceAccountName: evidence-drain-consumer
+      containers:
+        - name: drain-consumer
+          image: API_IMAGE
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.evidence_drain_consumer.main"]
+          env:
+            - name: AWS_REGION
+              value: us-east-1
+            - name: EVIDENCE_QUEUE_URL
+              value: EVIDENCE_QUEUE_URL_VALUE
+            - name: EVIDENCE_ARCHIVE_BUCKET
+              value: EVIDENCE_BUCKET_NAME_VALUE
+            - name: EVIDENCE_ARCHIVE_KMS_KEY_ID
+              value: EVIDENCE_KMS_KEY_ID_VALUE
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}

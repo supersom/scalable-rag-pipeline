@@ -1,0 +1,28 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: evidence-maintenance
+  namespace: default
+spec:
+  schedule: "0 6 * * *" # once daily; tune after Task 13's staging dry-run sizes --limit
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: maintenance
+              image: API_IMAGE
+              imagePullPolicy: IfNotPresent
+              command: ["python", "-m", "services.evaluation_delivery.maintenance", "cleanup",
+                       "--apply", "--limit", "MAINTENANCE_LIMIT_VALUE"]
+              envFrom:
+                - secretRef:
+                    name: app-env-secret
+              resources:
+                requests: {cpu: 100m, memory: 256Mi}
+                limits: {cpu: 500m, memory: 512Mi}

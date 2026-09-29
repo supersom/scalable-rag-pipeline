@@ -1,0 +1,21 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: evidence-migrate
+  namespace: default
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: API_IMAGE
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.api.app.evaluation.migrate"]
+          envFrom:
+            - secretRef:
+                name: app-env-secret
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}

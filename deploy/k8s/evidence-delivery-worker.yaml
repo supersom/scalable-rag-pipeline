@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evidence-worker
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: evidence-worker
+  template:
+    metadata:
+      labels:
+        app: evidence-worker
+    spec:
+      serviceAccountName: evidence-worker
+      containers:
+        - name: worker
+          image: API_IMAGE
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.evaluation_delivery.worker"]
+          envFrom:
+            - secretRef:
+                name: app-env-secret
+          env:
+            - name: AWS_REGION
+              value: us-east-1
+            - name: EVAL_QUEUE_URL
+              value: EVIDENCE_QUEUE_URL_VALUE
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
