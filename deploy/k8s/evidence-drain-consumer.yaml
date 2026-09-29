@@ -13,6 +13,8 @@ spec:
       labels:
         app: evidence-drain-consumer
     spec:
+      # Avoid Kubernetes Service env vars overriding typed settings such as QDRANT_PORT.
+      enableServiceLinks: false
       serviceAccountName: evidence-drain-consumer
       containers:
         - name: drain-consumer

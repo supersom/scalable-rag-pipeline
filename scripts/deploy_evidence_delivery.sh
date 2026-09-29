@@ -101,7 +101,8 @@ echo "Worker replicas: ${WORKER_REPLICAS}"
 echo "--- 1. Service accounts ---"
 for name_role in "evidence-worker:${EVIDENCE_WORKER_ROLE_ARN}" "evidence-drain-consumer:${EVIDENCE_CONSUMER_ROLE_ARN}"; do
   sa="${name_role%%:*}"
-  role="${name_role##*:}"
+  # IAM ARNs contain several colons; remove only the service-account prefix.
+  role="${name_role#*:}"
   kubectl create serviceaccount "$sa" --namespace "$NAMESPACE" \
     --dry-run=client -o yaml | kubectl apply -f -
   kubectl annotate serviceaccount "$sa" --namespace "$NAMESPACE" \

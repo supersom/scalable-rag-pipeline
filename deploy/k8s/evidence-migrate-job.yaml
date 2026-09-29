@@ -7,6 +7,10 @@ spec:
   backoffLimit: 2
   template:
     spec:
+      # Service-link env vars can collide with typed application settings (e.g. the
+      # qdrant Service injects QDRANT_PORT=tcp://... while Settings expects an int).
+      # The migration connects only via DATABASE_URL and IRSA, so it needs no links.
+      enableServiceLinks: false
       restartPolicy: Never
       containers:
         - name: migrate

@@ -13,6 +13,8 @@ spec:
       backoffLimit: 1
       template:
         spec:
+          # Avoid Kubernetes Service env vars overriding typed settings such as QDRANT_PORT.
+          enableServiceLinks: false
           restartPolicy: Never
           containers:
             - name: maintenance

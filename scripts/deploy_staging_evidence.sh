@@ -117,6 +117,15 @@ STAGING_VALUES_FILE="$(mktemp)"
 trap 'rm -f "$STAGING_VALUES_FILE"' EXIT
 
 cat > "$STAGING_VALUES_FILE" <<EOF
+secretEnvKeys:
+  - DATABASE_URL
+  - REDIS_URL
+  - NEO4J_PASSWORD
+  - S3_BUCKET_NAME
+  - JWT_SECRET_KEY
+  - LLM_API_KEY
+  - TAVILY_API_KEY
+  - EVAL_IDENTITY_HASH_KEY
 env:
   - name: ENV
     value: "local"

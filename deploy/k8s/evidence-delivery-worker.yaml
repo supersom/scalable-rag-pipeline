@@ -20,6 +20,8 @@ spec:
       labels:
         app: evidence-worker
     spec:
+      # Avoid Kubernetes Service env vars overriding typed settings such as QDRANT_PORT.
+      enableServiceLinks: false
       serviceAccountName: evidence-worker
       containers:
         - name: worker
