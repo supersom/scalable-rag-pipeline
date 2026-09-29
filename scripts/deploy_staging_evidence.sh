@@ -41,6 +41,10 @@ sed -e "s|FAKE_MODELS_IMAGE|${ECR_BASE}/services/fake-models:${FAKE_MODELS_IMAGE
   "${ROOT_DIR}/deploy/k8s/staging-fake-models.yaml" | kubectl apply -f -
 kubectl rollout status deployment/fake-models --namespace "$NAMESPACE" --timeout=5m
 
+echo "--- 1b. Redis (required by the API's /health/readiness probe; not otherwise used) ---"
+kubectl apply -f "${ROOT_DIR}/deploy/k8s/staging-redis.yaml"
+kubectl rollout status deployment/redis --namespace "$NAMESPACE" --timeout=5m
+
 echo "--- 2. Staging app-env-secret ---"
 STAGING_DB_ENDPOINT="$(terraform -chdir="$TERRAFORM_DIR" output -raw staging_db_endpoint)"
 STAGING_DB_SECRET_ARN="$(terraform -chdir="$TERRAFORM_DIR" output -raw staging_db_secret_arn)"
@@ -50,10 +54,28 @@ STAGING_DATABASE_URL="postgresql+asyncpg://ragadmin:${STAGING_DB_PASSWORD}@${STA
 STAGING_JWT_SECRET="${STAGING_JWT_SECRET:-$(openssl rand -hex 32)}"
 STAGING_IDENTITY_KEY="${STAGING_IDENTITY_KEY:-$(openssl rand -hex 32)}"
 
+# services/api/app/config.py's Settings (pydantic BaseSettings, instantiated eagerly at import)
+# requires REDIS_URL, NEO4J_PASSWORD and S3_BUCKET_NAME with no defaults, even though staging
+# evidence validation only exercises the evidence-delivery path (Postgres outbox + SQS +
+# evidence S3), not chat's Redis cache, Neo4j graph, or document uploads.
+#
+# REDIS_URL points at the real in-namespace Redis deployed in step 1b: services/api/main.py's
+# lifespan calls `redis_client.connect()`, which only builds a connection pool object (no
+# socket I/O), but /health/readiness actively pings Redis on every probe — Helm's
+# `--wait` needs that probe to succeed, so a dummy/unreachable value would hang Stage 3 forever
+# instead of failing fast. NEO4J_PASSWORD and S3_BUCKET_NAME are safe as inert placeholders:
+# Neo4jClient.connect() only constructs a driver object (no connectivity check), readiness only
+# checks that the driver object exists (no live query), and S3_BUCKET_NAME is read solely by
+# the upload/presigned-URL route, which staging evidence validation never calls.
+STAGING_REDIS_URL="${STAGING_REDIS_URL:-redis://redis:6379/0}"
+
 kubectl create secret generic app-env-secret --namespace "$NAMESPACE" \
   --from-literal=DATABASE_URL="$STAGING_DATABASE_URL" \
   --from-literal=JWT_SECRET_KEY="$STAGING_JWT_SECRET" \
   --from-literal=EVAL_IDENTITY_HASH_KEY="$STAGING_IDENTITY_KEY" \
+  --from-literal=REDIS_URL="$STAGING_REDIS_URL" \
+  --from-literal=NEO4J_PASSWORD="unused-in-staging-evidence" \
+  --from-literal=S3_BUCKET_NAME="unused-in-staging-evidence" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "--- 3. Staging API Helm release ---"

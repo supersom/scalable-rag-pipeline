@@ -1,0 +1,46 @@
+# Minimal, unauthenticated, ephemeral Redis for the staging-evidence namespace.
+#
+# staging-evidence validation exercises only the evidence-delivery path (Postgres outbox +
+# SQS + evidence S3) — chat's semantic cache is never actually read from or written to here.
+# But services/api/main.py's lifespan calls `redis_client.connect()` (lazy, harmless without
+# this) AND services/api/app/routes/health.py's /health/readiness handler calls `r.ping()` on
+# every readiness probe. The Helm chart's readinessProbe hits that endpoint every 10s
+# (deploy/helm/api/values.yaml), so a dummy/unreachable REDIS_URL would leave the pod
+# permanently NotReady and `helm upgrade --install --wait` would time out — the same failure
+# mode as the reviewed Critical finding, just surfacing at the readiness probe instead of at
+# pydantic validation. A real (if throwaway) Redis is the smallest fix that avoids that.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: staging-evidence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: staging-evidence
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
