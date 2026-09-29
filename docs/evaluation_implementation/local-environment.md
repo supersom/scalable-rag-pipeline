@@ -115,14 +115,26 @@ The API now sends HTTP and `agent.run` spans to the local Collector. Every accep
 Inspect exported spans after making a request:
 
 ```bash
-docker compose -p scalable-rag-eval --profile eval-local --env-file .env.example logs --since 1m otel-collector
+make inspect-traces
+# Follow new spans, or choose a longer history:
+make inspect-traces ARGS="--follow --since 30m"
 ```
 
 Look for `agent.run`, its `run_id`, `run.status`, and `cache.hit`. Its trace ID and parent ID join it to the HTTP server span. Export is batched, so allow several seconds for spans to appear. The Collector's debug exporter is a local inspection aid, not durable trace storage.
 
+Evidence is separate from traces. The default local profile does not persist it; the finalized in-memory `RunStreamingResponse.evidence` value is available to server-side code and tests only. To inspect persisted synthetic evidence, start the opt-in profile and query the run envelope and payload references:
+
+```bash
+make local-evidence-up
+make inspect-evidence
+make inspect-evidence ARGS="--run-id <run-uuid> --envelope --refs"
+```
+
+`inspect-evidence` reads PostgreSQL tables `evaluation_runs`, `evaluation_outbox`, and `evaluation_payload_refs`. Payload bytes are stored separately in the local versioned S3 emulator under `eval-traces`; `--refs` shows their bucket, key, version, and hash without fetching the bytes. See [evidence delivery operations](evidence-delivery-operations.md) for storage and access details.
+
 The local profile exports all root traces by default. `OTEL_TRACES_SAMPLER` supports `always_on`, `always_off`, `traceidratio`, and their `parentbased_` variants; `OTEL_TRACES_SAMPLER_ARG` controls the ratio. `OTEL_SERVICE_NAME` and `OTEL_SERVICE_VERSION` identify the API build. For host execution, console export is opt-in through `OTEL_CONSOLE_EXPORT_ENABLED`; leave it false when using OTLP. The exporter uses gRPC, with plaintext for local `http://` endpoints and TLS for `https://` endpoints.
 
-Raw query strings and captured header values are removed from HTTP telemetry. Prompts, answer bodies, user IDs, and exception messages are not attached to domain spans. Child spans now show cache, memory, planning, retrieval, embeddings, vector/graph search, model calls, tools, persistence, and cache writes. Look for `operation.status`, `operation.latency_ms`, retrieval result counts, provider token usage when available, and retry counts. Raw retrieved content and tool arguments/results remain out of spans; durable run evidence is still a later slice.
+Raw query strings and captured header values are removed from HTTP telemetry. Prompts, answer bodies, user IDs, and exception messages are not attached to domain spans. Child spans now show cache, memory, planning, retrieval, embeddings, vector/graph search, model calls, tools, persistence, and cache writes. Look for `operation.status`, `operation.latency_ms`, retrieval result counts, provider token usage when available, and retry counts. Raw retrieved content and tool arguments/results remain out of spans.
 
 The focused contract suite is `pytest tests/observability -q`. Its real-graph tests use the fake model service in-process and embedded Qdrant, so they need neither a GPU nor live service credentials. To confirm dependency compatibility, run the same tests inside the API image with the repository mounted read-only and pytest installed into a disposable container. Query embeddings keep their five-second per-operation timeout; document embeddings retain sixty seconds even when the HTTP client is pooled.
 

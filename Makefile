@@ -5,7 +5,7 @@ EVIDENCE_COMPOSE = $(LOCAL_COMPOSE) -f docker-compose.yml -f docker-compose.eval
 EVIDENCE_WAIT_SECONDS ?= 300
 LOAD_TEST_HOST ?= http://127.0.0.1:18000
 
-.PHONY: help install dev ray-serve ray-stop up down local-up local-down local-check local-smoke local-evidence-up local-evidence-down local-evidence-check local-evidence-smoke load-test-install load-test deploy test infra
+.PHONY: help install dev ray-serve ray-stop up down local-up local-down local-check local-smoke local-evidence-up local-evidence-down local-evidence-check local-evidence-smoke inspect-traces inspect-evidence load-test-install load-test deploy test infra
 
 help:
 	@echo "RAG Platform Commands:"
@@ -17,6 +17,8 @@ help:
 	@echo "  make local-down - Stop the complete local evaluation stack"
 	@echo "  make local-check - Validate the local Compose profile and run its contract tests"
 	@echo "  make local-smoke - Exercise the running local stack end to end"
+	@echo "  make inspect-traces - Show recent spans from local Collector logs"
+	@echo "  make inspect-evidence - Query persisted local evidence (requires evidence stack)"
 	@echo "  make local-evidence-up    - Local stack plus evidence migrations, SQS queues and delivery worker"
 	@echo "  make local-evidence-down  - Stop the evidence stack (volumes are kept)"
 	@echo "  make local-evidence-check - Validate the evidence override and run its contract tests"
@@ -49,6 +51,12 @@ local-check:
 
 local-smoke:
 	RUN_LOCAL_STACK_TESTS=1 pytest tests/local_env/test_running_stack.py tests/local_env/test_otel_collector.py -q
+
+inspect-traces:
+	./scripts/inspect_traces.sh $(ARGS)
+
+inspect-evidence:
+	./scripts/inspect_evidence.sh $(ARGS)
 
 # Same project as local-up: the override recreates api-local with evidence enabled and adds
 # the migration job and delivery worker. down never passes -v, so volumes survive.
