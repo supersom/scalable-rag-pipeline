@@ -97,6 +97,11 @@ for name_role in "evidence-worker:${EVIDENCE_WORKER_ROLE_ARN}" "evidence-drain-c
 done
 
 echo "--- 2. Migration job ---"
+# A Job's pod template is immutable after creation, so `kubectl apply` on a changed template
+# (e.g. a new API_IMAGE tag) fails outright. Delete any previous run first so each deploy gets a
+# fresh Job resource; migrate.py's advisory-lock/checksum tracking makes re-running migrations
+# against an already-migrated database a safe no-op.
+kubectl delete job evidence-migrate --namespace "$NAMESPACE" --ignore-not-found
 sed \
   -e "s|namespace: default|namespace: ${NAMESPACE}|" \
   -e "s|API_IMAGE|${API_IMAGE}|g" \
