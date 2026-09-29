@@ -73,10 +73,17 @@ STAGING_IDENTITY_KEY="${STAGING_IDENTITY_KEY:-$(openssl rand -hex 32)}"
 # the upload/presigned-URL route, which staging evidence validation never calls.
 STAGING_REDIS_URL="${STAGING_REDIS_URL:-redis://redis:6379/0}"
 
+# EVAL_EVIDENCE_ENABLED/EVAL_CAPTURE_CONTENT here (not just in the API's Helm values below) are
+# what let the evidence-worker Deployment actually deliver: evidence-delivery-worker.yaml pulls
+# its base env via `envFrom: secretRef: app-env-secret`, so worker.main() only stops exiting 2
+# once these two keys exist in this secret. Metadata-only delivery is the validated shape in
+# staging — content capture stays off everywhere in PR 5a.
 kubectl create secret generic app-env-secret --namespace "$NAMESPACE" \
   --from-literal=DATABASE_URL="$STAGING_DATABASE_URL" \
   --from-literal=JWT_SECRET_KEY="$STAGING_JWT_SECRET" \
   --from-literal=EVAL_IDENTITY_HASH_KEY="$STAGING_IDENTITY_KEY" \
+  --from-literal=EVAL_EVIDENCE_ENABLED="true" \
+  --from-literal=EVAL_CAPTURE_CONTENT="false" \
   --from-literal=REDIS_URL="$STAGING_REDIS_URL" \
   --from-literal=NEO4J_PASSWORD="unused-in-staging-evidence" \
   --from-literal=S3_BUCKET_NAME="unused-in-staging-evidence" \
