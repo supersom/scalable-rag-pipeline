@@ -189,6 +189,29 @@ async def _states(engine):
         return [tuple(r) for r in await conn.execute(text("SELECT state, attempts FROM evaluation_outbox"))]
 
 
+def test_production_resource_path_wires_metrics_into_retention(monkeypatch, events):
+    captured = {}
+
+    class SpyRetentionService:
+        def __init__(self, repo, store, clock, **kwargs):
+            captured.update(kwargs)
+
+        async def run_once(self, **_kwargs):
+            from services.api.app.evaluation.delivery_models import CleanupReport
+            return CleanupReport()
+
+    monkeypatch.setattr(maintenance, "RetentionService", SpyRetentionService)
+    ns = run_namespace(1)
+    repo = FakeRepo(lambda: T0, events, candidates=[ns], expired_runs=0)
+    store = FakeStore(events, {})
+    code = maintenance.main(["cleanup", "--dry-run", "--limit", "5"],
+                            open_resources=resources_for(repo, store, lambda: T0))
+    assert code == maintenance.EXIT_OK
+    assert "metrics" in captured
+    from services.api.app.evaluation.delivery_metrics import DeliveryMetrics
+    assert isinstance(captured["metrics"], DeliveryMetrics)
+
+
 @pytest.mark.parametrize("argv", [["cleanup", "--dry-run", "--limit", "1"], retry_argv(uuid4())])
 def test_configuration_failure_exits_2_before_any_resource(capsys, monkeypatch, argv):
     for name, value in {"DATABASE_URL": "postgresql+asyncpg://test:test@localhost/test",
