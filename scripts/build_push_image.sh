@@ -8,14 +8,16 @@
 #   bash scripts/build_push_image.sh api
 #   bash scripts/build_push_image.sh ray
 #   bash scripts/build_push_image.sh ingestion
+#   bash scripts/build_push_image.sh fake-models
 #   bash scripts/build_push_image.sh api <git-sha>
 #   bash scripts/build_push_image.sh ray <git-sha>
 #   bash scripts/build_push_image.sh ingestion <git-sha>
+#   bash scripts/build_push_image.sh fake-models <git-sha>
 #
 
 set -euo pipefail
 
-SERVICE="${1:?Usage: build_push_image.sh <api|ray|ingestion> [git-sha]}"
+SERVICE="${1:?Usage: build_push_image.sh <api|ray|ingestion|fake-models> [git-sha]}"
 GIT_SHA="${2:-}"
 
 REGION="us-east-1"
@@ -35,8 +37,12 @@ case "$SERVICE" in
     DOCKERFILE="services/ingestion/Dockerfile"
     ECR_REPO="services/ingestion"
     ;;
+  fake-models)
+    DOCKERFILE="services/fake_models/Dockerfile"
+    ECR_REPO="services/fake-models"
+    ;;
   *)
-    echo "ERROR: unknown service '${SERVICE}'. Must be 'api', 'ray', or 'ingestion'." >&2
+    echo "ERROR: unknown service '${SERVICE}'. Must be 'api', 'ray', 'ingestion', or 'fake-models'." >&2
     exit 1
     ;;
 esac
