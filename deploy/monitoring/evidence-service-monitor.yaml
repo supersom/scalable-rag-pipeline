@@ -1,0 +1,26 @@
+# deploy/monitoring/evidence-service-monitor.yaml
+#
+# PodMonitor for kube-prometheus-stack to scrape the API's /metrics endpoint, which now serves
+# the evidence delivery metrics (services/api/app/evaluation/delivery_metrics.py) alongside the
+# existing libs/observability/metrics.py counters, all on the same process-wide registry.
+#
+#   kubectl apply -f deploy/monitoring/evidence-service-monitor.yaml
+
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: api-metrics
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - default
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
