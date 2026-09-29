@@ -154,6 +154,12 @@ rm -f "$STAGING_VALUES_FILE"
 trap - EXIT
 
 echo "--- 4. Evidence delivery components ---"
+# Clear any pre-exported production values from the operator's shell: deploy_evidence_delivery.sh
+# prefers these over freshly-fetched Terraform outputs ("${VAR:-$(terraform ...)}"), so a stale
+# export left over from a prior production deploy in the same shell session would otherwise leak
+# production queue/bucket/KMS/role/image/limit values into this staging deploy.
+unset EVIDENCE_QUEUE_URL EVIDENCE_BUCKET_NAME EVIDENCE_KMS_KEY_ID EVIDENCE_WORKER_ROLE_ARN EVIDENCE_CONSUMER_ROLE_ARN API_IMAGE_TAG MAINTENANCE_LIMIT
+
 # Unlike production's dark launch, staging's app-env-secret already has EVAL_EVIDENCE_ENABLED=true
 # (step 2 above) — the worker needs to actually run here to validate delivery, so override the
 # 0-replica dark-launch default.

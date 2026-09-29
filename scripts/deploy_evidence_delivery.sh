@@ -31,6 +31,18 @@ MAINTENANCE_LIMIT="${MAINTENANCE_LIMIT:-100}"
 # delivery in app-env-secret (deploy_staging_evidence.sh) override this to 1.
 WORKER_REPLICAS="${WORKER_REPLICAS:-0}"
 
+# Guard against namespace/Terraform-dir mismatches: prevents a stale EVIDENCE_*/API_IMAGE_TAG/
+# MAINTENANCE_LIMIT export in the operator's shell, or a simple copy-paste mistake, from deploying
+# one environment's Terraform outputs into the other environment's namespace.
+if [[ "$NAMESPACE" == "default" && "$TERRAFORM_DIR" == *terraform-staging ]]; then
+  echo "ERROR: refusing to deploy staging Terraform outputs into the default (production) namespace." >&2
+  exit 1
+fi
+if [[ "$NAMESPACE" == "staging-evidence" && "$TERRAFORM_DIR" != *terraform-staging ]]; then
+  echo "ERROR: refusing to deploy production Terraform outputs into the staging-evidence namespace." >&2
+  exit 1
+fi
+
 for command in aws kubectl terraform sed; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "ERROR: required command not found: ${command}" >&2
