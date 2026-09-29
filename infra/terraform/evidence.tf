@@ -9,6 +9,31 @@ resource "aws_kms_key" "evidence" {
   description             = "Evidence delivery archive encryption"
   deletion_window_in_days = 30
   enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableRootAdministration"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid    = "AllowEvidenceIRSARolesToUseKey"
+        Effect = "Allow"
+        Principal = {
+          AWS = [
+            module.evidence_worker_irsa_role.iam_role_arn,
+            module.evidence_drain_consumer_irsa_role.iam_role_arn,
+          ]
+        }
+        Action   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
+        Resource = "*"
+      }
+    ]
+  })
 }
 
 resource "aws_kms_alias" "evidence" {
@@ -180,7 +205,7 @@ resource "aws_iam_policy" "evidence_drain_consumer" {
         }
       },
       {
-        Action   = ["kms:GenerateDataKey", "kms:Encrypt", "kms:Decrypt"]
+        Action   = ["kms:GenerateDataKey", "kms:Decrypt"]
         Effect   = "Allow"
         Resource = aws_kms_key.evidence.arn
       }

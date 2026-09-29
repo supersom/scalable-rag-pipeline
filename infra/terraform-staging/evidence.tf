@@ -8,6 +8,31 @@ resource "aws_kms_key" "staging_evidence" {
   description             = "Staging evidence delivery archive encryption"
   deletion_window_in_days = 7 # shorter than prod — staging is disposable
   enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableRootAdministration"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid    = "AllowEvidenceIRSARolesToUseKey"
+        Effect = "Allow"
+        Principal = {
+          AWS = [
+            module.staging_evidence_worker_irsa_role.iam_role_arn,
+            module.staging_evidence_drain_consumer_irsa_role.iam_role_arn,
+          ]
+        }
+        Action   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
+        Resource = "*"
+      }
+    ]
+  })
 }
 
 resource "aws_s3_bucket" "staging_evidence" {
@@ -176,7 +201,7 @@ resource "aws_iam_policy" "staging_evidence_drain_consumer" {
         }
       },
       {
-        Action   = ["kms:GenerateDataKey", "kms:Encrypt", "kms:Decrypt"]
+        Action   = ["kms:GenerateDataKey", "kms:Decrypt"]
         Effect   = "Allow"
         Resource = aws_kms_key.staging_evidence.arn
       }
