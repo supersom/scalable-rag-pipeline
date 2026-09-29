@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-models
+  namespace: staging-evidence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fake-models
+  template:
+    metadata:
+      labels:
+        app: fake-models
+    spec:
+      containers:
+        - name: fake-models
+          image: FAKE_MODELS_IMAGE
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-models
+  namespace: staging-evidence
+spec:
+  selector:
+    app: fake-models
+  ports:
+    - port: 8000
+      targetPort: 8000
