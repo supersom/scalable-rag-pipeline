@@ -17,12 +17,17 @@ output "staging_evidence_queue_url" {
 
 output "staging_evidence_bucket_name" {
   description = "S3 bucket for the staging drain consumer's queue-archive objects."
-  value       = aws_s3_bucket.staging_evidence.id
+  value       = local.staging_evidence_bucket_id
 }
 
 output "staging_evidence_kms_key_arn" {
   description = "KMS key ARN required on every write to the staging evidence bucket."
-  value       = aws_kms_key.staging_evidence.arn
+  value       = local.staging_evidence_kms_key_arn
+}
+
+output "staging_evidence_bucket_mode" {
+  description = "Persisted choice of whether this state created the bucket or reuses a retained bucket."
+  value       = var.staging_evidence_bucket_mode
 }
 
 output "staging_evidence_worker_irsa_role_arn" {

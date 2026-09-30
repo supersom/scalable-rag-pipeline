@@ -4,3 +4,7 @@
 aws_region   = "us-east-1"
 cluster_name = "rag-platform-cluster"
 vpc_cidr     = "10.0.0.0/16"
+
+# Use scripts/apply_staging_terraform.sh to select and persist the bucket mode.
+# For a direct Terraform command, set the mode explicitly and, in existing mode,
+# set staging_evidence_existing_kms_key_arn to the bucket's SSE-KMS key ARN.

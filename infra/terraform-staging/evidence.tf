@@ -1,76 +1,101 @@
 # infra/terraform-staging/evidence.tf
 #
-# Staging mirror of infra/terraform/evidence.tf (production) — its own KMS/S3/SQS/IAM,
-# scoped to the "staging-evidence" namespace, disposable (force_destroy, short KMS deletion
-# window). References data.aws_iam_openid_connect_provider.existing instead of module.eks.
+# The bucket mode is selected once by scripts/apply_staging_terraform.sh and
+# saved as a Terraform output. A retained bucket stays outside this state;
+# a newly created bucket and key stay managed by this state. Both paths use
+# the same lifecycle, queue, and IAM configuration.
+
+locals {
+  create_staging_evidence_bucket = var.staging_evidence_bucket_mode == "create"
+  staging_evidence_bucket_id     = local.create_staging_evidence_bucket ? aws_s3_bucket.staging_evidence[0].id : data.aws_s3_bucket.staging_evidence[0].id
+  staging_evidence_bucket_arn    = local.create_staging_evidence_bucket ? aws_s3_bucket.staging_evidence[0].arn : data.aws_s3_bucket.staging_evidence[0].arn
+  staging_evidence_kms_key_arn   = local.create_staging_evidence_bucket ? aws_kms_key.staging_evidence[0].arn : data.aws_kms_key.staging_evidence[0].arn
+}
+
+data "aws_kms_key" "staging_evidence" {
+  count  = local.create_staging_evidence_bucket ? 0 : 1
+  key_id = var.staging_evidence_existing_kms_key_arn
+
+  lifecycle {
+    precondition {
+      condition     = var.staging_evidence_existing_kms_key_arn != ""
+      error_message = "Existing bucket mode requires its SSE-KMS key ARN. Run bash scripts/apply_staging_terraform.sh apply instead of a direct terraform apply."
+    }
+  }
+}
+
+data "aws_s3_bucket" "staging_evidence" {
+  count  = local.create_staging_evidence_bucket ? 0 : 1
+  bucket = "${var.cluster_name}-evidence-staging-7649"
+}
 
 resource "aws_kms_key" "staging_evidence" {
+  count                   = local.create_staging_evidence_bucket ? 1 : 0
   description             = "Staging evidence delivery archive encryption"
-  deletion_window_in_days = 7 # shorter than prod — staging is disposable
+  deletion_window_in_days = 7
   enable_key_rotation     = true
 
+  # The account principal enables IAM policies to delegate key use to the
+  # drain consumer without creating a dependency cycle through its IAM role.
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Sid       = "EnableRootAdministration"
-        Effect    = "Allow"
-        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
-        Action    = "kms:*"
-        Resource  = "*"
-      },
-      {
-        Sid    = "AllowEvidenceIRSARolesToUseKey"
-        Effect = "Allow"
-        Principal = {
-          AWS = [
-            module.staging_evidence_worker_irsa_role.iam_role_arn,
-            module.staging_evidence_drain_consumer_irsa_role.iam_role_arn,
-          ]
-        }
-        Action   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
-        Resource = "*"
-      }
-    ]
+    Statement = [{
+      Sid       = "EnableAccountIAMPolicies"
+      Effect    = "Allow"
+      Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+      Action    = "kms:*"
+      Resource  = "*"
+    }]
   })
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_s3_bucket" "staging_evidence" {
+  count         = local.create_staging_evidence_bucket ? 1 : 0
   bucket        = "${var.cluster_name}-evidence-staging-7649"
-  force_destroy = true # disposable — safe to tear down without manual emptying
+  force_destroy = false
 
   tags = {
     Name = "Staging evidence delivery archive"
   }
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
-resource "aws_s3_bucket_versioning" "staging_evidence_ver" {
-  bucket = aws_s3_bucket.staging_evidence.id
+resource "aws_s3_bucket_versioning" "staging_evidence" {
+  count  = local.create_staging_evidence_bucket ? 1 : 0
+  bucket = aws_s3_bucket.staging_evidence[0].id
   versioning_configuration {
     status = "Enabled"
   }
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "staging_evidence_sse" {
-  bucket = aws_s3_bucket.staging_evidence.id
+resource "aws_s3_bucket_server_side_encryption_configuration" "staging_evidence" {
+  count  = local.create_staging_evidence_bucket ? 1 : 0
+  bucket = aws_s3_bucket.staging_evidence[0].id
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.staging_evidence.arn
+      kms_master_key_id = aws_kms_key.staging_evidence[0].arn
     }
     bucket_key_enabled = true
   }
 }
 
-# Denies any write that doesn't request this key's SSE-KMS, enforcing server-side what the
-# application already requests client-side. StringNotEquals (not StringNotEqualsIfExists) is
-# deliberate — a missing SSE-KMS header must trigger the Deny, not be silently exempted.
+# A new bucket needs the same write restriction already present on the retained bucket.
 data "aws_iam_policy_document" "staging_evidence_bucket" {
+  count = local.create_staging_evidence_bucket ? 1 : 0
+
   statement {
     sid       = "DenyNonKmsWrites"
     effect    = "Deny"
     actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.staging_evidence.arn}/*"]
+    resources = ["${aws_s3_bucket.staging_evidence[0].arn}/*"]
 
     principals {
       type        = "*"
@@ -80,18 +105,19 @@ data "aws_iam_policy_document" "staging_evidence_bucket" {
     condition {
       test     = "StringNotEquals"
       variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"
-      values   = [aws_kms_key.staging_evidence.arn]
+      values   = [aws_kms_key.staging_evidence[0].arn]
     }
   }
 }
 
 resource "aws_s3_bucket_policy" "staging_evidence" {
-  bucket = aws_s3_bucket.staging_evidence.id
-  policy = data.aws_iam_policy_document.staging_evidence_bucket.json
+  count  = local.create_staging_evidence_bucket ? 1 : 0
+  bucket = aws_s3_bucket.staging_evidence[0].id
+  policy = data.aws_iam_policy_document.staging_evidence_bucket[0].json
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "staging_evidence_lifecycle" {
-  bucket = aws_s3_bucket.staging_evidence.id
+  bucket = local.staging_evidence_bucket_id
 
   rule {
     id     = "expire-archive-content"
@@ -186,14 +212,14 @@ resource "aws_iam_policy" "staging_evidence_drain_consumer" {
         Action = ["s3:PutObject", "s3:GetObject"]
         Effect = "Allow"
         Resource = [
-          "${aws_s3_bucket.staging_evidence.arn}/queue-archive/*",
-          "${aws_s3_bucket.staging_evidence.arn}/queue-archive-conflict/*"
+          "${local.staging_evidence_bucket_arn}/queue-archive/*",
+          "${local.staging_evidence_bucket_arn}/queue-archive-conflict/*"
         ]
       },
       {
         Action   = ["s3:ListBucket"]
         Effect   = "Allow"
-        Resource = aws_s3_bucket.staging_evidence.arn
+        Resource = local.staging_evidence_bucket_arn
         Condition = {
           StringLike = {
             "s3:prefix" = ["queue-archive/*"]
@@ -203,7 +229,7 @@ resource "aws_iam_policy" "staging_evidence_drain_consumer" {
       {
         Action   = ["kms:GenerateDataKey", "kms:Decrypt"]
         Effect   = "Allow"
-        Resource = aws_kms_key.staging_evidence.arn
+        Resource = local.staging_evidence_kms_key_arn
       }
     ]
   })

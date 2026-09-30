@@ -17,3 +17,19 @@ variable "vpc_cidr" {
   type        = string
   default     = "10.0.0.0/16"
 }
+
+variable "staging_evidence_bucket_mode" {
+  description = "Pinned bucket choice: existing reuses retained storage, create makes a protected bucket and key. Use scripts/apply_staging_terraform.sh to select it."
+  type        = string
+
+  validation {
+    condition     = contains(["existing", "create"], var.staging_evidence_bucket_mode)
+    error_message = "staging_evidence_bucket_mode must be existing or create."
+  }
+}
+
+variable "staging_evidence_existing_kms_key_arn" {
+  description = "KMS key configured on a retained staging evidence bucket; only used in existing mode."
+  type        = string
+  default     = ""
+}
