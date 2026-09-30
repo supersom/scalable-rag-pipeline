@@ -192,6 +192,7 @@ def ensure_fresh_volumes(
 
 def replacement_from_snapshots(
     aws_call: Callable[[list[str]], dict], snapshot_ids: dict[int, str], attempt_id: str,
+    *, cluster: str = "rag-platform-cluster",
 ) -> dict[int, str]:
     if set(snapshot_ids) != {0, 1, 2}:
         raise RecoveryError("replacement requires three snapshots")
@@ -205,8 +206,35 @@ def replacement_from_snapshots(
                 or tags.get("qdrant-ordinal") != str(ordinal)):
             raise RecoveryError("replacement source snapshot is not verified")
     replacements: dict[int, str] = {}
+    token = None
+    while True:
+        args = ["ec2", "describe-volumes", "--filters",
+                f"Name=tag:recovery-attempt,Values={attempt_id}",
+                "Name=tag:qdrant-volume-origin,Values=restored"]
+        if token:
+            args += ["--next-token", token]
+        result = aws_call(args)
+        for row in result.get("Volumes", []):
+            tags = tags_of(row)
+            try:
+                ordinal = int(tags["qdrant-recovery-ordinal"])
+            except (KeyError, ValueError) as exc:
+                raise RecoveryError("replacement volume has malformed ordinal") from exc
+            if (ordinal not in snapshot_ids or ordinal in replacements
+                    or tags.get("restored-from-snapshot") != snapshot_ids[ordinal]
+                    or tags.get(CLUSTER_TAG) != cluster
+                    or row.get("AvailabilityZone") != "us-east-1b" or row.get("Size") != 50
+                    or row.get("State") not in {"available", "in-use"}):
+                raise RecoveryError("ambiguous or unsafe replacement volume")
+            replacements[ordinal] = row["VolumeId"]
+        token = result.get("NextToken")
+        if not token:
+            break
     for ordinal, snapshot_id in sorted(snapshot_ids.items()):
+        if ordinal in replacements:
+            continue
         tags = {
+            CLUSTER_TAG: cluster,
             "qdrant-recovery-ordinal": str(ordinal),
             "qdrant-volume-origin": "restored",
             "recovery-attempt": attempt_id,
@@ -220,7 +248,9 @@ def replacement_from_snapshots(
         volume_id = result.get("VolumeId")
         if not isinstance(volume_id, str) or not volume_id:
             raise RecoveryError("replacement volume creation returned no ID")
-        _wait_volume(aws_call, volume_id)
+        row = _wait_volume(aws_call, volume_id)
+        if tags_of(row) != tags:
+            raise RecoveryError("replacement volume tags changed during creation")
         replacements[ordinal] = volume_id
     return replacements
 

@@ -137,9 +137,21 @@ echo "--- 1b. Redis (required by the API's /health/readiness probe; not otherwis
 kubectl apply -f "${ROOT_DIR}/deploy/k8s/staging-redis.yaml"
 kubectl rollout status deployment/redis --namespace "$NAMESPACE" --timeout=5m
 
-echo "--- 1c. Qdrant (required by lifespan()'s eager ensure_collection() call; not otherwise used) ---"
-kubectl apply -f "${ROOT_DIR}/deploy/k8s/staging-qdrant.yaml"
-kubectl rollout status deployment/qdrant --namespace "$NAMESPACE" --timeout=5m
+echo "--- 1c. Persistent Qdrant recovery ---"
+# The old single-pod staging Qdrant is intentionally not removed here. It is
+# independent of the three-replica recovered service in default and remains
+# available until the recovered service passes its direct data gate.
+if [[ -n "${STAGING_QDRANT_RESTORE_ATTEMPT:-}" ]]; then
+  QDRANT_RECOVERY_RESULT="$(python3 "${SCRIPT_DIR}/staging_qdrant_recovery.py" restore \
+    --region "$REGION" --cluster "$CLUSTER_NAME" --namespace "$NAMESPACE" \
+    --attempt-id "$STAGING_QDRANT_RESTORE_ATTEMPT")"
+else
+  QDRANT_RECOVERY_RESULT="$(python3 "${SCRIPT_DIR}/staging_qdrant_recovery.py" apply \
+    --region "$REGION" --cluster "$CLUSTER_NAME" --namespace "$NAMESPACE")"
+fi
+echo "$QDRANT_RECOVERY_RESULT"
+QDRANT_RECOVERY_ATTEMPT="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("attempt_id", ""))' \
+  <<< "$QDRANT_RECOVERY_RESULT")"
 
 echo "--- 1d. OTEL collector ---"
 kubectl apply -f "${ROOT_DIR}/deploy/k8s/staging-otel-collector.yaml"
@@ -222,7 +234,7 @@ env:
   - name: LOG_LEVEL
     value: "INFO"
   - name: QDRANT_HOST
-    value: "qdrant"
+    value: "qdrant.default.svc.cluster.local"
   - name: QDRANT_PORT
     value: "6333"
   - name: QDRANT_COLLECTION
@@ -274,7 +286,7 @@ helm upgrade --install api-staging "${ROOT_DIR}/deploy/helm/api" \
   --set replicaCount=1 \
   --set fullnameOverride=api-staging \
   -f "$STAGING_VALUES_FILE" \
-  --wait --timeout 5m
+  --atomic --wait --timeout 5m
 
 rm -f "$STAGING_VALUES_FILE"
 trap - EXIT
@@ -289,7 +301,24 @@ unset EVIDENCE_QUEUE_URL EVIDENCE_BUCKET_NAME EVIDENCE_KMS_KEY_ID EVIDENCE_WORKE
 # Unlike production's dark launch, staging's app-env-secret already has EVAL_EVIDENCE_ENABLED=true
 # (step 2 above) — the worker needs to actually run here to validate delivery, so override the
 # 0-replica dark-launch default.
-NAMESPACE="$NAMESPACE" TERRAFORM_DIR="$TERRAFORM_DIR" WORKER_REPLICAS=1 bash "${SCRIPT_DIR}/deploy_evidence_delivery.sh"
+if ! NAMESPACE="$NAMESPACE" TERRAFORM_DIR="$TERRAFORM_DIR" WORKER_REPLICAS=1 bash "${SCRIPT_DIR}/deploy_evidence_delivery.sh"; then
+  if [[ -n "$QDRANT_RECOVERY_ATTEMPT" ]]; then
+    python3 "${SCRIPT_DIR}/staging_qdrant_recovery.py" rollback-api \
+      --region "$REGION" --cluster "$CLUSTER_NAME" --namespace "$NAMESPACE" \
+      --attempt-id "$QDRANT_RECOVERY_ATTEMPT" || true
+  fi
+  echo "ERROR: evidence delivery failed; recovery snapshots retained" >&2
+  exit 1
+fi
+
+if [[ -n "$QDRANT_RECOVERY_ATTEMPT" ]]; then
+  echo "--- 5. Correlated API retrieval and snapshot cleanup ---"
+  python3 "${SCRIPT_DIR}/staging_qdrant_recovery.py" finalize \
+    --region "$REGION" --cluster "$CLUSTER_NAME" --namespace "$NAMESPACE" \
+    --attempt-id "$QDRANT_RECOVERY_ATTEMPT"
+else
+  echo "--- 5. Existing Qdrant reused; no temporary snapshots to clean up ---"
+fi
 
 echo "--- Staging evidence stack deployed ---"
 echo "Port-forward the staging API: kubectl port-forward -n ${NAMESPACE} deployment/api-staging 18000:8000"

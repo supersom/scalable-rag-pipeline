@@ -79,6 +79,28 @@ Then open `http://127.0.0.1:8089` and choose the simulated user count, spawn rat
 
 The scenario sends the same warranty question at randomized one-to-five-second intervals. Each simulated user creates fresh session IDs for most requests and reuses one of its recent IDs on every fifth request. Four of each five requests send `X-Load-Test-Bypass-Cache: 1`, including the reused-session request, so they exercise the agent and memory path; the fourth request uses semantic caching normally. This header is honored only when `LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED=true` in a `dev`, `local`, or `staging` API environment. `.env.example` enables it for the local Compose stack; the staging deploy script reads it from the selected env file. Production defaults to disabled. Bypassed requests skip both cache lookup and cache write, leaving the ordinary cached path available for comparison. Locust now consumes the stream, marks embedded error or missing-answer events as failures, and measures through the last event. It does not grade answer quality.
 
+### Persistent Qdrant in staging
+
+`scripts/deploy_staging_evidence.sh` now invokes the Qdrant recovery command before the API Helm upgrade. The command examines exact ordinal EBS ownership in `us-east-1b`. A complete retained set is snapshotted and version-probed before the three-replica Qdrant StatefulSet in `default` is started; an entirely absent set gets three encrypted, statically bound 50-GiB volumes. Partial or ambiguous sets stop deployment. The staging API then uses `qdrant.default.svc.cluster.local`, rather than the separate ephemeral service in `staging-evidence`. The ephemeral service is not deleted by this workflow.
+
+Run a read-only check before deployment:
+
+```bash
+python3 scripts/staging_qdrant_recovery.py check --region us-east-1 --cluster rag-platform-cluster
+```
+
+The normal deploy calls `apply`, prints the branch, attempt ID, volume IDs and temporary snapshot IDs, then upgrades the API. After evidence delivery starts, its `finalize` phase requires an authenticated cache-bypassing retrieval and a persisted safe evidence record correlated by run ID. Only then does it delete snapshots owned by that attempt. Set `LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED=true` in the selected staging `.env.evidence` (or explicit `STAGING_ENV_FILE`); otherwise finalization fails closed. Do not put API keys in commands or committed files.
+
+If the deploy stops, keep the reported attempt ID. A rerun reuses a healthy, already-bound set and carries an unfinished attempt into finalization. An incomplete snapshot set, changed EBS IDs, foreign attachment, or unfinalized replacement needs inspection; the command does not silently create a new dataset. On a failed API probe, the API Helm release is rolled back and temporary snapshots remain. Failed snapshot cleanup is reported, not treated as a successful finalization.
+
+After diagnosing a post-mount failure, an operator may explicitly restore *new* EBS volumes from that attempt's three completed snapshots, leaving the original EBS volumes untouched:
+
+```bash
+STAGING_QDRANT_RESTORE_ATTEMPT=ATTEMPT_ID bash scripts/deploy_staging_evidence.sh
+```
+
+`restore` stops Qdrant, waits for the originals to detach, replaces only the exact retained PV/PVC bindings, and verifies the replacement before returning. It does not delete the originals or snapshots. For a restored attempt, `finalize` verifies API retrieval, marks the replacement volumes active for later discovery, and only then removes attempt-owned snapshots. These local tests exercise guarded command behavior without deploying to AWS; the live acceptance checks are a separate step.
+
 ## Fake model behavior
 
 The fake service implements:

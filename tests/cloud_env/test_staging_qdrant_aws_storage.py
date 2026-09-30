@@ -72,6 +72,10 @@ class FakeAws:
             }
             return {"VolumeId": volume_id}
         if op == "describe-volumes":
+            if "--filters" in args:
+                return {"Volumes": [row for row in self.volumes.values()
+                        if {"Key": "recovery-attempt", "Value": args[3].split("Values=", 1)[1]} in row["Tags"]
+                        and {"Key": "qdrant-volume-origin", "Value": "restored"} in row["Tags"]]}
             ids = args[args.index("--volume-ids") + 1:]
             return {"Volumes": [self.volumes[i] for i in ids]}
         raise AssertionError(f"unexpected fake operation: {op}")
@@ -152,3 +156,34 @@ def test_replacements_use_snapshots_without_deleting_originals():
     assert set(replacements) == {0, 1, 2}
     assert all("--snapshot-id" in call for call in aws.calls if call[1] == "create-volume")
     assert not any(call[1] == "delete-volume" for call in aws.calls)
+
+
+def test_replacement_retry_reuses_exact_attempt_volumes():
+    aws = FakeAws()
+    ids = snapshot_retained(aws, retained_inventory(), "attempt-1", timeout_seconds=0.1)
+    first = replacement_from_snapshots(aws, ids, "attempt-1")
+    created = sum(call[1] == "create-volume" for call in aws.calls)
+    second = replacement_from_snapshots(aws, ids, "attempt-1")
+    assert second == first
+    assert sum(call[1] == "create-volume" for call in aws.calls) == created
+
+
+def test_replacement_partial_retry_creates_only_missing_ordinals():
+    aws = FakeAws()
+    ids = snapshot_retained(aws, retained_inventory(), "attempt-1", timeout_seconds=0.1)
+    first = replacement_from_snapshots(aws, ids, "attempt-1")
+    del aws.volumes[first[2]]
+    retried = replacement_from_snapshots(aws, ids, "attempt-1")
+    assert retried[0] == first[0] and retried[1] == first[1]
+    assert retried[2] != first[2]
+
+
+def test_duplicate_replacement_ordinal_fails_closed():
+    aws = FakeAws()
+    ids = snapshot_retained(aws, retained_inventory(), "attempt-1", timeout_seconds=0.1)
+    first = replacement_from_snapshots(aws, ids, "attempt-1")
+    duplicate = dict(aws.volumes[first[0]], VolumeId="vol-duplicate")
+    aws.volumes["vol-duplicate"] = duplicate
+    with pytest.raises(RecoveryError, match="ambiguous"):
+        replacement_from_snapshots(aws, ids, "attempt-1")
+    assert len([call for call in aws.calls if call[1] == "create-volume"]) == 3
