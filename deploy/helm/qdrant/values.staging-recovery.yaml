@@ -1,0 +1,17 @@
+# Pinned image/chart versions are selected by scripts/staging_qdrant/kubernetes.py.
+# Claims and PVs are created statically before Helm runs.
+replicaCount: 3
+updateVolumeFsOwnership: false
+podManagementPolicy: Parallel
+nodeSelector:
+  topology.kubernetes.io/zone: us-east-1b
+persistence:
+  size: 50Gi
+  storageClassName: ""
+resources:
+  requests:
+    cpu: "500m"
+    memory: "1Gi"
+  limits:
+    cpu: "2"
+    memory: "4Gi"
