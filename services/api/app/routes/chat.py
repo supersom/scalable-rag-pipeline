@@ -19,7 +19,7 @@ from services.api.app.evaluation.runtime import active_runtime
 from services.api.app.evaluation.configuration import configuration_fingerprint
 from services.api.app.config import settings
 
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import APIRouter, Depends, BackgroundTasks, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -91,7 +91,8 @@ async def chat_stream(
     # Inject dependencies via FastAPI Depends
     cache: SemanticCache = Depends(get_semantic_cache),
     memory: PostgresMemory = Depends(get_memory),
-    llm: RayLLMClient = Depends(get_llm_client)
+    llm: RayLLMClient = Depends(get_llm_client),
+    load_test_cache_bypass: str | None = Header(default=None, alias="X-Load-Test-Bypass-Cache"),
 ):
     """
     Main Chat Endpoint (Streaming).
@@ -101,11 +102,16 @@ async def chat_stream(
     run_id = str(uuid.uuid4())
     session_id = req.session_id or str(uuid.uuid4())
     user_id = user["id"]
+    bypass_cache = (
+        settings.ENV in {"dev", "local"}
+        and settings.LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED
+        and load_test_cache_bypass == "1"
+    )
     parent_context = context.get_current()
     started_at = time.time_ns()
     span = tracer.start_span(
         "agent.run", context=parent_context, start_time=started_at,
-        attributes={"run_id": run_id, "cache.hit": False},
+        attributes={"run_id": run_id, "cache.hit": False, "cache.bypassed": bypass_cache},
     )
     finished = False
     error_type = None
@@ -161,7 +167,12 @@ async def chat_stream(
         is_cacheable = True  # default; overridden by planner output
 
         with domain_span("cache.lookup") as lookup:
-            cached_ans = await cache.get_cached_response(req.message)
+            if bypass_cache:
+                cached_ans = None
+                lookup.set_attribute("operation.status", "skipped")
+                lookup.set_attribute("cache.skip_reason", "local_load_test")
+            else:
+                cached_ans = await cache.get_cached_response(req.message)
             lookup.set_attribute("cache.hit", bool(cached_ans))
         trace.get_current_span().set_attribute("cache.hit", bool(cached_ans))
         if cached_ans:
@@ -208,7 +219,10 @@ async def chat_stream(
         if final_answer:
             await persist(final_answer)
             with domain_span("cache.write") as write:
-                if is_cacheable and _is_successful_answer(final_answer):
+                if bypass_cache:
+                    write.set_attribute("operation.status", "skipped")
+                    write.set_attribute("cache.skip_reason", "local_load_test")
+                elif is_cacheable and _is_successful_answer(final_answer):
                     await cache.set_cached_response(req.message, final_answer)
                 else:
                     write.set_attribute("operation.status", "skipped")
