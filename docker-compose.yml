@@ -37,6 +37,22 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  qdrant-init:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    profiles: ["eval-local"]
+    command: ["python", "-m", "services.api.app.local_qdrant_init"]
+    restart: "no"
+    environment:
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_COLLECTION: rag_collection
+      EMBED_DIM: ${EMBED_DIM:-1024}
+    depends_on:
+      qdrant:
+        condition: service_started
+
   # 4. Neo4j (Graph DB)
   neo4j:
     image: neo4j:5.16.0-community
@@ -112,6 +128,8 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+      qdrant-init:
+        condition: service_completed_successfully
       neo4j:
         condition: service_started
       fake-models:
@@ -123,6 +141,7 @@ services:
     environment:
       ENV: dev
       LOG_LEVEL: INFO
+      LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED: ${LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED:-true}
       DATABASE_URL: postgresql+asyncpg://ragadmin:changeme@postgres:5432/rag_db
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
@@ -136,11 +155,21 @@ services:
       S3_BUCKET_NAME: ${S3_BUCKET_NAME:-rag-platform-docs-dev}
       S3_ENDPOINT_URL: http://s3-emulator:4566
       EVAL_EVIDENCE_BUCKET: ${EVAL_EVIDENCE_BUCKET:-eval-traces}
+      # Hosted OpenAI-compatible endpoints take precedence when configured in .env.
+      # Otherwise the existing deterministic fake-model endpoints remain the default.
       RAY_LLM_ENDPOINT: http://fake-models:8000/v1/chat/completions
       RAY_EMBED_ENDPOINT: http://fake-models:8000/api/embeddings
-      LLM_MODEL_NAME: fake-local-llm
-      EMBED_MODEL_NAME: fake-local-embed
+      LLM_API_ENDPOINT: ${LLM_API_ENDPOINT:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL_NAME: ${LLM_MODEL_NAME:-fake-local-llm}
+      LLM_MODEL_ID: ${LLM_MODEL_ID:-}
+      EMBED_API_ENDPOINT: ${EMBED_API_ENDPOINT:-}
+      EMBED_API_KEY: ${EMBED_API_KEY:-}
+      EMBED_MODEL_NAME: ${EMBED_MODEL_NAME:-fake-local-embed}
       EMBED_DIM: ${EMBED_DIM:-1024}
+      RERANK_API_ENDPOINT: ${RERANK_API_ENDPOINT:-}
+      RERANK_API_KEY: ${RERANK_API_KEY:-}
+      RERANK_MODEL_NAME: ${RERANK_MODEL_NAME:-}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-local-dev-only-change-me}
       JWT_ALGORITHM: HS256
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317

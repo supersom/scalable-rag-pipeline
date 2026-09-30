@@ -98,7 +98,7 @@ def test_eval_local_compose_profile_is_self_contained():
     assert result.returncode == 0, result.stderr
     compose = json.loads(result.stdout)
     services = compose["services"]
-    assert {"api-local", "fake-models", "otel-collector", "s3-emulator"} <= services.keys()
+    assert {"api-local", "fake-models", "otel-collector", "s3-emulator", "qdrant-init"} <= services.keys()
     assert "minio" not in services
     assert "localstack" not in services
     assert services["s3-emulator"]["build"]["dockerfile"] == "services/aws_emulator/Dockerfile"
@@ -130,6 +130,10 @@ def test_eval_local_compose_profile_is_self_contained():
     assert str(fake_port["target"]) == "8000"
 
     api = services["api-local"]
+    qdrant_init = services["qdrant-init"]
+    assert qdrant_init["command"] == ["python", "-m", "services.api.app.local_qdrant_init"]
+    assert qdrant_init["environment"]["EMBED_DIM"] == api["environment"]["EMBED_DIM"]
+    assert api["depends_on"]["qdrant-init"]["condition"] == "service_completed_successfully"
     assert str(api["ports"][0]["published"]) == "18000"
     assert str(api["ports"][0]["target"]) == "8000"
     assert api["environment"]["RAY_LLM_ENDPOINT"] == "http://fake-models:8000/v1/chat/completions"
