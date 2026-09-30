@@ -58,7 +58,7 @@ Stop the stack:
 make local-down
 ```
 
-Compose preserves the PostgreSQL, Qdrant, and Neo4j named volumes unless they are explicitly removed. The Moto S3 service is intentionally ephemeral and recreates the versioned `eval-traces` bucket on startup.
+Compose preserves the PostgreSQL, Qdrant, and Neo4j named volumes unless they are explicitly removed. A one-shot `qdrant-init` job creates the `rag_collection` collection with the configured `EMBED_DIM` and Cosine distance before the API starts. It preserves existing points and fails on an incompatible vector configuration rather than recreating the collection. The collection starts empty on a fresh volume; ingest documents before testing retrieval quality. The Moto S3 service is intentionally ephemeral and recreates the versioned `eval-traces` bucket on startup.
 
 ## Run an optional load test
 
@@ -77,7 +77,7 @@ make load-test
 
 Then open `http://127.0.0.1:8089` and choose the simulated user count, spawn rate, and duration. By default the scenario in `scripts/load_test.py` targets `http://127.0.0.1:18000`; override it with `make load-test LOAD_TEST_HOST=http://...`.
 
-The scenario sends authenticated streaming chat requests at randomized one-to-five-second intervals, consumes each response stream, and records non-200 responses as failures. It measures traffic behavior and endpoint performance; it does not grade answer quality. Its fixed session identifier intentionally represents repeated turns in one shared conversation, so use distinct session IDs before interpreting it as independent-user traffic.
+The scenario sends the same warranty question at randomized one-to-five-second intervals. Each simulated user creates fresh session IDs for most requests and reuses one of its recent IDs on every fifth request. Four of each five requests send `X-Load-Test-Bypass-Cache: 1`, including the reused-session request, so they exercise the agent and memory path; the fourth request uses semantic caching normally. This header is honored only when `LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED=true` in a `dev` or `local` API environment. The Compose API enables it, while production defaults to disabled. Bypassed requests skip both cache lookup and cache write, leaving the ordinary cached path available for comparison. Locust now consumes the stream, marks embedded error or missing-answer events as failures, and measures through the last event. It does not grade answer quality.
 
 ## Fake model behavior
 
