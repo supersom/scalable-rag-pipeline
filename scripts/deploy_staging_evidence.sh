@@ -9,11 +9,64 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 
+# Load only model-provider settings from a dotenv file. Bash does not load these
+# files automatically, and sourcing one would execute arbitrary shell content.
+# Prefer the private evidence config, then the safe checked-in sample. The sample
+# has blank hosted endpoints and keys, which keeps staging on fake-models when
+# private credentials are unavailable. Set STAGING_ENV_FILE to choose another
+# file explicitly.
+STAGING_ENV_FILE="${STAGING_ENV_FILE:-}"
+if [[ -z "$STAGING_ENV_FILE" ]]; then
+  for candidate in "${ROOT_DIR}/.env.evidence" "${ROOT_DIR}/.env.example"; do
+    if [[ -f "$candidate" ]]; then
+      STAGING_ENV_FILE="$candidate"
+      break
+    fi
+  done
+elif [[ "$STAGING_ENV_FILE" != /* ]]; then
+  if [[ -f "$PWD/$STAGING_ENV_FILE" ]]; then
+    STAGING_ENV_FILE="$PWD/$STAGING_ENV_FILE"
+  else
+    STAGING_ENV_FILE="${ROOT_DIR}/${STAGING_ENV_FILE}"
+  fi
+fi
+
+if [[ -n "$STAGING_ENV_FILE" ]]; then
+  if [[ ! -f "$STAGING_ENV_FILE" ]]; then
+    echo "ERROR: STAGING_ENV_FILE does not exist: ${STAGING_ENV_FILE}" >&2
+    exit 1
+  fi
+  while IFS= read -r env_line || [[ -n "$env_line" ]]; do
+    env_line="${env_line%$'\r'}"
+    env_line="${env_line#"${env_line%%[![:space:]]*}"}"
+    [[ -z "$env_line" || "$env_line" == \#* ]] && continue
+    [[ "$env_line" == export\ * ]] && env_line="${env_line#export }"
+    [[ "$env_line" =~ ^([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]] || continue
+    env_key="${BASH_REMATCH[1]}"
+    case "$env_key" in
+      LLM_API_ENDPOINT|LLM_API_KEY|LLM_MODEL_NAME|LLM_MODEL_ID|\
+      EMBED_API_ENDPOINT|EMBED_API_KEY|EMBED_MODEL_NAME|EMBED_DIM|\
+      RERANK_API_ENDPOINT|RERANK_API_KEY|RERANK_MODEL_NAME|\
+      LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED) ;;
+      *) continue ;;
+    esac
+    env_value="${BASH_REMATCH[2]}"
+    env_value="${env_value#"${env_value%%[![:space:]]*}"}"
+    env_value="${env_value%"${env_value##*[![:space:]]}"}"
+    if [[ ${#env_value} -ge 2 && ( "$env_value" == \"*\" || "$env_value" == \'*\' ) ]]; then
+      env_value="${env_value:1:${#env_value}-2}"
+    fi
+    printf -v "$env_key" '%s' "$env_value"
+    export "$env_key"
+  done < "$STAGING_ENV_FILE"
+  echo "Loaded hosted-model settings from ${STAGING_ENV_FILE}"
+fi
+
 REGION="${REGION:-us-east-1}"
 NAMESPACE="staging-evidence"
 TERRAFORM_DIR="${ROOT_DIR}/infra/terraform-staging"
 
-for command in aws kubectl terraform helm sed openssl; do
+for command in aws kubectl terraform helm sed openssl python3; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "ERROR: required command not found: ${command}" >&2
     exit 1
@@ -31,6 +84,34 @@ if ! CLUSTER_STATUS="$(aws eks describe-cluster --name "$CLUSTER_NAME" --region 
 fi
 if [[ "$CLUSTER_STATUS" != "ACTIVE" ]]; then
   echo "ERROR: EKS cluster ${CLUSTER_NAME} is ${CLUSTER_STATUS}, not ACTIVE; wait for the canonical infra/terraform owner state to finish before deploying staging." >&2
+  exit 1
+fi
+
+# The shared cluster and staging evidence resources have separate Terraform states.
+# Check the staging state before creating any Kubernetes resources so a missing
+# database or queue fails with an actionable message instead of an empty SecretId.
+if ! STAGING_OUTPUTS="$(terraform -chdir="$TERRAFORM_DIR" output -json)"; then
+  echo "ERROR: cannot read staging Terraform outputs from ${TERRAFORM_DIR}. Run terraform init there and check its backend access." >&2
+  exit 1
+fi
+if ! python3 -c '
+import json, sys
+outputs = json.load(sys.stdin)
+required = (
+    "staging_db_endpoint",
+    "staging_db_secret_arn",
+    "staging_evidence_queue_url",
+    "staging_evidence_bucket_name",
+    "staging_evidence_kms_key_arn",
+    "staging_evidence_worker_irsa_role_arn",
+    "staging_evidence_drain_consumer_irsa_role_arn",
+)
+missing = [name for name in required if not outputs.get(name, {}).get("value")]
+if missing:
+    print("ERROR: missing staging Terraform outputs: " + ", ".join(missing), file=sys.stderr)
+    sys.exit(1)
+' <<< "$STAGING_OUTPUTS"; then
+  echo "Review and apply staging Terraform with: bash scripts/apply_staging_terraform.sh plan; bash scripts/apply_staging_terraform.sh apply" >&2
   exit 1
 fi
 
