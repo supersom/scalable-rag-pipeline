@@ -9,6 +9,7 @@ from services.api.app.agents.state import AgentState
 from services.api.app.clients.qdrant import qdrant_client
 from services.api.app.clients.neo4j import neo4j_client
 from services.api.app.clients.ray_embed import embed_client
+from services.api.app.clients.reranker import reranker_client
 from services.api.app.config import settings
 from langchain_core.runnables import RunnableConfig
 
@@ -26,6 +27,8 @@ class RetrievedItem:
     score: float | None
     rank: int
     metadata: dict
+    retrieval_rank: int | None = None
+    rerank_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -47,7 +50,7 @@ def _item(source, payload, rank, score=None, point_id=None):
         source, str(document_id) if document_id is not None else None,
         metadata.get("document_version") or metadata.get("content_hash"),
         str(chunk_id) if chunk_id is not None else None,
-        content, hashlib.sha256(content.encode()).hexdigest(), score, rank, metadata,
+        content, hashlib.sha256(content.encode()).hexdigest(), score, rank, metadata, rank,
     )
 
 
@@ -114,6 +117,20 @@ async def retrieve_context(query: str) -> RetrievalResult:
         items = _deduplicate(vector_items + graph_items)
         if error is not None:
             mark_failure(span, error, status="partial")
+        if items and reranker_client.enabled:
+            try:
+                ranked = await reranker_client.rerank(query, [item.content for item in items])
+                if ranked:
+                    items = [replace(items[result.index], rank=rank, rerank_score=result.score)
+                             for rank, result in enumerate(ranked, 1)]
+                span.set_attribute("retrieval.reranker_status", "success")
+            except Exception as exc:
+                # Reranking is an optional quality enhancement: provider outages
+                # must not turn otherwise successful retrieval into a hard failure.
+                span.set_attribute("retrieval.reranker_status", "error")
+                mark_failure(span, exc, status="partial")
+        else:
+            span.set_attribute("retrieval.reranker_status", "skipped")
         span.set_attribute("retrieval.result_count", len(items))
         span.set_attribute("retrieval.vector_status", "success")
         span.set_attribute("retrieval.graph_status", failure_status(error) if error is not None else "success")
@@ -130,7 +147,9 @@ def _record_result(span, result):
         span.record('hit', facts={key: value for key, value in {
             'retrieval_source': item.retrieval_source, 'document_id': item.document_id,
             'document_version': item.document_version, 'chunk_id': item.chunk_id,
-            'rank': item.rank, 'score': item.score, 'content_hash': item.content_hash,
+            'rank': item.rank, 'retrieval_rank': item.retrieval_rank,
+            'score': item.score, 'rerank_score': item.rerank_score,
+            'content_hash': item.content_hash,
         }.items() if value is not None}, content={'chunk': span.content(item.content, provenance=proof)})
         if item.retrieval_source == 'qdrant':
             filename = item.metadata.get('filename', 'unknown')

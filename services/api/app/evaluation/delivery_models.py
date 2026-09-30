@@ -163,7 +163,9 @@ class SafeConfiguration(Contract):
 
 class SafeRetrievalItem(Contract):
     rank: PositiveInt
+    retrieval_rank: PositiveInt | None = None
     score: float | None = Field(default=None, allow_inf_nan=False)
+    rerank_score: float | None = Field(default=None, allow_inf_nan=False)
     document_pseudonym: str | None = None
     chunk_pseudonym: str | None = None
     content_digest_pseudonym: str | None = None

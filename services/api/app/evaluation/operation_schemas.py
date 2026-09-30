@@ -62,7 +62,9 @@ def register_api_operation_schemas() -> None:
                 "document_version": _text("evidence_only", length=1024),
                 "chunk_id": _text("evidence_only", length=1024),
                 "rank": _number(int, "evidence_only"),
+                "retrieval_rank": _number(int, "evidence_only"),
                 "score": _number(float, "evidence_only"),
+                "rerank_score": _number(float, "evidence_only"),
                 "content_hash": _text("derived_digest", length=71),
             }, frozenset({"chunk"})),
             "result": PhaseRule({

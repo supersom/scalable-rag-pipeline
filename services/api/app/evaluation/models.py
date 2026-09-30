@@ -48,7 +48,9 @@ class RetrievedEvidence(EvidenceModel):
     document_version: str | None = None
     chunk_id: str | None = None
     rank: int = Field(gt=0)
+    retrieval_rank: int | None = Field(default=None, gt=0)
     score: float | None = None
+    rerank_score: float | None = None
     content_hash: str
     content_ref: str | None = None
 

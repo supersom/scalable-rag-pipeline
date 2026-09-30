@@ -9,6 +9,7 @@ import services.api.app.logging  # noqa: F401 — activates JSON log handler
 from services.api.app.cache.semantic import semantic_cache
 from services.api.app.clients.neo4j import neo4j_client
 from services.api.app.clients.ray_embed import embed_client
+from services.api.app.clients.reranker import reranker_client
 from services.api.app.clients.ray_llm import llm_client
 from services.api.app.config import settings
 from services.api.app.evaluation.delivery_config import DeliveryConfig
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI):
         neo4j_client.connect()
         await llm_client.start()
         await embed_client.start()
+        await reranker_client.start()
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         await semantic_cache.ensure_collection()
@@ -50,6 +52,7 @@ async def lifespan(app: FastAPI):
                 await neo4j_client.close()
                 await llm_client.close()
                 await embed_client.close()
+                await reranker_client.close()
             finally:
                 await shutdown_observability(app)
 
