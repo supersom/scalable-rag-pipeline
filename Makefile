@@ -1,6 +1,10 @@
 # Makefile
 
-LOCAL_COMPOSE = docker compose -p scalable-rag-eval --profile eval-local --env-file .env.example
+LOCAL_ENV_FILE := $(if $(wildcard .env.evidence),.env.evidence,.env.example)
+# Shell exports take precedence over --env-file. Clear provider settings in the
+# credential-free fallback so a stray export cannot switch local runs to hosted models.
+LOCAL_FAKE_ENV = env -u LLM_API_ENDPOINT -u LLM_API_KEY -u LLM_MODEL_NAME -u LLM_MODEL_ID -u EMBED_API_ENDPOINT -u EMBED_API_KEY -u EMBED_MODEL_NAME -u EMBED_DIM -u RERANK_API_ENDPOINT -u RERANK_API_KEY -u RERANK_MODEL_NAME -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY
+LOCAL_COMPOSE = $(if $(filter .env.example,$(LOCAL_ENV_FILE)),$(LOCAL_FAKE_ENV) )docker compose -p scalable-rag-eval --profile eval-local --env-file $(LOCAL_ENV_FILE)
 EVIDENCE_COMPOSE = $(LOCAL_COMPOSE) -f docker-compose.yml -f docker-compose.evaluation.yml
 EVIDENCE_WAIT_SECONDS ?= 300
 LOAD_TEST_HOST ?= http://127.0.0.1:18000

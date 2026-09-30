@@ -398,7 +398,7 @@ Only complete when every claimed version was resolved; partial deletion is resum
 
 **Commit:** `feat(local): orchestrate evidence migrations and delivery workers`
 
-**Files:** Modify `docker-compose.yml`, `.env.example`, `Makefile`, `services/aws_emulator/requirements.txt`, `services/aws_emulator/entrypoint.sh`; create `services/aws_emulator/init_eval_queue.py`, `docker-compose.evaluation.yml`, `tests/local_env/test_eval_queue.py`, and extend `test_local_configuration.py`/`test_aws_emulator.py`. The inspected entrypoint starts Moto then runs `init_s3`; keep that sequence and add evaluation queue initialization after S3 readiness. Mount the single synthetic fixture manifest created in Task 2; do not copy arbitrary private test data into images.
+**Files:** Modify `docker-compose.yml`, `.env.evidence`, `Makefile`, `services/aws_emulator/requirements.txt`, `services/aws_emulator/entrypoint.sh`; create `services/aws_emulator/init_eval_queue.py`, `docker-compose.evaluation.yml`, `tests/local_env/test_eval_queue.py`, and extend `test_local_configuration.py`/`test_aws_emulator.py`. The inspected entrypoint starts Moto then runs `init_s3`; keep that sequence and add evaluation queue initialization after S3 readiness. Mount the single synthetic fixture manifest created in Task 2; do not copy arbitrary private test data into images.
 
 **Interfaces:** `init_eval_queue.ensure_queues(client, queue_name, dlq_name) -> dict[str, str]`; module CLI prints safe queue initialization status. Make targets `local-evidence-up`, `local-evidence-down`, `local-evidence-check`, `local-evidence-smoke`. Existing `local-up/check/smoke` contracts remain valid.
 
@@ -457,7 +457,7 @@ def test_live_delivery_links_stored_versions(live_run):
 - [x] Run new live tests before expected integration is complete and verify the observed failure. Make only scoped integration fixes supported by those failures; any spec change goes back to review.
 - [x] Add real-PG/worker restart with pending committed records and broker outage. Inject acknowledgement-before-mark failure through a test-owned worker/repository wrapper, not a production flag; prove identical redelivery and transactional test-consumer dedup/conflict. Use container stop/start only for dedicated local evaluation worker, preserving DB volumes and ingestion services.
 - [x] Add partial upload/DB admission failure, header/body disconnect, buffer overflow, slow SDK/shutdown, missing tenant/unapproved flattened source, failed delete/resume, and controlled-clock expiry acceptance. Clock injection is DI in test-owned runtime/maintenance components; do not add an API clock-control endpoint.
-- [x] Run `RUN_EVAL_POSTGRES_TESTS=1 EVAL_TEST_DATABASE_URL=postgresql+asyncpg://ragadmin:changeme@127.0.0.1:15432/rag_db pytest tests/evaluation_delivery/test_outbox_postgres.py tests/evaluation_delivery/test_migrations.py -q` using the isolated schemas; the port/credentials match the inspected `.env.example`. Then run `make local-evidence-smoke`, `make local-smoke`, all delivery/observability tests and full pytest. Record exact counts/skips and which failures were exercised; no guessed future totals.
+- [x] Run `RUN_EVAL_POSTGRES_TESTS=1 EVAL_TEST_DATABASE_URL=postgresql+asyncpg://ragadmin:changeme@127.0.0.1:15432/rag_db pytest tests/evaluation_delivery/test_outbox_postgres.py tests/evaluation_delivery/test_migrations.py -q` using the isolated schemas; the port/credentials match the inspected `.env.evidence`. Then run `make local-evidence-smoke`, `make local-smoke`, all delivery/observability tests and full pytest. Record exact counts/skips and which failures were exercised; no guessed future totals.
 - [x] Run pinned API-container tests with a read-only checkout test mount and explicitly installed pinned test requirements; match the existing PR 3 verification approach. Inspect no unsafe logs/metric labels; commit acceptance tests and scoped fixes green.
 
 ## Task 11: Operating docs and final verification
@@ -473,7 +473,7 @@ def test_live_delivery_links_stored_versions(live_run):
 make local-evidence-up
 make local-evidence-check
 make local-evidence-smoke
-docker compose -p scalable-rag-eval --profile eval-local --env-file .env.example -f docker-compose.yml -f docker-compose.evaluation.yml run --rm evidence-delivery python -m services.evaluation_delivery.maintenance cleanup --dry-run --limit 100
+docker compose -p scalable-rag-eval --profile eval-local --env-file .env.evidence -f docker-compose.yml -f docker-compose.evaluation.yml run --rm evidence-delivery python -m services.evaluation_delivery.maintenance cleanup --dry-run --limit 100
 ```
 
 The apply/retry commands require explicit targets; never present bucket/database-wide resets as cleanup. Specify that queue/trace/backups/datasets need their own production retention policies.

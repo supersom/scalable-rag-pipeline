@@ -19,7 +19,7 @@ Operating guide for the PR 4 evidence path: redacted synthetic payloads in versi
 | Default | `make local-up`, or any deployment without the evidence flags | `EVAL_EVIDENCE_ENABLED=false` and `EVAL_CAPTURE_CONTENT=false`. No runtime, buffers, S3/SQS clients, or background work are created. PR 3 behavior is unchanged. |
 | Opt-in evidence | `make local-evidence-up` | Layers `docker-compose.evaluation.yml` over the base file. Runs a one-shot `evidence-migrate` job, recreates `api-local` with delivery and synthetic content capture enabled, and starts the `evidence-delivery` worker. |
 
-Never enable the evidence flags in `.env` or `.env.example`; `.env.example` sets both to `false` and also carries the queue, bucket, and KMS values the override reuses. The override is the only place they are enabled, and it supplies its own dummy identity key, literal dummy AWS credentials (so exported developer credentials are not passed through), and the synthetic manifest mount.
+Never enable the evidence flags in `.env`, `.env.example`, or `.env.evidence`; the selected base file sets both to `false` and carries the queue, bucket, and KMS values the override reuses. The Git-ignored `.env.evidence` is used when present; otherwise `make` uses the safe `.env.example` and forces fake-model settings even if hosted credentials are exported in the shell. The override is the only place evidence flags are enabled, and it supplies its own dummy identity key, literal dummy AWS credentials (so exported developer credentials are not passed through), and the synthetic manifest mount. Content capture is only safe with synthetic inputs and fake models; do not use hosted providers with this opt-in profile.
 
 The override reuses the `scalable-rag-eval` project, so `make local-evidence-up` **recreates `api-local` in the running local stack** and adds the migration job and worker. `make local-evidence-down` stops the stack without removing volumes. Do not run either against a stack whose services you do not want recreated; use a separate Compose project name if you need both modes at once.
 
@@ -41,7 +41,8 @@ Local endpoints (all loopback): API `http://127.0.0.1:18000`, PostgreSQL `127.0.
 Maintenance commands run in a one-off container from the same image and environment as the worker:
 
 ```bash
-EVIDENCE_RUN="docker compose -p scalable-rag-eval --profile eval-local --env-file .env.example -f docker-compose.yml -f docker-compose.evaluation.yml run --rm evidence-delivery python -m services.evaluation_delivery.maintenance"
+ENV_FILE=.env.example; test ! -f .env.evidence || ENV_FILE=.env.evidence
+EVIDENCE_RUN="docker compose -p scalable-rag-eval --profile eval-local --env-file $ENV_FILE -f docker-compose.yml -f docker-compose.evaluation.yml run --rm evidence-delivery python -m services.evaluation_delivery.maintenance"
 
 $EVIDENCE_RUN cleanup --dry-run --limit 100
 $EVIDENCE_RUN cleanup --apply --limit 100

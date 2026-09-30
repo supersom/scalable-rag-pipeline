@@ -306,8 +306,7 @@ def _make_recipe(target: str) -> list[str]:
 
 def test_default_make_targets_are_unchanged():
     makefile = (REPO_ROOT / "Makefile").read_text()
-    assert ("LOCAL_COMPOSE = docker compose -p scalable-rag-eval --profile eval-local "
-            "--env-file .env.example\n") in makefile
+    assert "LOCAL_ENV_FILE := $(if $(wildcard .env.evidence),.env.evidence,.env.example)" in makefile
     assert _make_recipe("local-up") == ["$(LOCAL_COMPOSE) up -d --build --wait"]
     assert _make_recipe("local-down") == ["$(LOCAL_COMPOSE) down"]
     assert _make_recipe("local-check") == ["$(LOCAL_COMPOSE) config --quiet", "pytest tests/local_env -q"]

@@ -180,7 +180,7 @@ Keep the real-graph acceptance amendments here: they require the route to create
 - [x] Stage these three files.
 - [x] Verify the staged snapshot; run `pytest tests/observability -q --tb=short` inside it.
 - [x] Expect 87 focused cases; full suite reference count: 245 passed, 2 skips.
-- [x] Rebuild the local API with `docker compose -p scalable-rag-eval --profile eval-local --env-file .env.example up -d --build --wait api-local`.
+- [x] Rebuild the local API with `docker compose -p scalable-rag-eval --profile eval-local --env-file .env.evidence up -d --build --wait api-local`.
 - [x] Run `make local-check` and `make local-smoke`; expect 18 passed/2 opt-in skips and 4 passed respectively.
 - [x] Run the focused suite against pinned API dependencies using the staged snapshot:
 

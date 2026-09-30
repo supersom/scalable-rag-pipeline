@@ -46,7 +46,11 @@ done
   exit 2
 }
 
-compose=(docker compose -p scalable-rag-eval --profile eval-local --env-file .env.example -f docker-compose.yml)
+env_file=.env.example
+if [[ -f .env.evidence ]]; then
+  env_file=.env.evidence
+fi
+compose=(docker compose -p scalable-rag-eval --profile eval-local --env-file "$env_file" -f docker-compose.yml)
 args=(logs --no-color --since "$since")
 if [[ "$follow" == true ]]; then
   args+=(--follow)

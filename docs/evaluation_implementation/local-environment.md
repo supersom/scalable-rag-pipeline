@@ -101,7 +101,7 @@ Send `x-fake-scenario: error` to either endpoint to receive a provider-style `50
 
 ## Configuration
 
-The local profile reads [.env.example](../../.env.example). Its credentials and JWT secret are local-only placeholders.
+The local profile reads the private, Git-ignored `.env.evidence` when present. Otherwise it reads the committed [.env.example](../../.env.example), clears exported hosted-model settings for the Compose command, and uses CPU-only fake models. Keep real API keys only in `.env.evidence`; the sample contains local-only placeholder credentials and a JWT secret.
 
 The containerized API uses service DNS names internally, while host tools use the alternate loopback ports above. Run the API through `make local-up` for reproducible dependency versions. Running it from an arbitrary host Python environment can introduce client/server version drift.
 

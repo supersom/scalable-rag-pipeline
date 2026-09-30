@@ -78,7 +78,7 @@ For a prompt assembled from a query, template, and retrieved documents, the call
 - Add `services/api/app/evaluation/instrumentation_adapter.py`; reuse `context.py`, `capture.py`, and provenance/redaction code behind it.
 - Extend `evaluation/models.py`, `delivery_models.py`, and `metadata_export.py` for safe versioned operation events and the one generic content slot. Update `payloads.py` to validate its deterministic slot path. Keep existing specialized fields, object-key shapes, and envelope integrity checks.
 - Register schemas and the adapter in API startup. Migrate `routes/chat.py`, agent nodes, and backend clients in slices so new call sites import only the shared instrumentation surface. Leave the storage runtime, payload store, outbox, publisher, and worker behavior intact.
-- Document the developer recipe for a new operation schema and a new reviewer node. Update `.env.example` only if configuration changes prove necessary; none are planned.
+- Document the developer recipe for a new operation schema and a new reviewer node. Update `.env.evidence` only if configuration changes prove necessary; none are planned.
 
 ## Acceptance criteria
 

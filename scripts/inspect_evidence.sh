@@ -60,7 +60,11 @@ if [[ -n "$run_id" && ! "$run_id" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:
   exit 2
 fi
 
-compose=(docker compose -p scalable-rag-eval --profile eval-local --env-file .env.example -f docker-compose.yml -f docker-compose.evaluation.yml)
+env_file=.env.example
+if [[ -f .env.evidence ]]; then
+  env_file=.env.evidence
+fi
+compose=(docker compose -p scalable-rag-eval --profile eval-local --env-file "$env_file" -f docker-compose.yml -f docker-compose.evaluation.yml)
 psql=("${compose[@]}" exec -T postgres psql -X -P pager=off -U ragadmin -d rag_db)
 filter=TRUE
 if [[ -n "$run_id" ]]; then

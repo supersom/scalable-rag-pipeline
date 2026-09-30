@@ -16,7 +16,7 @@
 - Preserve the unrelated untracked documentation listed under "Explicit exclusions."
 - For each module, run and record the red test state before staging, implement the module, rerun to green, and then commit the test and implementation together.
 - Every landed commit must pass its focused tests. No intentionally red commit may enter repository history.
-- Do not commit real credentials. `.env.example` contains local-only placeholders.
+- Do not commit real credentials. `.env.evidence` contains local-only placeholders.
 - Keep every published development port bound to `127.0.0.1`.
 - Keep production-run instrumentation out of this series. This series prepares the local environment; Gap 1 PR 1 implements tracing and run identity.
 - Do not push unless the user requests it.
@@ -196,7 +196,7 @@ Do not stage these unrelated untracked documents in this series:
 - Create: `tests/test_pytest_configuration.py`
 - Create: `pytest.ini`
 - Create: `requirements-loadtest.txt`
-- Modify: `.env.example`
+- Modify: `.env.evidence`
 - Modify: `docker-compose.yml`
 - Modify: `Makefile`
 
@@ -263,7 +263,7 @@ Do not stage these unrelated untracked documents in this series:
 - [ ] Stage the acceptance specification and orchestration together, then commit the green unit:
 
   ```bash
-  git add scripts/smoke_local_env.py tests/local_env/test_local_configuration.py tests/local_env/test_running_stack.py tests/test_pytest_configuration.py pytest.ini requirements-loadtest.txt .env.example docker-compose.yml Makefile
+  git add scripts/smoke_local_env.py tests/local_env/test_local_configuration.py tests/local_env/test_running_stack.py tests/test_pytest_configuration.py pytest.ini requirements-loadtest.txt .env.evidence docker-compose.yml Makefile
   git diff --cached --stat
   git diff --cached --check
   git commit -m "feat(local-eval): add isolated evaluation stack"
@@ -285,7 +285,7 @@ Do not stage these unrelated untracked documents in this series:
 - [ ] Check the documented commands and links:
 
   ```bash
-  test -f .env.example
+  test -f .env.evidence
   test -f docs/evaluation_implementation/local-environment.md
   rg -n "make local-check|make local-up|make local-smoke|make local-down|make load-test" docs/evaluation_implementation/local-environment.md
   ```

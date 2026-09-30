@@ -138,7 +138,7 @@ Consumes commits 1–4. Adds cache lookup/write and memory load/persist boundari
 
 - [x] Stage these three files.
 - [x] Verify the staged snapshot; focused command: `pytest tests/observability -q`.
-- [x] Rebuild the isolated API: `docker compose -p scalable-rag-eval --profile eval-local --env-file .env.example up -d --build --wait api-local`.
+- [x] Rebuild the isolated API: `docker compose -p scalable-rag-eval --profile eval-local --env-file .env.evidence up -d --build --wait api-local`.
 - [x] Run `make local-check` and `make local-smoke`.
 - [x] Run focused tests against pinned dependencies in a disposable API-image container, mounting the staged snapshot read-only:
 
