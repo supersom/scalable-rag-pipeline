@@ -4,8 +4,11 @@ LOCAL_COMPOSE = docker compose -p scalable-rag-eval --profile eval-local --env-f
 EVIDENCE_COMPOSE = $(LOCAL_COMPOSE) -f docker-compose.yml -f docker-compose.evaluation.yml
 EVIDENCE_WAIT_SECONDS ?= 300
 LOAD_TEST_HOST ?= http://127.0.0.1:18000
+CLOUD_SMOKE_NAMESPACE ?= staging-evidence
+CLOUD_SMOKE_API_DEPLOYMENT ?= api-staging
+CLOUD_SMOKE_PORT ?= 18080
 
-.PHONY: help install dev ray-serve ray-stop up down local-up local-down local-check local-smoke local-evidence-up local-evidence-down local-evidence-check local-evidence-smoke inspect-traces inspect-evidence load-test-install load-test deploy test infra
+.PHONY: help install dev ray-serve ray-stop up down local-up local-down local-check local-smoke cloud-smoke local-evidence-up local-evidence-down local-evidence-check local-evidence-smoke inspect-traces inspect-evidence load-test-install load-test deploy test infra
 
 help:
 	@echo "RAG Platform Commands:"
@@ -17,6 +20,7 @@ help:
 	@echo "  make local-down - Stop the complete local evaluation stack"
 	@echo "  make local-check - Validate the local Compose profile and run its contract tests"
 	@echo "  make local-smoke - Exercise the running local stack end to end"
+	@echo "  make cloud-smoke - Exercise the staging EKS API and fake-models end to end"
 	@echo "  make inspect-traces - Show recent spans from local Collector logs"
 	@echo "  make inspect-evidence - Query persisted local evidence (requires evidence stack)"
 	@echo "  make local-evidence-up    - Local stack plus evidence migrations, SQS queues and delivery worker"
@@ -51,6 +55,9 @@ local-check:
 
 local-smoke:
 	RUN_LOCAL_STACK_TESTS=1 pytest tests/local_env/test_running_stack.py tests/local_env/test_otel_collector.py -q
+
+cloud-smoke:
+	CLOUD_SMOKE_NAMESPACE="$(CLOUD_SMOKE_NAMESPACE)" CLOUD_SMOKE_API_DEPLOYMENT="$(CLOUD_SMOKE_API_DEPLOYMENT)" CLOUD_SMOKE_PORT="$(CLOUD_SMOKE_PORT)" python scripts/smoke_cloud_env.py
 
 inspect-traces:
 	./scripts/inspect_traces.sh $(ARGS)
