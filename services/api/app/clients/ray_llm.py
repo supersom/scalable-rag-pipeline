@@ -34,7 +34,9 @@ class RayLLMClient:
     Async Client with proper Connection Pooling.
     """
     def __init__(self):
-        self.endpoint = settings.RAY_LLM_ENDPOINT 
+        # OpenAI and OpenRouter expose the Chat Completions contract this client
+        # already consumes. Leaving LLM_API_ENDPOINT unset preserves Ray/fake mode.
+        self.endpoint = settings.LLM_API_ENDPOINT or settings.RAY_LLM_ENDPOINT
         # Client is initialized in startup_event
         self.client: Optional[httpx.AsyncClient] = None
 
@@ -65,7 +67,8 @@ class RayLLMClient:
         logger=None,
     )
     async def _request(self, payload):
-        return await self.client.post(self.endpoint, json=payload)
+        headers = {"Authorization": f"Bearer {settings.LLM_API_KEY}"} if settings.LLM_API_KEY else None
+        return await self.client.post(self.endpoint, json=payload, headers=headers)
 
     async def chat_completion_result(self, messages: List[Dict], temperature: float = 0.7, json_mode: bool = False, max_tokens: int = 1024, *, provenance=None, purpose=None) -> LLMResult:
         """`provenance` proves these exact messages (e.g. a flattened, component-proven prompt);

@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # General
     ENV: str = "prod"
     LOG_LEVEL: str = "INFO"
+    LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED: bool = False
 
     # OTLP/gRPC when an endpoint is set; console export is opt-in.
     OTEL_SERVICE_NAME: str = "rag-api-service"
@@ -85,12 +86,22 @@ class Settings(BaseSettings):
     # Ray Serve / Ollama (Internal LLM/Embeddings) / External LLM API
     RAY_LLM_ENDPOINT: str = "http://llm-service:8000/llm/chat/completions"
     RAY_EMBED_ENDPOINT: str = "http://embed-service:8000/embed/embeddings"
+    # Optional OpenAI-compatible hosted endpoints. When unset, retain the existing
+    # Ray/fake-model endpoint behavior. OpenRouter can be selected by setting these
+    # to its API URLs and using its model slugs.
+    LLM_API_ENDPOINT: Optional[str] = None
     LLM_MODEL_NAME: str = "llama3.2:3b"
     LLM_MODEL_ID: Optional[str] = None
     LLM_API_KEY: Optional[str] = None  # set for HuggingFace, Together AI, etc.
     LLM_TIMEOUT: float = 120.0
+    EMBED_API_ENDPOINT: Optional[str] = None
+    EMBED_API_KEY: Optional[str] = None
     EMBED_MODEL_NAME: str = "nomic-embed-text"
     EMBED_DIM: int = 1024  # BGE-M3 output dimension; set 768 for local nomic-embed-text
+    RERANK_API_ENDPOINT: Optional[str] = None
+    RERANK_API_KEY: Optional[str] = None
+    RERANK_MODEL_NAME: Optional[str] = None
+    RERANK_TIMEOUT: float = 30.0
     
     # Security
     JWT_SECRET_KEY: str
