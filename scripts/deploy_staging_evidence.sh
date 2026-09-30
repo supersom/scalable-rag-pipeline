@@ -60,6 +60,10 @@ echo "--- 1c. Qdrant (required by lifespan()'s eager ensure_collection() call; n
 kubectl apply -f "${ROOT_DIR}/deploy/k8s/staging-qdrant.yaml"
 kubectl rollout status deployment/qdrant --namespace "$NAMESPACE" --timeout=5m
 
+echo "--- 1d. OTEL collector ---"
+kubectl apply -f "${ROOT_DIR}/deploy/k8s/staging-otel-collector.yaml"
+kubectl rollout status deployment/otel-collector --namespace "$NAMESPACE" --timeout=5m
+
 echo "--- 2. Staging app-env-secret ---"
 STAGING_DB_ENDPOINT="$(terraform -chdir="$TERRAFORM_DIR" output -raw staging_db_endpoint)"
 STAGING_DB_SECRET_ARN="$(terraform -chdir="$TERRAFORM_DIR" output -raw staging_db_secret_arn)"
@@ -89,7 +93,7 @@ STAGING_REDIS_URL="${STAGING_REDIS_URL:-redis://redis:6379/0}"
 # its base env via `envFrom: secretRef: app-env-secret`, so worker.main() only stops exiting 2
 # once these two keys exist in this secret. Metadata-only delivery is the validated shape in
 # staging — content capture stays off everywhere in PR 5a.
-kubectl create secret generic app-env-secret --namespace "$NAMESPACE" \
+STAGING_SECRET_ARGS=(
   --from-literal=DATABASE_URL="$STAGING_DATABASE_URL" \
   --from-literal=JWT_SECRET_KEY="$STAGING_JWT_SECRET" \
   --from-literal=EVAL_IDENTITY_HASH_KEY="$STAGING_IDENTITY_KEY" \
@@ -97,22 +101,25 @@ kubectl create secret generic app-env-secret --namespace "$NAMESPACE" \
   --from-literal=EVAL_CAPTURE_CONTENT="false" \
   --from-literal=REDIS_URL="$STAGING_REDIS_URL" \
   --from-literal=NEO4J_PASSWORD="unused-in-staging-evidence" \
-  --from-literal=S3_BUCKET_NAME="unused-in-staging-evidence" \
-  --dry-run=client -o yaml | kubectl apply -f -
+  --from-literal=S3_BUCKET_NAME="unused-in-staging-evidence"
+)
+# Provider credentials are supplied by the operator's environment (for example, from a
+# protected .env file) and stored only in the namespace Secret—not in Helm values or a ConfigMap.
+for provider_key in LLM_API_KEY EMBED_API_KEY RERANK_API_KEY; do
+  if [[ -n "${!provider_key:-}" ]]; then
+    STAGING_SECRET_ARGS+=("--from-literal=${provider_key}=${!provider_key}")
+  fi
+done
+kubectl create secret generic app-env-secret --namespace "$NAMESPACE" \
+  "${STAGING_SECRET_ARGS[@]}" --dry-run=client -o yaml | kubectl apply -f -
 
 echo "--- 3. Staging API Helm release ---"
 STAGING_EVIDENCE_QUEUE_URL="$(terraform -chdir="$TERRAFORM_DIR" output -raw staging_evidence_queue_url)"
 
-# Helm's list-valued fields (like `env`) cannot be safely patched by scalar `--set-string
-# env[N]...` calls: deploy/helm/api/values.yaml's default `env` list has 13 entries and
-# deploy/helm/api/templates/deployment.yaml's `{{- range .Values.env }}` renders every entry with
-# no de-duplication by name, so K8s' last-wins env-var precedence means any chart-default entry
-# the script doesn't happen to overwrite by index (e.g. RAY_LLM_ENDPOINT/RAY_EMBED_ENDPOINT at
-# indices 8-9, pointing at production Ray Serve) survives untouched in the rendered pod spec —
-# silently routing staging evidence traffic at production model-serving infrastructure. A `-f`
-# values file, unlike `--set`, fully replaces a list field, so the whole `env` array is written
-# out explicitly below: every chart default is either carried over unchanged or replaced with its
-# staging value, and nothing from the chart's own default list can leak through by accident.
+# Helm's list-valued `env` field cannot be safely patched by scalar `--set` calls. The chart's
+# deployment template renders every env entry without de-duplicating names, so an omitted default
+# could accidentally route staging to production Ray endpoints. This values file replaces the
+# complete env list; it also allows explicit hosted endpoints while retaining fake-models by default.
 STAGING_VALUES_FILE="$(mktemp)"
 trap 'rm -f "$STAGING_VALUES_FILE"' EXIT
 
@@ -124,6 +131,8 @@ secretEnvKeys:
   - S3_BUCKET_NAME
   - JWT_SECRET_KEY
   - LLM_API_KEY
+  - EMBED_API_KEY
+  - RERANK_API_KEY
   - TAVILY_API_KEY
   - EVAL_IDENTITY_HASH_KEY
 env:
@@ -147,10 +156,20 @@ env:
     value: "http://fake-models:8000/v1/chat/completions"
   - name: RAY_EMBED_ENDPOINT
     value: "http://fake-models:8000/api/embeddings"
+  - name: LLM_API_ENDPOINT
+    value: "${LLM_API_ENDPOINT:-}"
+  - name: LLM_MODEL_NAME
+    value: "${LLM_MODEL_NAME:-llama3.2:3b}"
+  - name: EMBED_API_ENDPOINT
+    value: "${EMBED_API_ENDPOINT:-}"
   - name: EMBED_DIM
-    value: "1024"
+    value: "${EMBED_DIM:-1024}"
   - name: EMBED_MODEL_NAME
-    value: "BAAI/bge-m3"
+    value: "${EMBED_MODEL_NAME:-BAAI/bge-m3}"
+  - name: RERANK_API_ENDPOINT
+    value: "${RERANK_API_ENDPOINT:-}"
+  - name: RERANK_MODEL_NAME
+    value: "${RERANK_MODEL_NAME:-}"
   - name: JWT_ALGORITHM
     value: "HS256"
   - name: EVAL_EVIDENCE_ENABLED
@@ -159,6 +178,10 @@ env:
     value: "false"
   - name: EVAL_QUEUE_URL
     value: "${STAGING_EVIDENCE_QUEUE_URL}"
+  - name: OTEL_SERVICE_NAME
+    value: "rag-api-service"
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "http://otel-collector:4317"
 EOF
 
 helm upgrade --install api-staging "${ROOT_DIR}/deploy/helm/api" \

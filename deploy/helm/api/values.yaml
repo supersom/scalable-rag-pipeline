@@ -56,6 +56,18 @@ env:
   # document sent to production will be prefixed with instruction text bge-m3 wasn't trained on.
   - name: EMBED_MODEL_NAME
     value: BAAI/bge-m3
+  - name: EMBED_DIM
+    value: "1024"
+  - name: LLM_MODEL_NAME
+    value: llama3.2:3b
+  - name: LLM_API_ENDPOINT
+    value: ""
+  - name: EMBED_API_ENDPOINT
+    value: ""
+  - name: RERANK_API_ENDPOINT
+    value: ""
+  - name: RERANK_MODEL_NAME
+    value: ""
   - name: JWT_ALGORITHM
     value: HS256
 
@@ -66,6 +78,8 @@ secretEnvKeys:
   - S3_BUCKET_NAME
   - JWT_SECRET_KEY
   - LLM_API_KEY
+  - EMBED_API_KEY
+  - RERANK_API_KEY
   - TAVILY_API_KEY
   - EVAL_IDENTITY_HASH_KEY
   - EVAL_EVIDENCE_ENABLED
