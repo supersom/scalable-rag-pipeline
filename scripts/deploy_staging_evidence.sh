@@ -218,7 +218,7 @@ secretEnvKeys:
   - EVAL_IDENTITY_HASH_KEY
 env:
   - name: ENV
-    value: "local"
+    value: "staging"
   - name: LOG_LEVEL
     value: "INFO"
   - name: QDRANT_HOST
@@ -251,6 +251,8 @@ env:
     value: "${RERANK_API_ENDPOINT:-}"
   - name: RERANK_MODEL_NAME
     value: "${RERANK_MODEL_NAME:-}"
+  - name: LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED
+    value: "${LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED:-false}"
   - name: JWT_ALGORITHM
     value: "HS256"
   - name: EVAL_EVIDENCE_ENABLED

@@ -141,7 +141,7 @@ services:
     environment:
       ENV: dev
       LOG_LEVEL: INFO
-      LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED: ${LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED:-true}
+      LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED: ${LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED:-false}
       DATABASE_URL: postgresql+asyncpg://ragadmin:changeme@postgres:5432/rag_db
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333

@@ -39,10 +39,11 @@ class Graph:
         yield {"responder": {"messages": [{"content": "fresh answer"}]}}
 
 
-def test_local_load_header_bypasses_cache_read_and_write_but_loads_memory(route, monkeypatch):
+@pytest.mark.parametrize("environment", ["dev", "staging"])
+def test_enabled_load_header_bypasses_cache_read_and_write_but_loads_memory(route, monkeypatch, environment):
     chat, _, exporter = route
     monkeypatch.setattr(chat, "settings", SimpleNamespace(
-        ENV="dev", LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED=True, EVAL_IDENTITY_HASH_KEY=None,
+        ENV=environment, LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED=True, EVAL_IDENTITY_HASH_KEY=None,
     ))
     monkeypatch.setattr(chat, "agent_app", Graph())
     cache, memory = Cache(), Memory()
@@ -74,8 +75,8 @@ def test_local_load_header_bypasses_cache_read_and_write_but_loads_memory(route,
     assert root.attributes["cache.bypassed"] is True
 
 
-@pytest.mark.parametrize("environment,enabled", [("dev", False), ("prod", True)])
-def test_bypass_header_is_ignored_outside_enabled_local_stack(route, monkeypatch, environment, enabled):
+@pytest.mark.parametrize("environment,enabled", [("dev", False), ("staging", False), ("prod", True)])
+def test_bypass_header_is_ignored_when_disabled_or_in_production(route, monkeypatch, environment, enabled):
     chat, _, _ = route
     monkeypatch.setattr(chat, "settings", SimpleNamespace(
         ENV=environment, LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED=enabled, EVAL_IDENTITY_HASH_KEY=None,

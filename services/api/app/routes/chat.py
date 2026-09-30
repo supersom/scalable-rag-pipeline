@@ -103,7 +103,7 @@ async def chat_stream(
     session_id = req.session_id or str(uuid.uuid4())
     user_id = user["id"]
     bypass_cache = (
-        settings.ENV in {"dev", "local"}
+        settings.ENV in {"dev", "local", "staging"}
         and settings.LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED
         and load_test_cache_bypass == "1"
     )
