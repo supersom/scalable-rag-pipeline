@@ -127,7 +127,7 @@ def test_retained_apply_snapshots_before_any_mount_and_finalizes_after_api():
     assert runtime.operations.index("snapshot-complete") < runtime.operations.index("pv-pvc")
     assert runtime.operations.index("version-gate") < runtime.operations.index("qdrant-ready")
     assert "delete-snapshot" not in runtime.operations
-    run_recovery(runtime, "finalize", attempt_id="attempt-1")
+    run_recovery(runtime, "finalize", attempt_id="attempt-1", delete_snapshots=True)
     assert runtime.operations.index("direct-verify") < runtime.operations.index("api-verify")
     assert runtime.operations.index("api-verify") < runtime.operations.index("delete-snapshot")
 
@@ -162,7 +162,7 @@ def test_failed_api_probe_restores_previous_host_and_retains_snapshots():
     run_recovery(runtime, "apply")
     runtime.fail_api = True
     with pytest.raises(RecoveryError):
-        run_recovery(runtime, "finalize", attempt_id="attempt-1")
+        run_recovery(runtime, "finalize", attempt_id="attempt-1", delete_snapshots=True)
     assert "restore-api-host" in runtime.operations
     assert "delete-snapshot" not in runtime.operations
 
@@ -199,7 +199,7 @@ def test_restored_volumes_are_promoted_only_after_api_verification():
     runtime = FakeRuntime()
     run_recovery(runtime, "apply")
     run_recovery(runtime, "restore", attempt_id="attempt-1")
-    run_recovery(runtime, "finalize", attempt_id="attempt-1")
+    run_recovery(runtime, "finalize", attempt_id="attempt-1", delete_snapshots=True)
     assert runtime.operations.index("api-verify") < runtime.operations.index("promote-replacements")
     assert runtime.operations.index("promote-replacements") < runtime.operations.index("delete-snapshot")
 
@@ -232,4 +232,12 @@ def test_restore_uses_three_snapshots_and_keeps_them_on_replacement_failure():
         run_recovery(runtime, "restore", attempt_id="attempt-1")
     assert runtime.operations.index("stop-qdrant") < runtime.operations.index("replacement-volume-set")
     assert runtime.operations.index("replacement-volume-set") < runtime.operations.index("rebind-replacements")
+    assert "delete-snapshot" not in runtime.operations
+
+
+def test_finalize_keeps_snapshots_unless_deletion_is_requested():
+    runtime = FakeRuntime()
+    run_recovery(runtime, "apply")
+    run_recovery(runtime, "finalize", attempt_id="attempt-1")
+    assert "api-verify" in runtime.operations
     assert "delete-snapshot" not in runtime.operations

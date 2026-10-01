@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from uuid import uuid4
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.staging_qdrant.aws_storage import RecoveryError
 
@@ -14,8 +16,9 @@ from scripts.staging_qdrant.aws_storage import RecoveryError
 QDRANT_HOST = "qdrant.default.svc.cluster.local"
 
 
-def run_recovery(runtime, mode: str, *, attempt_id: str | None = None) -> dict:
-    """Execute one phase; snapshots are deleted only by a verified finalize."""
+def run_recovery(runtime, mode: str, *, attempt_id: str | None = None,
+                 delete_snapshots: bool = False) -> dict:
+    """Execute one phase; snapshots are kept unless finalize is told to delete them."""
     if mode == "check":
         runtime.preflight()
         inventory = runtime.inventory()
@@ -82,7 +85,7 @@ def run_recovery(runtime, mode: str, *, attempt_id: str | None = None) -> dict:
             raise
         if attempt["branch"] == "restored":
             runtime.promote_replacements(attempt)
-        if attempt.get("snapshots"):
+        if delete_snapshots and attempt.get("snapshots"):
             runtime.delete_snapshots({int(i): sid for i, sid in attempt["snapshots"].items()}, attempt_id)
         attempt["status"] = "verified"
         runtime.save_attempt(attempt)
@@ -127,13 +130,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cluster", default="rag-platform-cluster")
     parser.add_argument("--namespace", default="staging-evidence")
     parser.add_argument("--attempt-id")
+    parser.add_argument("--delete-snapshots", action="store_true",
+                        help="finalize only: delete this attempt's snapshots after API verification")
     args = parser.parse_args(argv)
     from scripts.staging_qdrant.runtime import ClusterRuntime
 
     try:
         result = run_recovery(
             ClusterRuntime(region=args.region, cluster=args.cluster, namespace=args.namespace),
-            args.mode, attempt_id=args.attempt_id,
+            args.mode, attempt_id=args.attempt_id, delete_snapshots=args.delete_snapshots,
         )
     except (RecoveryError, ValueError) as exc:
         print(json.dumps({"status": "blocked", "reason": str(exc)}), file=sys.stderr)

@@ -5,6 +5,8 @@ from subprocess import CompletedProcess
 
 import pytest
 
+from scripts.staging_qdrant import kubernetes
+
 from scripts.staging_qdrant.aws_storage import RecoveryError
 from scripts.staging_qdrant.inventory import Volume
 from scripts.staging_qdrant.kubernetes import (
@@ -84,3 +86,16 @@ def test_helm_render_must_show_three_stable_pods_and_storage_mount():
         install_qdrant(run, image_version="v1.7.3", chart_version="0.7.5")
     assert any(args[:2] == ["helm", "template"] for args in calls)
     assert not any(args[:2] == ["helm", "upgrade"] for args in calls)
+
+
+def test_string_peer_versions_from_real_raft_state_are_accepted():
+    raw = json.dumps({"peer_metadata_by_id": {str(i): {"version": "1.19.1"} for i in range(3)}})
+    volumes = tuple(Volume(i, f"vol-{i}", "available", "us-east-1b", 50, {}, ()) for i in range(3))
+    assert probe_storage_version(lambda ordinal, volume: raw, volumes) == "v1.19.1"
+
+
+@pytest.mark.parametrize("version", ["latest", "1.19", ""])
+def test_malformed_string_peer_version_fails_closed(version):
+    raw = json.dumps({"peer_metadata_by_id": {"1": {"version": version}}})
+    with pytest.raises(RecoveryError):
+        kubernetes._version_from_raft(raw)

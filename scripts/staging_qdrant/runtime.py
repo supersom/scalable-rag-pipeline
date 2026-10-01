@@ -7,6 +7,7 @@ import os
 import subprocess
 import time
 from contextlib import contextmanager
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -50,10 +51,15 @@ def _port_forward(namespace, resource, local, remote):
             if process.poll() is not None:
                 raise RecoveryError("port-forward exited before verification")
             try:
-                with urlopen(f"http://127.0.0.1:{local}/", timeout=1):
-                    if process.poll() is not None:
-                        raise RecoveryError("port-forward exited before verification")
-                    break
+                try:
+                    urlopen(f"http://127.0.0.1:{local}/", timeout=1).close()
+                except HTTPError:
+                    pass  # any HTTP status, e.g. the API's 404 at "/", proves the tunnel is up
+                if process.poll() is not None:
+                    raise RecoveryError("port-forward exited before verification")
+                break
+            except RecoveryError:
+                raise
             except Exception:
                 time.sleep(.25)
         else:
@@ -91,10 +97,43 @@ class ClusterRuntime:
                    and any(c.get("type") == "Ready" and c.get("status") == "True"
                            for c in n.get("status", {}).get("conditions", []))
                    for n in nodes.get("items", [])):
-            raise RecoveryError("no Ready Kubernetes node in us-east-1b")
+            self._require_karpenter_capacity_in_zone()
         self._node_instance_ids = {n.get("spec", {}).get("providerID", "").rsplit("/", 1)[-1]
                                    for n in nodes.get("items", [])}
         self._check_all_bindings()
+
+    def _require_karpenter_capacity_in_zone(self):
+        """No node in us-east-1b yet: accept only if Karpenter can launch one there."""
+        pools = _json(["kubectl", "get", "nodepools.karpenter.sh", "-o", "json"]).get("items", [])
+        for pool in pools:
+            template = pool.get("spec", {}).get("template", {}).get("spec", {})
+            if template.get("taints"):
+                continue
+            zone_ok = True
+            for req in template.get("requirements", []):
+                if req.get("key") != "topology.kubernetes.io/zone":
+                    continue
+                values = req.get("values", [])
+                if req.get("operator") == "In" and "us-east-1b" not in values:
+                    zone_ok = False
+                if req.get("operator") == "NotIn" and "us-east-1b" in values:
+                    zone_ok = False
+            class_name = template.get("nodeClassRef", {}).get("name")
+            if not zone_ok or not class_name:
+                continue
+            node_class = _json(["kubectl", "get", "ec2nodeclasses.karpenter.k8s.aws", class_name,
+                                "-o", "json"], missing_ok=True)
+            for term in (node_class or {}).get("spec", {}).get("subnetSelectorTerms", []):
+                tags = term.get("tags")
+                if not tags or set(term) != {"tags"}:
+                    continue
+                filters = [f"Name=tag:{k},Values={v}" for k, v in sorted(tags.items())]
+                filters.append("Name=availability-zone,Values=us-east-1b")
+                subnets = self.aws(["ec2", "describe-subnets", "--filters", *filters]).get("Subnets", [])
+                if any(sn.get("State") == "available" and sn.get("AvailableIpAddressCount", 0) >= 20
+                       for sn in subnets):
+                    return
+        raise RecoveryError("no Ready node in us-east-1b and Karpenter cannot provision one there")
 
     def _check_all_bindings(self):
         pvs = _json(["kubectl", "get", "pv", "-o", "json"]).get("items", [])

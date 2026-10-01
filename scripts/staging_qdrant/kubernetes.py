@@ -100,6 +100,13 @@ def _version_from_raft(raw: str) -> str:
     versions = set()
     for peer in metadata.values():
         version = peer.get("version") if isinstance(peer, dict) else None
+        if isinstance(version, str):
+            # Qdrant 1.19.1 writes "1.19.1"; verified against the retained staging disks.
+            match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", version)
+            if match is None:
+                raise RecoveryError("Qdrant storage version metadata is invalid")
+            versions.add("v" + ".".join(match.groups()))
+            continue
         if not isinstance(version, dict):
             raise RecoveryError("Qdrant storage version metadata is incomplete")
         parts = tuple(version.get(key) for key in ("major", "minor", "patch"))
