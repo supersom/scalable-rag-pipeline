@@ -33,6 +33,14 @@ exit 92
 printf 'kubectl %s\\n' "$*" >> "$COMMAND_LOG"
 exit 91
 ''')
+    _write_executable(bin_dir / "terraform", '''#!/usr/bin/env bash
+printf 'terraform %s\\n' "$*" >> "$COMMAND_LOG"
+if [[ "$2 $3" == "output -json" ]]; then
+  printf '%s\\n' '{"staging_db_endpoint":{"value":"db.test"},"staging_db_secret_arn":{"value":"arn:test"},"staging_evidence_queue_url":{"value":"queue.test"},"staging_evidence_bucket_name":{"value":"bucket.test"},"staging_evidence_kms_key_arn":{"value":"arn:kms"},"staging_evidence_worker_irsa_role_arn":{"value":"arn:worker"},"staging_evidence_drain_consumer_irsa_role_arn":{"value":"arn:consumer"}}'
+  exit 0
+fi
+exit 92
+''')
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
