@@ -282,6 +282,15 @@ env:
     value: "http://otel-collector:4317"
 EOF
 
+# Secret-backed env vars are read at container start, and a Helm upgrade that leaves the pod
+# template unchanged does not roll the pod, so a changed app-env-secret would not reach a running
+# API. Decide before the upgrade whether this is a first install (fresh pods read the secret) or
+# an existing deployment (needs an explicit restart afterwards).
+API_ALREADY_DEPLOYED=false
+if kubectl get deployment api-staging --namespace "$NAMESPACE" >/dev/null 2>&1; then
+  API_ALREADY_DEPLOYED=true
+fi
+
 helm upgrade --install api-staging "${ROOT_DIR}/deploy/helm/api" \
   --namespace "$NAMESPACE" \
   --set image.repository="${ECR_BASE}/services/api" \
@@ -293,6 +302,12 @@ helm upgrade --install api-staging "${ROOT_DIR}/deploy/helm/api" \
 
 rm -f "$STAGING_VALUES_FILE"
 trap - EXIT
+
+if [[ "$API_ALREADY_DEPLOYED" == "true" ]]; then
+  echo "--- 3b. Restarting api-staging to pick up any changed app-env-secret ---"
+  kubectl rollout restart deployment/api-staging --namespace "$NAMESPACE"
+  kubectl rollout status deployment/api-staging --namespace "$NAMESPACE" --timeout=5m
+fi
 
 echo "--- 4. Evidence delivery components ---"
 # Clear any pre-exported production values from the operator's shell: deploy_evidence_delivery.sh

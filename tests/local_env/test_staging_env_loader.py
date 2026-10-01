@@ -48,3 +48,13 @@ def test_tavily_key_is_loaded_but_unlisted_secrets_are_not(tmp_path):
 def test_deploy_stores_the_tavily_key_in_the_staging_secret():
     script = SCRIPT.read_text()
     assert re.search(r"for provider_key in [^;]*\bTAVILY_API_KEY\b[^;]*; do", script)
+
+
+def test_existing_api_deployment_is_restarted_after_the_helm_upgrade():
+    script = SCRIPT.read_text()
+    check = script.index("API_ALREADY_DEPLOYED=false")
+    upgrade = script.index("helm upgrade --install api-staging")
+    restart = script.index("kubectl rollout restart deployment/api-staging")
+    assert check < upgrade < restart
+    assert 'if [[ "$API_ALREADY_DEPLOYED" == "true" ]]; then' in script[upgrade:restart]
+    assert "kubectl get deployment api-staging" in script[check:upgrade]
