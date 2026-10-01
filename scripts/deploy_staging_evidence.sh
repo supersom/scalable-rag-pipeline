@@ -52,9 +52,12 @@ if [[ -n "$STAGING_ENV_FILE" ]]; then
     esac
     env_value="${BASH_REMATCH[2]}"
     env_value="${env_value#"${env_value%%[![:space:]]*}"}"
-    env_value="${env_value%"${env_value##*[![:space:]]}"}"
-    if [[ ${#env_value} -ge 2 && ( "$env_value" == \"*\" || "$env_value" == \'*\' ) ]]; then
-      env_value="${env_value:1:${#env_value}-2}"
+    if [[ "$env_value" =~ ^\"([^\"]*)\" || "$env_value" =~ ^\'([^\']*)\' ]]; then
+      env_value="${BASH_REMATCH[1]}"
+    else
+      # dotenv semantics: an unquoted value ends at whitespace followed by "#".
+      env_value="${env_value%%[[:space:]]\#*}"
+      env_value="${env_value%"${env_value##*[![:space:]]}"}"
     fi
     printf -v "$env_key" '%s' "$env_value"
     export "$env_key"
