@@ -47,7 +47,7 @@ if [[ -n "$STAGING_ENV_FILE" ]]; then
       LLM_API_ENDPOINT|LLM_API_KEY|LLM_MODEL_NAME|LLM_MODEL_ID|\
       EMBED_API_ENDPOINT|EMBED_API_KEY|EMBED_MODEL_NAME|EMBED_DIM|\
       RERANK_API_ENDPOINT|RERANK_API_KEY|RERANK_MODEL_NAME|\
-      LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED) ;;
+      LOCAL_LOAD_TEST_CACHE_BYPASS_ENABLED|TAVILY_API_KEY) ;;
       *) continue ;;
     esac
     env_value="${BASH_REMATCH[2]}"
@@ -201,7 +201,7 @@ STAGING_SECRET_ARGS=(
 )
 # Provider credentials are supplied by the operator's environment (for example, from a
 # protected .env file) and stored only in the namespace Secret—not in Helm values or a ConfigMap.
-for provider_key in LLM_API_KEY EMBED_API_KEY RERANK_API_KEY; do
+for provider_key in LLM_API_KEY EMBED_API_KEY RERANK_API_KEY TAVILY_API_KEY; do
   if [[ -n "${!provider_key:-}" ]]; then
     STAGING_SECRET_ARGS+=("--from-literal=${provider_key}=${!provider_key}")
   fi

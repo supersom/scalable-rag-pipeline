@@ -12,7 +12,7 @@ def load(tmp_path, body: str) -> dict[str, str]:
     assert loop, "dotenv loop not found in deploy script"
     env_file = tmp_path / "env"
     env_file.write_text(body)
-    keys = ["EMBED_MODEL_NAME", "EMBED_DIM", "LLM_MODEL_NAME", "LLM_API_KEY"]
+    keys = ["EMBED_MODEL_NAME", "EMBED_DIM", "LLM_MODEL_NAME", "LLM_API_KEY", "TAVILY_API_KEY", "JWT_SECRET_KEY"]
     out = subprocess.run(
         ["bash", "-c", f'STAGING_ENV_FILE="{env_file}"\n{loop.group(0)}\n'
          + "".join(f'printf "%s=[%s]\\n" {k} "${{{k}:-}}"\n' for k in keys)],
@@ -37,3 +37,14 @@ def test_single_quotes_and_plain_values(tmp_path):
     values = load(tmp_path, "LLM_MODEL_NAME='x y'\nEMBED_MODEL_NAME=plain\n")
     assert values["LLM_MODEL_NAME"] == "[x y]"
     assert values["EMBED_MODEL_NAME"] == "[plain]"
+
+
+def test_tavily_key_is_loaded_but_unlisted_secrets_are_not(tmp_path):
+    values = load(tmp_path, "TAVILY_API_KEY=tvly-abc # web search\nJWT_SECRET_KEY=must-not-load\n")
+    assert values["TAVILY_API_KEY"] == "[tvly-abc]"
+    assert values["JWT_SECRET_KEY"] == "[]"
+
+
+def test_deploy_stores_the_tavily_key_in_the_staging_secret():
+    script = SCRIPT.read_text()
+    assert re.search(r"for provider_key in [^;]*\bTAVILY_API_KEY\b[^;]*; do", script)
