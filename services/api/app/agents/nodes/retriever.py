@@ -1,6 +1,7 @@
 """Ranked retrieval records are normalized before prompt formatting."""
 import asyncio
 import hashlib
+import logging
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -14,6 +15,9 @@ from services.api.app.config import settings
 from langchain_core.runnables import RunnableConfig
 
 CITATION_TEMPLATE = '{text} [Source: {filename}]'
+
+logger = logging.getLogger(__name__)
+_graph_errors_logged: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -117,6 +121,7 @@ async def retrieve_context(query: str) -> RetrievalResult:
         items = _deduplicate(vector_items + graph_items)
         if error is not None:
             mark_failure(span, error, status="partial")
+            _log_graph_failure_once(error)
         if items and reranker_client.enabled:
             try:
                 ranked = await reranker_client.rerank(query, [item.content for item in items])
@@ -138,6 +143,17 @@ async def retrieve_context(query: str) -> RetrievalResult:
                                  graph_error_type=type(error).__name__ if error is not None else None)
         _record_result(span, result)
         return result
+
+
+def _log_graph_failure_once(error: BaseException) -> None:
+    # Class name only: driver messages can carry query text or endpoints. Logged once per error
+    # class per process so a missing graph database does not warn on every request.
+    error_type = type(error).__name__
+    if error_type in _graph_errors_logged:
+        return
+    _graph_errors_logged.add(error_type)
+    logger.warning("Graph retrieval failed (%s); continuing with vector results. "
+                   "Repeats of this error type are not logged again by this process.", error_type)
 
 
 def _record_result(span, result):
