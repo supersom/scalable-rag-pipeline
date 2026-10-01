@@ -475,3 +475,27 @@ New script covers three layers in one pass: (1) RayService CRD `serviceStatus` a
 **Reasoning for `-target` approach:** `db_password` is a required root module variable but irrelevant to IAM resources. Targeted apply avoids requiring the real DB password and avoids touching live RDS/EKS while iterating on IAM permissions.
 
 **Account vCPU quota note:** The account has a 32 vCPU limit for certain instance families. Karpenter's first attempt at `c6i.8xlarge` (32 vCPUs) hit `VcpuLimitExceeded`. It fell back to smaller types (`c6i.2xlarge`, `m6i.4xlarge`) which are within quota.
+
+
+---
+
+## 2026-09-30 • Persistent staging Qdrant recovery, validated live
+
+**Decision:** Staging bring-up recovers the three retained Qdrant EBS volumes (or creates a persistent three-replica set when none exist) via `scripts/staging_qdrant_recovery.py`, called from `scripts/deploy_staging_evidence.sh`. Scope was cut back on 2026-09-30 to the behaviour in `docs/evaluation_implementation/staging-qdrant-recovery-simplified-spec.md`: exact-tag discovery, snapshot before any mount, version read from disk, never delete a volume, verify data then API. Automated restore and automated snapshot deletion are out of scope; `finalize --delete-snapshots` is opt-in.
+
+**Why the scope was cut:** the original design treated the volumes as an irreplaceable only copy and grew resume journals, attempt fingerprints, a restore state machine and snapshot cleanup. The corpus can be re-ingested from `eval/datasets/`, and snapshots of 150 GiB cost pennies. Most review findings (restored volumes invisible to the next discovery, non-idempotent replacements, rebind naming) were consequences of the automation, not of the requirement. The remaining safety invariants are the ones that prevent real data loss.
+
+**Live result (first run against the real cluster):** three original volumes bound by ordinal to Qdrant 1.19.1, 340,152 points, three snapshots taken before the first mount and kept, API verified through an authenticated cache-bypassed retrieval with correlated evidence. Re-running the deploy reuses the healthy cluster with no new volumes or snapshots.
+
+**Non-obvious findings (each cost a failed live attempt):**
+- **The retained data was written by Qdrant 1.19.1, not 1.7.3.** The original EKS release (`scripts/bootstrap_cluster.sh` stage 8) installs the chart unpinned; 1.7.3 is only the compose/ephemeral-staging version. Never assume the disk version from the repo pins; read it. `raft_state.json` stores peer versions as strings (`"version": "1.19.1"`), not `{major,minor,patch}`.
+- **`qdrant-client==1.7.3` cannot parse `get_collection` responses from Qdrant 1.19.1** (pydantic rejects new fields such as `optimizer_config.prevent_unoptimized`). `search` and `get_collections` still work, which is all the API uses, so retrieval is unaffected. Anything new that calls `get_collection` with this client will break against 1.19.1.
+- **The staging API image was stale.** `services/api:ec41fa3` (2026-09-28) predated the cache-bypass commits (2026-09-30), so `X-Load-Test-Bypass-Cache` was ignored and the retained `semantic_cache` collection returned a stale fake-model answer. The deploy script defaults to the newest pushed ECR tag, so any code change the deploy depends on needs a new image first. Build from `git archive HEAD` (the repo has no `.dockerignore` and 4+ GB of worktrees/datasets) and push to ECR.
+- **The deploy script's dotenv loader kept inline comments** (`EMBED_MODEL_NAME=baai/bge-m3 # fake-local-embed`), so the API asked OpenRouter for a nonexistent model (HTTP 400) and every retrieval failed after planning. Fixed with dotenv semantics (whitespace plus `#` ends an unquoted value) and tests.
+- **Preflight cannot require an existing us-east-1b node.** The cluster had nodes only in 1a/1c; the retained volumes are 1b-only. Preflight now accepts an untainted Karpenter NodePool with no zone restriction plus a discoverable, non-exhausted 1b subnet. The first apply launches up to two m6i.large spot nodes in 1b.
+- **`finalize` rolls the API Helm release back on failure, and a failed rollback replaced the original error message.** A leftover `kubectl set env` field manager made a Helm rollback conflict. Prefer `helm upgrade` over ad-hoc `kubectl set env` on Helm-managed deployments.
+- The port-forward readiness probe treated the API's 404 at `/` as "not ready"; any HTTP response now counts.
+
+**Not decided / left as is:** the retained `semantic_cache` collection still holds old fake-model answers (deliberately not cleared; the bypass header skips it, normal traffic does not). Snapshots `snap-0ef7cf80…`, `snap-004c139d…`, `snap-0c5bfba5…` were deleted on 2026-09-30 at the user's request: `finalize --delete-snapshots` removed the first at 18:02:35 PDT, then ended `blocked` ("API rollback failed") after a second API verification that the code path cannot explain for a single process (cause unknown; Codex confirmed not running); the other two were removed with `aws ec2 delete-snapshot`. No snapshots remain; the three volumes are in use by Qdrant.
+
+**Bounded load test (3 users, 60 s, staging API on the recovered Qdrant):** 10 requests, 1 failure (stream error event from a `ValueError` after retrieval, in answer generation; cause not yet diagnosed), median 10 s, max 43 s. Every logged request retrieved 5 documents from the recovered collection.
